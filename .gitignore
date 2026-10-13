@@ -78,3 +78,8 @@ obj/
 /unity/Packages/com.yank.nekonekoasset.bridge/README.md.meta
 /unity/scripts/*
 !/unity/scripts/package_bridge.py
+
+# Internal subsystem notes retained only in the maintainer workspace.
+/app/src-tauri/src/booth/README.md
+/app/src-tauri/src/catalogue/README.md
+/app/src-tauri/src/taxonomy/README.md
