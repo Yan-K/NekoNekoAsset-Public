@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "version": "0.2.0",
-  "sourceSha256": "276adfe6ae695f25e3d2dd419b7b089c066e196321d41a045c59ba326d4ba466",
-  "verifiedAt": "2026-10-13T17:30:28.434186Z",
+  "sourceSha256": "74a54bc549c9d313c93009bab3652aa7e2ef721d84523e48c7a5b90531048379",
+  "verifiedAt": "2026-10-13T17:39:40.035216Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -54,6 +54,13 @@
     "authoredUnityBytes": 1048921,
     "unityFullRestartReceiptMatched": true,
     "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "da785ce3f5c2f7f6c59bb422f5642e4dcbaf13dc367a49a1b38b1354cf937ad0"
+    "verifierExecutableSha256": "da785ce3f5c2f7f6c59bb422f5642e4dcbaf13dc367a49a1b38b1354cf937ad0",
+    "postVerificationTestOnlyChange": {
+      "files": [
+        "app/src-tauri/src/taxonomy/mod.rs"
+      ],
+      "productionBytesUnchanged": true,
+      "reason": "Keep strict kana rejection and Windows fallback checks without assuming one OS dictionary pronunciation."
+    }
   }
 }

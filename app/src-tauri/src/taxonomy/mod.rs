@@ -1946,8 +1946,10 @@ mod tests {
         assert_ne!(canonical_tag("真冬 / マヌカ"), "booth:5007531");
         assert_eq!(romanized_name("シロネコ"), "Shironeko");
         assert_eq!(romanized_name("きゃっと"), "Kyatto");
+        assert_eq!(romanize_kana("未確認漢字"), "");
+        assert_eq!(romanize_kana("未確認漢字ねこ"), "");
         #[cfg(target_os = "windows")]
-        assert_eq!(romanized_name("未確認漢字"), "Mikakuninkanji");
+        assert_eq!(romanized_name("星空猫"), "Hoshizoraneko");
         #[cfg(not(target_os = "windows"))]
         assert_eq!(romanized_name("未確認漢字"), "");
         assert_eq!(
