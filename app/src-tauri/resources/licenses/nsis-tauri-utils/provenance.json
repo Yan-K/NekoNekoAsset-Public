@@ -1,0 +1,205 @@
+{
+  "format": "NekoNekoAsset.InstallerPluginLicenseProvenance",
+  "formatVersion": 1,
+  "recordedDate": "2026-10-09",
+  "name": "nsis-tauri-utils",
+  "version": "0.5.3",
+  "declaredLicense": "MIT or Apache-2.0",
+  "role": "Pinned prebuilt NSIS installer plugin used by Tauri CLI 2.12.1; DLL is not copied into this license directory or bundled as an application runtime tool.",
+  "releaseUrl": "https://github.com/tauri-apps/nsis-tauri-utils/releases/tag/nsis_tauri_utils-v0.5.3",
+  "tag": "nsis_tauri_utils-v0.5.3",
+  "tagRefUrl": "https://api.github.com/repos/tauri-apps/nsis-tauri-utils/git/ref/tags/nsis_tauri_utils-v0.5.3",
+  "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+  "sourceTreeInspectionUrl": "https://api.github.com/repos/tauri-apps/nsis-tauri-utils/git/trees/13d9edd27b69310e108d6fbd49f90992f8a05390?recursive=1",
+  "standaloneNoticeFiles": [],
+  "binary": {
+    "sourceUrl": "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll",
+    "bytes": 34304,
+    "publishedSha1": "75197fee3c6a814fe035788d1c34ead39349b860",
+    "observedSha1": "75197fee3c6a814fe035788d1c34ead39349b860",
+    "observedSha256": "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709",
+    "verification": "Official release DLL downloaded into memory; computed SHA1 matches published pin. No binary file saved or executed.",
+    "publishedBuildTarget": "i686-pc-windows-msvc"
+  },
+  "runtimeDependencies": [
+    {
+      "name": "nsis-plugin-api",
+      "declaredVersion": "0.0.0",
+      "source": "local workspace path",
+      "licensing": "Pinned repository MIT/Apache texts",
+      "resolvedRegistryVersion": null
+    },
+    {
+      "name": "windows-sys",
+      "declaredRequirement": "0.61.2",
+      "resolvedRegistryVersion": null,
+      "currentApplicationInventoryVersion": "0.61.2",
+      "licensing": "Original MIT/Apache notices already in sibling rust/NOTICES.txt for the application package; this does not establish the prebuilt plugin resolution."
+    },
+    {
+      "name": "semver",
+      "declaredRequirement": "1.0",
+      "defaultFeatures": false,
+      "resolvedRegistryVersion": null,
+      "currentApplicationInventoryVersion": "1.0.28",
+      "licensing": "Original MIT/Apache notices already in sibling rust/NOTICES.txt for the application package; this does not establish the prebuilt plugin patch version."
+    },
+    {
+      "name": "Rust core/alloc",
+      "resolvedToolchainVersion": null,
+      "licensing": "Prebuilt plugin is no_std with core/alloc; the main application Rust 1.99 standard-library attribution is not asserted to identify this prebuilt release toolchain."
+    }
+  ],
+  "buildOnlyDependencies": [
+    "nsis-fn (local proc-macro)",
+    "proc-macro2 1",
+    "quote 1",
+    "syn 2 with full feature"
+  ],
+  "additionalDerivedCodeNotice": {
+    "origin": "Chromium process-launch helper",
+    "sourceCommit": "36e1c43ace542988d624bd1bc0813c184482d2ab",
+    "sourceUrl": "https://raw.githubusercontent.com/chromium/chromium/36e1c43ace542988d624bd1bc0813c184482d2ab/base/win/elevation_util.cc",
+    "sourceFileCopyright": "Copyright 2024 The Chromium Authors",
+    "license": "BSD-3-Clause",
+    "inclusionEvidence": "https://github.com/tauri-apps/nsis-tauri-utils/blob/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-tauri-utils/build.rs",
+    "attributionEvidence": "https://github.com/tauri-apps/nsis-tauri-utils/blob/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-process/src/lib.rs#L334",
+    "description": "Pinned build.rs combines nsis-process runtime source; run_as_user explicitly identifies a port from the cited Chromium file. Preserve its original legal header and BSD license with distributed installer notices."
+  },
+  "originalDocuments": [
+    {
+      "file": "upstream/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/LICENSE_MIT",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/LICENSE_MIT",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "1c1020fa10a6bf318717e82c911bcc54ebdfb9bb280460ae332bcb2f82f57fbe",
+      "bytes": 1110,
+      "kind": "original-pinned-upstream-license-or-project-description",
+      "originalBytesPreserved": true
+    },
+    {
+      "file": "upstream/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/LICENSE_APACHE-2.0",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/LICENSE_APACHE-2.0",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "bytes": 10174,
+      "kind": "original-pinned-upstream-license-or-project-description",
+      "originalBytesPreserved": true
+    },
+    {
+      "file": "upstream/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/README.md",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/README.md",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "d594102638dd53dec96d7931a6f66758fb3aae3e67440e6a08070d7b8d935dd2",
+      "bytes": 875,
+      "kind": "original-pinned-upstream-license-or-project-description",
+      "originalBytesPreserved": true
+    },
+    {
+      "file": "upstream/chromium/36e1c43ace542988d624bd1bc0813c184482d2ab/LICENSE",
+      "sourceUrl": "https://raw.githubusercontent.com/chromium/chromium/36e1c43ace542988d624bd1bc0813c184482d2ab/LICENSE",
+      "sourceCommit": "36e1c43ace542988d624bd1bc0813c184482d2ab",
+      "sha256": "368cca1106be99d39ecd32a38d8305585d802a475effb66380b91ffc9bcf709b",
+      "bytes": 1536,
+      "kind": "original-cited-chromium-bsd-license",
+      "originalBytesPreserved": true
+    },
+    {
+      "file": "upstream/chromium/36e1c43ace542988d624bd1bc0813c184482d2ab/ELEVATION-UTIL-LEGAL-HEADER.txt",
+      "sourceUrl": "https://raw.githubusercontent.com/chromium/chromium/36e1c43ace542988d624bd1bc0813c184482d2ab/base/win/elevation_util.cc",
+      "sourceCommit": "36e1c43ace542988d624bd1bc0813c184482d2ab",
+      "sha256": "fa52d121cb76cc736e8135134d68e0e6cc5d20dadfddf872088c109adf641532",
+      "bytes": 143,
+      "kind": "original-cited-chromium-copyright-license-header-only",
+      "originalBytesPreserved": true,
+      "sourceExcerpt": "First three legal-comment lines only; no program code copied."
+    }
+  ],
+  "sourceEvidence": [
+    {
+      "path": "Cargo.toml",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/Cargo.toml",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "a652c35630f2991b7bb12e4ef8327a54e39bba9817ee2ab688c969afc8a99b5b",
+      "bytes": 890,
+      "preservedInBundle": false
+    },
+    {
+      "path": "crates/nsis-tauri-utils/Cargo.toml",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-tauri-utils/Cargo.toml",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "7cb1532f034a44b8b59a0a45c094d37a34f031fc6305df0863540eae1d572b30",
+      "bytes": 365,
+      "preservedInBundle": false
+    },
+    {
+      "path": "crates/nsis-plugin-api/Cargo.toml",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-plugin-api/Cargo.toml",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "d8e704d9d87d8ad0db4169f5815f59fd8196b06f561a7ccea8005030dc5f4034",
+      "bytes": 185,
+      "preservedInBundle": false
+    },
+    {
+      "path": "crates/nsis-fn/Cargo.toml",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-fn/Cargo.toml",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "c192c19a39d45b15597691a17c839087c430e204f8339b315be7903460af93eb",
+      "bytes": 208,
+      "preservedInBundle": false
+    },
+    {
+      "path": "crates/nsis-tauri-utils/src/lib.rs",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-tauri-utils/src/lib.rs",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "a780044e215c00fe0be0481b512a9c6f7cb8490ad9ff3484cfd5d438b8e7764c",
+      "bytes": 111,
+      "preservedInBundle": false
+    },
+    {
+      "path": "crates/nsis-tauri-utils/build.rs",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-tauri-utils/build.rs",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "774bd1152bdf01804e2a7f54efeb2314f9887a7210515595a7a30c900c2cd19e",
+      "bytes": 1289,
+      "preservedInBundle": false
+    },
+    {
+      "path": "crates/nsis-process/src/lib.rs",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/crates/nsis-process/src/lib.rs",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "2d2c543018db02d9b1ace43714cb2981a89dd4927fffeb366e5e7a9958b6ae63",
+      "bytes": 15759,
+      "preservedInBundle": false
+    },
+    {
+      "path": ".cargo/config.toml",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/.cargo/config.toml",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "354fb80f59e5fcb42dfd78ea37cf80c428ac6e73f3262cbb5cf010ec21ee9c33",
+      "bytes": 40,
+      "preservedInBundle": false
+    },
+    {
+      "path": ".changes/config.json",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/.changes/config.json",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "0dd117a99353640079326e3e8f642a191298854389a91aceaf667b8585887716",
+      "bytes": 2125,
+      "preservedInBundle": false
+    },
+    {
+      "path": ".github/workflows/covector-version-or-publish.yml",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/13d9edd27b69310e108d6fbd49f90992f8a05390/.github/workflows/covector-version-or-publish.yml",
+      "sourceCommit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+      "sha256": "9ddd52a3fd21d63cf976bdd896f731e4225872400f5c8a5f0924e8b03c623fed",
+      "bytes": 1660,
+      "preservedInBundle": false
+    }
+  ],
+  "limitations": [
+    "Published plugin commit has no Cargo.lock or dependency-resolution/SBOM artifact inspected in this task; exact registry patch versions and transitive prebuilt closure are not established.",
+    "Published workflow uses windows-latest and preinstalled Rust without an exact toolchain pin; the release core/alloc toolchain copyright inventory is not established.",
+    "No binary rebuilding, reproducibility verification or final installer inclusion check was performed."
+  ],
+  "status": "Pinned binary identity, exact source commit, original plugin licenses and cited Chromium BSD attribution verified; prebuilt dependency/toolchain provenance limits retained."
+}

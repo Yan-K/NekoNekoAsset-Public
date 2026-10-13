@@ -1,0 +1,23 @@
+.modal.workflow-modal:has(.wf-import .local-import-columns.is-batch){width:min(960px,100%);}
+.local-import-columns{display:flex;flex-direction:column;gap:14px;min-width:0;}
+.local-import-columns.is-batch{display:grid;grid-template-columns:minmax(150px,.8fr) minmax(0,1.2fr);gap:18px;}
+.local-import-sources,.local-import-editor{min-width:0;}
+.wf-import .local-import-drop{border:1px dashed var(--border);border-radius:4px;min-height:92px;padding:8px;max-height:min(270px,40dvh);overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;}
+.wf-import .is-batch .local-import-drop{max-height:min(420px,52dvh);}
+.wf-import .local-import-drop.is-dropping{border-color:var(--accent);background:var(--raised);}
+.local-import-drop-label{flex:none;color:var(--muted);font-size:12px;margin-bottom:8px;}
+.wf-import .local-import-drop .data-row{display:flex;flex:none;align-items:center;gap:6px;padding:3px 6px;}
+.wf-import .local-import-drop .data-row>span,.wf-import .local-import-product{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.wf-import .local-import-product{display:block;height:24px;min-height:24px;padding:1px 6px;text-align:left;}
+.wf-import .local-import-product[aria-pressed=true]{border-color:var(--accent);color:var(--accent);}
+.wf-import .local-import-drop .data-row>button:last-child{flex:none;width:24px;min-width:24px;height:24px;min-height:24px;padding:1px;}
+.local-import-url{display:flex;gap:6px;}
+.local-import-url>input{flex:1;min-width:0;width:0;}
+.local-import-url>button{flex-shrink:0;}
+.is-batch .wf-import-extras{grid-template-columns:90px minmax(0,1fr);gap:10px;}
+.is-batch .wf-import-extras .editor-tag-picker{padding-left:10px;}
+.local-import-editor .wf-thumbnail>button{white-space:normal;min-width:0;padding:4px;}
+.local-import-editor .wf-thumbnail-pick{display:grid;place-items:center;}
+.local-import-editor .wf-thumbnail-pick>img{width:100%;height:86px;object-fit:contain;}
+.local-import-editor .wf-thumbnail-pick>.asset-art{width:100%;height:86px;}
+@media(max-width:600px){.local-import-columns.is-batch{grid-template-columns:minmax(120px,.7fr) minmax(0,1.3fr);gap:10px;}.is-batch .wf-import-extras{grid-template-columns:1fr;}.is-batch .wf-import-extras .editor-tag-picker{border:0;padding:0;}}

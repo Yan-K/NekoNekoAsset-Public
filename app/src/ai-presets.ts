@@ -1,0 +1,17 @@
+import type {Locale} from './model';
+
+export type BuiltinAiPresetId='chat'|'similar'|'outfit'|'accessories'|'purchase'|'group'|'style';
+export interface BuiltinAiPreset {id:BuiltinAiPresetId;title:string;description:string;systemPrompt:string;builtin:true}
+const presets:{id:BuiltinAiPresetId;titles:readonly string[];descriptions:readonly string[];systemPrompt:string}[]=[
+ {id:'chat',titles:['Free chat','自由チャット','자유 채팅','自由聊天','自由聊天'],descriptions:['Chat and get advice about VRChat.','VRChatについて気軽に話して相談できます。','VRChat에 대해 자유롭게 이야기하고 조언을 받으세요.','随意聊天，获取各类 VRChat 相关建议。','隨意聊天，獲得各種 VRChat 相關建議。'],systemPrompt:'Answer the user’s VRChat and digital-asset questions conversationally. Recommend products only when useful and supported by the supplied candidates.'},
+ {id:'similar',titles:['Similar clothing','似た衣装を探す','비슷한 의상 찾기','寻找相似服装','尋找相似服裝'],descriptions:['Find clothing or accessories similar to an image or description.','画像や説明に似た衣装・アクセサリーを探します。','이미지나 설명과 비슷한 의상과 액세서리를 찾아보세요.','根据图片或描述，寻找相似的服装或配件。','根據圖片或描述，尋找相似的服裝或配件。'],systemPrompt:'Find clothing or accessories similar to the user’s reference image or description. Compare silhouette, colors, materials and visible details, and explain the closest supported matches.'},
+ {id:'outfit',titles:['Outfit advice','コーディネート相談','의상 코디 추천','服装搭配建议','服裝搭配建議'],descriptions:['Get outfit, color and style suggestions.','衣装の組み合わせ、配色、スタイルを提案します。','의상 조합, 색상과 스타일을 추천받으세요.','获取服装搭配、配色与风格建议。','獲得服裝搭配、配色與風格建議。'],systemPrompt:'Suggest a coordinated VRChat outfit from the supplied candidates. Explain how clothing, accessories, colors and proportions work together and state compatibility uncertainty.'},
+ {id:'accessories',titles:['Accessories','アクセサリー相談','액세서리 추천','配件建议','配件建議'],descriptions:['Find accessories to complement your avatar or outfit.','アバターや衣装に合うアクセサリーを探します。','아바타나 의상에 어울리는 액세서리를 찾아보세요.','寻找适合头像或服装的配件。','尋找適合頭像或服裝的配件。'],systemPrompt:'Suggest accessories that complement the user’s avatar or outfit. Consider style, scale, color and supported compatibility evidence.'},
+ {id:'purchase',titles:['Purchase advice','購入相談','구매 조언','购买建议','購買建議'],descriptions:['Compare an asset with your needs before buying.','購入前に資産が希望に合うかを比較します。','구매 전에 에셋이 원하는 조건에 맞는지 비교하세요.','分析服装或配件是否符合你的购买需求。','分析服裝或配件是否符合你的購買需求。'],systemPrompt:'Help the user evaluate whether a candidate asset suits their needs. Compare visible features, stated compatibility and supplied price evidence; do not claim ownership or purchase anything.'},
+ {id:'group',titles:['Group outfits','グループコーデ','그룹 코디','团体搭配','團體搭配'],descriptions:['Coordinate a shared look for several avatars.','複数のアバターで統一感のある衣装を提案します。','여러 아바타에 어울리는 통일된 코디를 추천받으세요.','为多人同风格穿搭提供建议。','為多人同風格穿搭提供建議。'],systemPrompt:'Suggest coordinated outfits for a group, considering a shared theme, each avatar’s supported compatibility and individual variations.'},
+ {id:'style',titles:['Change style','スタイルチェンジ','스타일 바꾸기','换个风格','換個風格'],descriptions:['Explore outfits in a different style.','いつもと違うスタイルの衣装を提案します。','다른 스타일의 의상 아이디어를 살펴보세요.','尝试不同风格的穿搭提案。','嘗試不同風格的穿搭提案。'],systemPrompt:'Propose outfit options in a different style from the user’s reference. Describe the new direction and recommend only supported candidates.'},
+];
+export function getBuiltinAiPresets(locale:Locale):BuiltinAiPreset[] {
+ const index=({en:0,ja:1,ko:2,'zh-Hans':3,'zh-Hant':4} as Record<Locale,number>)[locale];
+ return presets.map(({id,titles,descriptions,systemPrompt})=>({id,title:titles[index],description:descriptions[index],systemPrompt,builtin:true}));
+}

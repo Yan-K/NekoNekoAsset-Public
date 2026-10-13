@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NekoNekoAsset",
+  "version": "0.2.0",
+  "identifier": "app.nekonekoasset.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "NekoNekoAsset",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 640,
+        "minHeight": 600,
+        "backgroundColor": "#202020"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https: data: blob:; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src 'none'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPLOCALDATA/media/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "resources/tools/7zip/": "tools/7zip/",
+      "resources/licenses/": "licenses/"
+    },
+    "publisher": "Yan-K",
+    "shortDescription": "Local digital asset manager",
+    "category": "Utility",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "requireSignedVersion": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZBODM0RDFEMUQ5MUJFM0QKUldROXZwRWRIVTJEYWw0aXRWaXB3WFY5VTgzVi9JOHYrVUw3MlR1aFdBckJPQnRXdU1PUTdFYmoK",
+      "endpoints": [
+        "https://yan-k.github.io/NekoNekoAsset-Public/app/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

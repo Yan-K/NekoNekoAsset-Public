@@ -1,0 +1,20 @@
+.statusbar button.app-version{font:inherit;font-variant-numeric:tabular-nums;border:0;background:transparent;color:var(--muted);padding:0 2px;min-height:20px;display:inline-flex;align-items:center;gap:5px;}
+.statusbar button.app-version:hover{color:var(--text);text-decoration:underline;}
+.app-update-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none;}
+.modal.update-modal{width:min(540px,100%);}
+.update-body{display:flex;flex-direction:column;gap:12px;}
+.update-current{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:12px;}
+.update-current strong{color:var(--text);font-weight:500;}
+.update-status{display:flex;align-items:center;gap:7px;font-size:13px;overflow-wrap:anywhere;}
+.update-notes{font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:32vh;overflow:auto;}
+.update-release-link{align-self:flex-start;min-height:0;background:transparent;border:0;padding:0;color:var(--accent);font-size:12px;text-decoration:underline;}
+.update-progress{display:flex;flex-direction:column;gap:8px;font-size:13px;}
+.update-progress progress{width:100%;}
+.update-progress small{align-self:flex-end;color:var(--muted);}
+.update-body .update-blocked{margin:0;color:var(--warning);}
+.update-modal .modal-footer{gap:6px;}
+.update-modal .modal-footer>button{display:inline-flex;align-items:center;gap:5px;}
+.unity-bridge-download{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:9px;}
+.unity-bridge-download>button{font-size:12px;max-width:100%;white-space:normal;}
+.unity-bridge-download>small{font-size:11px;color:var(--muted);}
+.unity-bridge-download .bridge-update{color:var(--warning);}

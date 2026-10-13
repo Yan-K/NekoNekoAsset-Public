@@ -1,0 +1,61 @@
+NekoNekoAsset third-party software notices
+
+The original NekoNekoAsset code is MIT licensed (NekoNekoAsset-LICENSE.txt).
+Third-party components keep their own copyright, license, conditions and
+warranty exclusions. The project MIT license does not replace those terms.
+
+Exact versions, public sources, integrity hashes, original notice byte ranges,
+and corresponding-source locations are recorded in dependency-ledger.json.
+
+- rust/NOTICES.txt preserves original notices from exact published Cargo
+  dependency archives. This conservative ledger covers the complete Cargo.lock,
+  including build-only and conditional-platform packages; it does not assert
+  that every listed package is contained in the Windows application binary.
+- supplemental/index.json records original upstream workspace terms for
+  published crates that omit a standalone license/notice file, with explicit
+  provenance limits where a published VCS commit is unavailable.
+- rust-standard-library/COPYRIGHT-library.html preserves the installed Rust
+  standard library attribution document; no Rust toolchain binary is included.
+- frontend/NOTICES.txt preserves original notices for the exact frontend runtime
+  dependency closure, including React, React DOM, scheduler, Lucide and Tauri API.
+- sources/cargo/ contains exact published source archives for MPL-2.0 components
+  and packages whose published archive omits standalone notices. MPL-covered
+  source is provided unchanged, under its original terms; see standard/MPL-2.0.txt.
+- microsoft-webview2/LICENSE.txt and NOTICE.txt preserve the official terms for
+  the matching Microsoft WebView2 loader. These files contain notices only;
+  the complete Microsoft SDK package is not redistributed here.
+- sqlite/ contains the original SQLite amalgamation header and the official
+  public-domain statement. The upstream SQLite version is recorded in the ledger.
+- 7zip/ contains complete official 7-Zip 26.04 corresponding source, full GNU LGPL
+  2.1, and the original BSD/unRAR documents. See 7zip/README.md for binary/source
+  provenance. Keep these files with releases containing tools/7zip/7z.exe and
+  7z.dll, including the original notices and unRAR restrictions.
+
+- nsis/ preserves the exact CLI-pinned NSIS 3.11 installer/compression/standard
+  plug-in license texts and complete official corresponding source, including
+  full CPL 1.0 and the original LZMA linking exception. Tauri2.12.1 installer
+  template/helper MIT/Apache and package SPDX metadata are preserved separately.
+- nsis-tauri-utils/ preserves the original Tauri0.5.3 installer plug-in terms
+  and its cited Chromium BSD/copyright notice. Prebuilt dependency/toolchain
+  provenance limits remain explicit; no exact binary dependency lock is claimed.
+
+The original license texts are preserved byte for byte. The surrounding ledger
+and this index describe provenance and scope, not additional license grants.
+
+LLVM, xwin, Windows SDK/CRT toolchain payloads, pnpm, Vite, TypeScript and CLI
+executables are build inputs and are not included in these distribution resources.
+The final release owner must verify that the installer retains this licenses/
+directory and its source archives alongside the bundled tools. If dependency or
+bundled tool versions change, regenerate the exact ledger and corresponding
+notices/source together before release. Project-version lockfile provenance and
+resource-inventory.json must also match the final packaging checkpoint.
+
+Fixed celebration thresholds (original derived calculations)
+Source: ECB euro reference exchange rates, 2026-10-09:
+https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html
+https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html
+CBC public TWD/USD numerical rate, 2026-10-08:
+https://www.cbc.gov.tw/en/lp-700-2-1-40.html
+Thresholds are rounded, modified calculations; they are not published exchange
+quotes and the application does not convert purchase amounts.
+

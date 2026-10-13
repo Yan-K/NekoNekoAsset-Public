@@ -1,0 +1,9 @@
+.reset-app-actions {display:flex;gap:6px;flex-wrap:wrap;}
+.reset-app-backdrop {z-index:1500;}
+.reset-app-modal {max-width:460px;max-height:calc(100% - 24px);}
+.reset-app-modal .modal-body {overflow:auto;overflow-wrap:anywhere;}
+.reset-app-modal .modal-footer {flex-wrap:wrap;}
+.reset-app-modal .modal-footer button {white-space:normal;}
+.reset-app-confirm,.theme-actions .danger {color:var(--negative);border-color:var(--negative);}
+.theme-actions {display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+.theme-transfer-actions {display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end;}

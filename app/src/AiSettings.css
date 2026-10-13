@@ -1,0 +1,28 @@
+.ai-settings .ai-entry-list {display:flex;flex-direction:column;gap:2px;max-height:168px;overflow:auto;border:1px solid var(--border);border-radius:5px;padding:4px;margin-bottom:10px;}
+.ai-settings .ai-entry {display:flex;align-items:center;gap:10px;width:100%;min-width:0;text-align:left;background:transparent;border-color:transparent;}
+.ai-settings .ai-entry[aria-selected="true"] {background:var(--control);border-color:var(--accent);}
+.ai-settings .ai-entry-provider {flex:0 1 130px;overflow:hidden;text-overflow:ellipsis;}
+.ai-settings .ai-entry-model {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:12px;}
+.ai-settings .ai-entry-saved {flex:none;color:var(--positive);}
+.ai-settings .ai-entry-empty {padding:8px;color:var(--muted);font-size:12px;}
+.ai-settings .ai-add {color:var(--positive);}
+.ai-settings .ai-editor {margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
+.ai-settings .ai-scopes {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px;margin-top:12px;}
+.ai-settings .ai-scopes label {display:flex;align-items:center;gap:7px;min-width:0;font-size:12px;}
+.ai-settings .ai-scopes input {flex:none;}
+.ai-settings .ai-key-label {display:block;color:var(--muted);font-size:12px;margin-bottom:6px;}
+.ai-settings .ai-status {margin-top:10px;font-size:12px;overflow-wrap:anywhere;}
+.ai-settings .ai-status.error {color:var(--negative);}
+.ai-settings .form-row {flex-wrap:wrap;}
+.ai-settings .ai-personalization h4 {font-size:13px;margin:0 0 12px;font-weight:650;}
+.ai-settings .ai-personalization .field {min-width:0;}
+.ai-settings .ai-avatar-controls {display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.ai-settings .ai-avatar-preview {width:40px;height:40px;flex:none;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--control);border:1px solid var(--border);overflow:hidden;color:var(--muted);}
+.ai-settings .ai-avatar-preview img {width:100%;height:100%;object-fit:cover;}
+.ai-settings .ai-avatar-preview svg {width:22px;height:22px;}
+.ai-settings .ai-personalization-saved {font-size:12px;color:var(--positive);}
+@media(max-width:420px) {.ai-settings .ai-entry-provider {flex-basis:105px;}.ai-settings .ai-scopes {grid-template-columns:1fr;}}
+
+.ai-settings .ai-personalization textarea{min-height:90px;resize:vertical;width:100%}
+
+.ai-settings .ai-status.success{color:var(--positive)}

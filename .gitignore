@@ -1,0 +1,66 @@
+# Build/runtime output
+node_modules/
+target/
+dist/
+build/
+coverage/
+.vite/
+*.log
+
+# Local editor/OS state
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Secrets and machine-local settings
+.env
+.env.*
+!.env.example
+secrets/
+.private/
+*.pem
+*.key
+*.cookies
+*.cookie
+
+# Private collection, authentication, browser profiles, assets, diagnostics
+/data/
+/private-data/
+/runtime-data/
+/collector-output/
+/exports/
+/downloads/
+/assets-private/
+/auth-profiles/
+/browser-profiles/
+/screenshots-private/
+/diagnostics-private/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+# Scratch work; committed fixtures must live in explicit synthetic-fixture paths
+/work/
+/tmp/
+
+# Local toolchain, scratch verification and runtime output
+.tools/
+.local/
+bin/
+obj/
+*.tsbuildinfo
+
+
+# Internal instructions and agent documentation stay local.
+/AGENTS.md
+/AgentDocs/
+/.agents/
+/.codex/
+/app/src-tauri/gen/schemas/
+/unity/.runs/

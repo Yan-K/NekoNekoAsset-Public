@@ -1,0 +1,7 @@
+.nna-toggle{display:inline-flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;font-size:12px;}
+.nna-toggle>span{min-width:0;overflow-wrap:anywhere;}
+.nna-toggle>button{position:relative;display:inline-flex;flex:0 0 34px;width:34px;min-height:20px;height:20px;padding:2px;border-radius:11px;border:1px solid var(--border);background:var(--control);}
+.nna-toggle>button>span{position:absolute;left:3px;top:3px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:transform .12s;}
+.nna-toggle>button[aria-checked=true]{background:var(--accent);border-color:var(--accent);}
+.nna-toggle>button[aria-checked=true]>span{background:var(--bg);transform:translateX(14px);}
+.nna-toggle>button:disabled{cursor:default;}

@@ -1,0 +1,8 @@
+## Author
+
+[Jonathan Reem](https://medium.com/@jreem) is the primary author and maintainer of mac.
+
+## License
+
+MIT/Apache-2.0, like rust itself
+

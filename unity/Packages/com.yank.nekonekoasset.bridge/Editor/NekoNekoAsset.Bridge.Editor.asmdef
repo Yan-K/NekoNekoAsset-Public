@@ -1,0 +1,6 @@
+{
+  "name": "NekoNekoAsset.Bridge.Editor",
+  "rootNamespace": "NekoNekoAsset.Bridge",
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

@@ -1,0 +1,4 @@
+{
+  "prerelease": true,
+  "notes": "First public beta. Windows installer with signed in-app updates, and Unity Bridge packages with version update prompts."
+}

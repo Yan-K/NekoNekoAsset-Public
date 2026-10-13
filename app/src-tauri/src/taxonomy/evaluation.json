@@ -1,0 +1,26 @@
+{
+  "id": "lead-independent-convenience-2026-10-09",
+  "dictionaryVersion": "2026-10-09.1",
+  "selection": "Lead nominated these ten public names before viewing curated dictionary contents; unweighted convenience sample, not random or representative of users.",
+  "denominator": 10,
+  "matched": 8,
+  "officialIdentitiesVerified": 9,
+  "identities": [
+    {"name":"マヌカ","productId":"5058077","sourceUrl":"https://jingo1016.booth.pm/items/5058077","identityStatus":"officialListingVerified","matched":true},
+    {"name":"萌","productId":"4667400","sourceUrl":"https://kyubihome.booth.pm/items/4667400","identityStatus":"officialListingVerified","matched":true},
+    {"name":"桔梗","productId":"3681787","sourceUrl":"https://ponderogen.booth.pm/items/3681787","identityStatus":"officialListingVerified","matched":true},
+    {"name":"セレスティア","productId":"4035411","sourceUrl":"https://jingo1016.booth.pm/items/4035411","identityStatus":"officialListingVerified","matched":true},
+    {"name":"まめひなた","productId":"4340548","sourceUrl":"https://mukumi.booth.pm/items/4340548","identityStatus":"officialListingVerified","matched":true},
+    {"name":"ライム","productId":"4876459","sourceUrl":"https://komado.booth.pm/items/4876459","identityStatus":"officialListingVerified","matched":true},
+    {"name":"森羅","productId":"4707634","sourceUrl":"https://mio3works.booth.pm/items/4707634","identityStatus":"officialPageUnavailable404","matched":false},
+    {"name":"しなの","productId":"6106863","sourceUrl":"https://ponderogen.booth.pm/items/6106863","identityStatus":"officialListingVerified","matched":true},
+    {"name":"瑞希","productId":"5132797","sourceUrl":"https://paryi.booth.pm/items/5132797","identityStatus":"officialListingVerified","matched":true},
+    {"name":"ソラハ","productId":"4208278","sourceUrl":"https://kokokoya.booth.pm/items/4208278","identityStatus":"officialListingVerified","matched":false}
+  ],
+  "limitations": [
+    "Eight of ten name-to-identity matches describes this fixed list only; it is not 80 percent population coverage.",
+    "Shinra identity route is documented as a candidate from public references, but its primary official listing returned 404; retained as an unmatched denominator row rather than removed.",
+    "Soraha was independently verified after the initial 22-entry dictionary was frozen and is intentionally an unmatched holdout.",
+    "No private collection, acquisition record, asset archive, popularity ranking or entitlement was inspected."
+  ]
+}

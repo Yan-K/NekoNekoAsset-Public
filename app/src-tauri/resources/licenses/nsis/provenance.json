@@ -1,0 +1,95 @@
+{
+  "component": "NSIS installer stub, LZMA compression and standard installer plug-ins",
+  "version": "3.11",
+  "consumedBy": "@tauri-apps/cli 2.12.1 Windows NSIS bundler",
+  "exactBundlerSourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.12.1/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs",
+  "binaryPackageUrl": "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip",
+  "binaryPackageSha1": "ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d",
+  "binaryPackageSha256": "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1",
+  "binaryPackageBytes": 2361546,
+  "binaryPackageNotRedistributed": true,
+  "originalNotices": [
+    {
+      "path": "nsis/upstream/COPYING",
+      "originalPath": "nsis-3.11/COPYING",
+      "sha256": "e7dd514003ab96cb3ddccbc028fe5c795fccf57dc41f21cfb9d4dd16ead23bf5",
+      "bytes": 15632
+    },
+    {
+      "path": "nsis/upstream/Docs/Modern UI 2/License.txt",
+      "originalPath": "nsis-3.11/Docs/Modern UI 2/License.txt",
+      "sha256": "d5957bd99460eb21148bd2695eeb5a3718abae6b118040a4678926da3f4cfbc0",
+      "bytes": 840
+    },
+    {
+      "path": "nsis/upstream/Docs/NSISdl/License.txt",
+      "originalPath": "nsis-3.11/Docs/NSISdl/License.txt",
+      "sha256": "326e587f36ca58e14bd09cca153f9e69f1c5ed701189aa47d2d0627af7e16280",
+      "bytes": 943
+    }
+  ],
+  "embeddedComponentProvenance": [
+    {
+      "originalPath": "nsis-3.11/Stubs/lzma-x86-unicode",
+      "sha256": "e916a205c5421f4287411d402fe1d2cb37e3df93db00ff4cfbacec3b8ec8877e",
+      "bytes": 38400
+    },
+    {
+      "originalPath": "nsis-3.11/Stubs/lzma_solid-x86-unicode",
+      "sha256": "a0d065b62d34be5f0aaaf7c162e101a5e25d7cd3eb10a13fdb37f91b02ebfce2",
+      "bytes": 38912
+    },
+    {
+      "originalPath": "nsis-3.11/Plugins/x86-unicode/NSISdl.dll",
+      "sha256": "ddf40229dd9d6b268902d8dea88c8a04aacf1af218dd29f6dcd35babc54ac08d",
+      "bytes": 15360
+    },
+    {
+      "originalPath": "nsis-3.11/Plugins/x86-unicode/StartMenu.dll",
+      "sha256": "fe330320459637d8dd2b5d84d07925c38ec264152ffd3b1760a4d44d76536caa",
+      "bytes": 7680
+    },
+    {
+      "originalPath": "nsis-3.11/Plugins/x86-unicode/System.dll",
+      "sha256": "8b4c47c4cf5e76ec57dd5a050d5acd832a0d532ee875d7b44f6cdaf68f90d37c",
+      "bytes": 12288
+    },
+    {
+      "originalPath": "nsis-3.11/Plugins/x86-unicode/nsDialogs.dll",
+      "sha256": "b1350f487692057c8ffde75dcc55287a52a3272240d4d4912f24464b27551fc0",
+      "bytes": 9728
+    }
+  ],
+  "sourceReleaseUrl": "https://sourceforge.net/projects/nsis/files/NSIS%203/3.11/nsis-3.11-src.tar.bz2/download",
+  "sourceDownloadUrl": "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11-src.tar.bz2",
+  "sourceSha256": "19e72062676ebdc67c11dc032ba80b979cdbffd3886c60b04bb442cdd401ff4b",
+  "sourceFile": "nsis/nsis-3.11-src.tar.bz2",
+  "sourceIncluded": true,
+  "scope": "The generated NSIS installer includes these components. The NSIS compiler and other development executables are not bundled as app resources. Root COPYING retains zlib/libpng, bzip2, full CPL 1.0 and the original LZMA linking exception; bzip2 coverage is retained without claiming the default LZMA installer uses bzip2. Additional Tauri installer plugin has its separate notices.",
+  "tauriInstallerTemplateTerms": {
+    "version": "2.12.1",
+    "sourceRef": "tauri-cli-v2.12.1",
+    "templateUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.12.1/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
+    "notices": [
+      {
+        "path": "nsis/tauri-installer/LICENSE-MIT",
+        "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.12.1/LICENSE-MIT",
+        "sha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+        "bytes": 1090
+      },
+      {
+        "path": "nsis/tauri-installer/LICENSE-APACHE-2.0",
+        "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.12.1/LICENSE-APACHE-2.0",
+        "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "bytes": 10174
+      },
+      {
+        "path": "nsis/tauri-installer/LICENSE.spdx",
+        "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.12.1/LICENSE.spdx",
+        "sha256": "5e834fe9788c524210deda859c46a550ffa5aa0cba9ea0572f0d81120e97c008",
+        "bytes": 889
+      }
+    ],
+    "scope": "Original Tauri Windows installer template/helper licensing; upstream package-level LICENSE.spdx is preserved unchanged. Current app configuration has no installer file associations."
+  }
+}

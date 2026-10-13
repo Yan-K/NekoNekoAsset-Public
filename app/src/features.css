@@ -1,0 +1,7 @@
+.feature-settings{padding:14px;gap:0}.feature-settings h3{margin:0 0 10px;font-size:13px;color:var(--text)}
+.feature-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:9px 12px}.feature-actions label{display:flex;gap:7px;align-items:center;min-width:0}
+.feature-error{display:block;color:var(--negative);margin:6px 0}
+
+
+
+.feature-actions .feature-disabled{color:var(--muted);opacity:.5}
