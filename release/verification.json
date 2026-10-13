@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "version": "0.2.0",
-  "sourceSha256": "74a54bc549c9d313c93009bab3652aa7e2ef721d84523e48c7a5b90531048379",
-  "verifiedAt": "2026-10-13T17:39:40.035216Z",
+  "sourceSha256": "40d3b66d5a6c84365b95551ac1c6edcd60e9b223baebb67629411cb7dd66d3c7",
+  "verifiedAt": "2026-10-13T18:10:03.777817Z",
   "checks": {
     "storeMetadata": {
       "passed": true,

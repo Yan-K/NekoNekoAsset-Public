@@ -204,6 +204,45 @@ class ReleaseChecks(unittest.TestCase):
             release.publish("v0.2.0", self.root / "does-not-exist")
         fake_api.request.assert_not_called()
 
+    def test_published_tag_lookup_never_lists_or_changes_releases(self):
+        api = object.__new__(release.GitHub)
+        published = {"id": 7, "tag_name": "v0.2.0", "draft": False}
+        api.request = unittest.mock.Mock(return_value=published)
+        self.assertEqual(api.release("v0.2.0"), published)
+        api.request.assert_called_once_with("releases/tags/v0.2.0")
+
+    def test_draft_lookup_searches_all_pages_and_exact_tag(self):
+        api = object.__new__(release.GitHub)
+        first_page = [{"id": index, "tag_name": f"v0.1.{index}", "draft": True} for index in range(100)]
+        draft = {"id": 101, "tag_name": "v0.2.0", "draft": True}
+        api.request = unittest.mock.Mock(side_effect=[None, first_page, [draft, {"tag_name": "v0.2.01", "draft": True}]])
+        self.assertEqual(api.release("v0.2.0"), draft)
+        self.assertEqual([call.args[0] for call in api.request.call_args_list],
+                         ["releases/tags/v0.2.0", "releases?per_page=100&page=1", "releases?per_page=100&page=2"])
+
+    def test_duplicate_exact_tag_drafts_across_pages_block(self):
+        api = object.__new__(release.GitHub)
+        draft = {"id": 1, "tag_name": "v0.2.0", "draft": True}
+        first_page = [draft] + [{"tag_name": f"v0.1.{index}", "draft": False} for index in range(99)]
+        api.request = unittest.mock.Mock(side_effect=[None, first_page, [{"id": 2, "tag_name": "v0.2.0", "draft": True}]])
+        with self.assertRaisesRegex(ValueError, "Multiple releases"):
+            api.release("v0.2.0")
+
+    def test_prepare_retry_reuses_listed_draft_without_duplicate_creation(self):
+        api = object.__new__(release.GitHub)
+        draft = {"id": 73, "tag_name": "v0.2.0", "draft": True}
+        api.request = unittest.mock.Mock(side_effect=[None, [draft], draft])
+        with patch.object(release, "check", return_value="0.2.0"), \
+                patch.object(release, "GitHub", return_value=api), \
+                patch.object(api, "assert_tag_checkout"), \
+                patch.object(release, "git", return_value=b"authored-head"), \
+                patch.object(release, "release_config", return_value={"prerelease": True, "notes": "Authored notes"}), \
+                patch.object(release, "set_output"):
+            release.prepare("v0.2.0")
+        self.assertEqual(api.request.call_count, 3)
+        self.assertEqual(api.request.call_args.args[:2], ("releases/73", "PATCH"))
+        self.assertFalse(any(len(call.args) > 1 and call.args[1] == "POST" for call in api.request.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()

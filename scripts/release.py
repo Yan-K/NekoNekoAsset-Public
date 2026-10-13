@@ -240,7 +240,25 @@ class GitHub:
             raise ValueError(f"GitHub {method} failed with HTTP {error.code}") from None
 
     def release(self, tag: str):
-        return self.request("releases/tags/" + urllib.parse.quote(tag, safe=""))
+        published = self.request("releases/tags/" + urllib.parse.quote(tag, safe=""))
+        if published is not None:
+            return published
+        # The tag endpoint exposes published releases only. Authenticated listing
+        # also exposes drafts to the workflow's contents-write token.
+        found = None
+        page = 1
+        while True:
+            batch = self.request(f"releases?per_page=100&page={page}")
+            if not isinstance(batch, list):
+                raise ValueError("Unable to list releases while looking for the prepared draft")
+            for candidate in batch:
+                if candidate.get("tag_name") == tag:
+                    if found is not None:
+                        raise ValueError("Multiple releases have the exact requested tag")
+                    found = candidate
+            if len(batch) < 100:
+                return found
+            page += 1
 
     def assert_tag_checkout(self, tag: str) -> None:
         reference = self.request("git/ref/tags/" + urllib.parse.quote(tag, safe=""))
