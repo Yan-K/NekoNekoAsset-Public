@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "version": "0.2.0",
-  "sourceSha256": "40d3b66d5a6c84365b95551ac1c6edcd60e9b223baebb67629411cb7dd66d3c7",
-  "verifiedAt": "2026-10-13T18:10:03.777817Z",
+  "sourceSha256": "294aa1b87552f1bded65a28c7ba77811ba9ba70d1e58e39e9b7951e4fb3c228e",
+  "verifiedAt": "2026-10-13T18:24:00.370666Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -57,10 +57,11 @@
     "verifierExecutableSha256": "da785ce3f5c2f7f6c59bb422f5642e4dcbaf13dc367a49a1b38b1354cf937ad0",
     "postVerificationTestOnlyChange": {
       "files": [
-        "app/src-tauri/src/taxonomy/mod.rs"
+        "app/src-tauri/src/taxonomy/mod.rs",
+        "app/src-tauri/src/taxonomy/phonetic.rs"
       ],
       "productionBytesUnchanged": true,
-      "reason": "Keep strict kana rejection and Windows fallback checks without assuming one OS dictionary pronunciation."
+      "reason": "Keep strict kana rejection/native fallback and bounded-input assertions; diagnose authored WinRT fixture failures without changing shipping code."
     }
   }
 }

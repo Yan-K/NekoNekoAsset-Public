@@ -88,8 +88,77 @@ mod tests {
         let reading = super::reading("星空猫").expect("Windows local phonetic analyzer");
         assert_eq!(reading, "ほしぞらねこ");
         assert_eq!(super::reading("星空猫"), Some(reading));
-        assert!(super::reading(&"星空".repeat(60)).is_some());
+        let bounded = super::reading(&"星空".repeat(60));
+        if bounded.is_none() {
+            diagnose_bounded_reading();
+        }
+        assert!(bounded.is_some());
         assert_eq!(super::reading("Synthetic English"), None);
         assert_eq!(super::reading("合成한국어"), None);
+    }
+
+
+    // Only authored synthetic input reaches this probe. Report native API stages
+    // and HRESULTs without adding catalogue text to test output.
+    fn diagnose_bounded_reading() {
+        use windows::{
+            core::{Error, HSTRING},
+            Globalization::JapanesePhoneticAnalyzer,
+            Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_SINGLETHREADED},
+        };
+        fn native_error(stage: &str, error: Error, chunk: usize, units: usize) -> String {
+            format!(
+                "stage={stage} hresult=0x{:08X} chunk={chunk} utf16Units={units}",
+                error.code().0 as u32
+            )
+        }
+        let cases = [
+            ("direct-99", vec!["星空".repeat(49) + "星"]),
+            ("direct-100", vec!["星空".repeat(50)]),
+            ("direct-101", vec!["星空".repeat(50) + "星"]),
+            ("punctuated-100", vec!["星空を見て猫と歩く。".repeat(10)]),
+            (
+                "punctuated-split-120",
+                vec!["星空を見て猫と歩く。".repeat(10), "星空を見て猫と歩く。".repeat(2)],
+            ),
+            ("kanji-split-120", vec!["星空".repeat(50), "星空".repeat(10)]),
+        ];
+        for (case, chunks) in cases {
+            let unit_counts: Vec<_> = chunks.iter().map(|input| input.encode_utf16().count()).collect();
+            let outcome = std::thread::spawn(move || -> Result<(usize, usize), String> {
+                unsafe { RoInitialize(RO_INIT_SINGLETHREADED) }
+                    .map_err(|e| native_error("RoInitialize", e, 0, 0))?;
+                struct Apartment;
+                impl Drop for Apartment {
+                    fn drop(&mut self) {
+                        unsafe { RoUninitialize() };
+                    }
+                }
+                let _apartment = Apartment;
+                let mut word_count = 0;
+                let mut output_units = 0;
+                for (chunk, input) in chunks.into_iter().enumerate() {
+                    let units = input.encode_utf16().count();
+                    let words = JapanesePhoneticAnalyzer::GetWords(&HSTRING::from(input))
+                        .map_err(|e| native_error("GetWords", e, chunk, units))?;
+                    let size = words
+                        .Size()
+                        .map_err(|e| native_error("Size", e, chunk, units))?;
+                    word_count += size as usize;
+                    for index in 0..size {
+                        let word = words
+                            .GetAt(index)
+                            .map_err(|e| native_error("GetAt", e, chunk, units))?;
+                        let reading = word
+                            .YomiText()
+                            .map_err(|e| native_error("YomiText", e, chunk, units))?;
+                        output_units += reading.len();
+                    }
+                }
+                Ok((word_count, output_units))
+            })
+            .join();
+            eprintln!("authored phonetic diagnostic case={case} utf16Units={unit_counts:?} outcome={outcome:?}");
+        }
     }
 }
