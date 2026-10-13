@@ -8,7 +8,7 @@ Preserve third-party licenses, notices and stable Unity `.meta` GUIDs.
 
 Windows x64 is the App distribution target. Install Visual Studio 2022 Build
 Tools with Desktop development with C++, WebView2, Node.js **24.19.0**, pnpm
-**11.25.0**, Python **3.12.14**, and Rust via rustup. `rust-toolchain.toml` selects
+**11.25.0**, Python **3.14.8**, and Rust via rustup. `rust-toolchain.toml` selects
 Rust **1.99.0** and the Windows MSVC target. Use the committed lockfiles.
 
 From the repository root:

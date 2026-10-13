@@ -190,6 +190,8 @@ impl UpdateState {
             }
             let updater = app
                 .updater_builder()
+                // Windows launch can fail after this callback; leave the App usable for retry.
+                .on_before_exit(|| {})
                 .timeout(Duration::from_secs(15))
                 .header("Cache-Control", "no-cache")
                 .map_err(|_| anyhow::anyhow!("updates_unavailable"))?

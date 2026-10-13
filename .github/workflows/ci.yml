@@ -22,7 +22,7 @@ jobs:
           node-version: 24.19.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - name: Install pinned tools
         shell: pwsh
         run: |
@@ -59,6 +59,6 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - name: Verify Bridge archive bytes, inventory and GUIDs
         run: python unity/scripts/package_bridge.py unity/Packages/com.yank.nekonekoasset.bridge build/bridge

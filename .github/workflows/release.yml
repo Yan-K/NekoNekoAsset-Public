@@ -31,7 +31,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - name: Check shared version, local verification and immutable release
         id: prepare
         env:
@@ -52,7 +52,7 @@ jobs:
           node-version: 24.19.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - name: Install pinned tools
         shell: pwsh
         run: |
@@ -126,7 +126,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - name: Package and verify all three Bridge formats
         run: python unity/scripts/package_bridge.py unity/Packages/com.yank.nekonekoasset.bridge build/release-bridge
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -151,7 +151,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.prepare.outputs.published != 'true'
         with:
@@ -184,7 +184,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: 3.12.14
+          python-version: 3.14.8
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - name: Regenerate both feeds from highest complete published version
         env:
