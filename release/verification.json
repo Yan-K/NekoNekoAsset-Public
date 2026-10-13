@@ -1,0 +1,59 @@
+{
+  "formatVersion": 1,
+  "version": "0.2.0",
+  "sourceSha256": "276adfe6ae695f25e3d2dd419b7b089c066e196321d41a045c59ba326d4ba466",
+  "verifiedAt": "2026-10-13T17:30:28.434186Z",
+  "checks": {
+    "storeMetadata": {
+      "passed": true,
+      "pageLimit": 5,
+      "autoDownload": false,
+      "fullScan": false,
+      "sources": [
+        "booth",
+        "gumroad",
+        "jinxxy"
+      ],
+      "failures": 0
+    },
+    "fileIdentity": {
+      "passed": true,
+      "failures": 0
+    },
+    "appUnityTransfer": {
+      "passed": true,
+      "receivedBytesMatch": true,
+      "importSucceeded": true,
+      "durableReceipt": true
+    }
+  },
+  "aggregateEvidence": {
+    "products": 171,
+    "attachedFiles": 1204,
+    "decodedThumbnails": 163,
+    "firstPublicationObservedBounds": {
+      "Jinxxy": {
+        "lowerSeconds": 7.223,
+        "upperSeconds": 12.371
+      },
+      "BOOTH": {
+        "lowerSeconds": 22.856,
+        "upperSeconds": 28.018
+      },
+      "Gumroad": {
+        "lowerSeconds": 48.886,
+        "upperSeconds": 54.057
+      }
+    },
+    "storeElapsedSeconds": {
+      "Gumroad": 182.173,
+      "BOOTH": 186.366,
+      "Jinxxy": 12.163
+    },
+    "authoredUnityFiles": 2,
+    "authoredUnityBytes": 1048921,
+    "unityFullRestartReceiptMatched": true,
+    "nativeUnityCoreAssertions": 76,
+    "verifierExecutableSha256": "da785ce3f5c2f7f6c59bb422f5642e4dcbaf13dc367a49a1b38b1354cf937ad0"
+  }
+}
