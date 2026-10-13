@@ -42,13 +42,14 @@ async function normalizeImage(file:File):Promise<AiImage> {
 type SearchScope='library'|'online'|'both';
 type Store='booth'|'gumroad'|'jinxxy';
 type DeleteState={id:string;ready:boolean};
+type UnconfirmedTurn={chatId:string;requestId:string;content:string;images:AiImage[];priorIds:string[]};
 const imageSource=(image:AiImage)=>`data:${image.mimeType};base64,${image.dataBase64}`;
 const sortChats=(chats:AiChatSummary[])=>[...chats].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
 function AiCatAvatar(){return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 9 4.5 4.8Q4.4 3.8 5.4 4.2L9 6.1Q12 5.2 15 6.1L18.6 4.2Q19.6 3.8 19.5 4.8L19 9Q21 11 21 14.5Q21 21 12 21Q3 21 3 14.5Q3 11 5 9Z"/></svg>;}
 
-export interface AiSuggestionsProps {locale:Locale;active?:boolean;onOpenProduct:(productId:string)=>void;avatarOptions?:{id:string;label:string}[];initialAvatarId?:string;onUpdateBlockedChange?:(blocked:boolean)=>void}
+export interface AiSuggestionsProps {locale:Locale;active?:boolean;frozen?:boolean;onOpenProduct:(productId:string)=>void;avatarOptions?:{id:string;label:string}[];initialAvatarId?:string;onUpdateBlockedChange?:(blocked:boolean)=>void}
 
-export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOptions=[],initialAvatarId='',onUpdateBlockedChange}:AiSuggestionsProps) {
+export default function AiSuggestions({locale,active=true,frozen=false,onOpenProduct,avatarOptions=[],initialAvatarId='',onUpdateBlockedChange}:AiSuggestionsProps) {
  const L=(key:string)=>aiSuggestionsText(locale,key);
  const [presetId,setPresetId]=useState('chat');
  const [historyMode,setHistoryMode]=useState(false);
@@ -79,7 +80,8 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
  const [renameDraft,setRenameDraft]=useState('');
  const [deleting,setDeleting]=useState<DeleteState|null>(null);
  const [historyBusy,setHistoryBusy]=useState(false);
- useEffect(()=>{onUpdateBlockedChange?.(!!prompt||!!images.length||!!editor||!!renaming||!!deleting||busy||imageBusy||historyBusy);},[prompt,images.length,editor,renaming,deleting,busy,imageBusy,historyBusy,onUpdateBlockedChange]);
+ const [unconfirmed,setUnconfirmed]=useState<UnconfirmedTurn|null>(null);
+ useEffect(()=>{onUpdateBlockedChange?.(!!prompt||!!images.length||!!editor||!!renaming||!!deleting||busy||imageBusy||historyBusy||!!unconfirmed);},[prompt,images.length,editor,renaming,deleting,busy,imageBusy,historyBusy,unconfirmed,onUpdateBlockedChange]);
  useEffect(()=>()=>{onUpdateBlockedChange?.(false);},[onUpdateBlockedChange]);
  const currentRequest=useRef<string|null>(null);
  const cancelRequested=useRef(false);
@@ -93,7 +95,7 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
  const imageInput=useRef<HTMLInputElement>(null);
  const main=useRef<HTMLDivElement>(null);
  const messages=useRef<HTMLDivElement>(null);
- const latest=useRef({active,busy,loading,images,entries,entryId});latest.current={active,busy,loading,images,entries,entryId};
+ const latest=useRef({active,frozen,busy,loading,images,entries,entryId,unconfirmed});latest.current={active,frozen,busy,loading,images,entries,entryId,unconfirmed};
  const presets=[...getBuiltinAiPresets(locale),...customPresets.map(preset=>({...preset,builtin:false}))];
  const selectedPreset=presets.find(preset=>preset.id===presetId)??{title:L('customPreset'),description:L('customPresetDescription')};
  const provider=entries.find(entry=>entry.id===entryId);
@@ -101,8 +103,8 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
  const keyMissing=!!provider&&provider.keyRequired&&!provider.keyPresent;
  const hasOnline=scope!=='library';
  const promptTooLong=encoder.encode(prompt.trim()).length>4000;
- const locked=loading||busy||chatLoading||historyBusy;
- const canSend=active&&!loading&&!!provider&&!locked&&!imageBusy&&!keyMissing&&!promptTooLong&&(!images.length||vision)&&(!!prompt.trim()||images.length>0)&&(!hasOnline||stores.length>0);
+ const locked=loading||busy||chatLoading||historyBusy||!!unconfirmed;
+ const canSend=active&&!frozen&&!loading&&!!provider&&!locked&&!imageBusy&&!keyMissing&&!promptTooLong&&(!images.length||vision)&&(!!prompt.trim()||images.length>0)&&(!hasOnline||stores.length>0);
 
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;conversion.current++;navigation.current++;if(deleteTimer.current)clearTimeout(deleteTimer.current);const id=currentRequest.current;currentRequest.current=null;if(id)void cancelAiSuggestion(id).catch(()=>{});};},[]);
  useEffect(()=>{
@@ -122,15 +124,16 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
  useEffect(()=>{
   let disposed=false;let unlisten:(()=>void)|undefined;
   if(active&&isTauri())void getCurrentWebview().onDragDropEvent(event=>{
+   if(latest.current.frozen){setDropActive(false);return;}
    if(event.payload.type==='enter'||event.payload.type==='over'){setDropActive(true);return;}
    setDropActive(false);if(event.payload.type!=='drop')return;
    const paths=event.payload.paths;
    const state=latest.current;const selected=state.entries.find(entry=>entry.id===state.entryId);
-   if(!state.active||state.busy||state.loading||imageLock.current)return;
+   if(!state.active||state.busy||state.loading||state.unconfirmed||imageLock.current)return;
    if(!selected?.visionSupported){setError('ai_images_unavailable');return;}
    if(paths.length+state.images.length>MAX_IMAGES){setError('ai_image_limit');return;}
-   imageLock.current=true;setImageBusy(true);setError('');const epoch=conversion.current;
-   void readAiDroppedImages(paths).then(value=>{if(mounted.current&&epoch===conversion.current)setImages(previous=>[...previous,...value]);}).catch(value=>{if(mounted.current&&epoch===conversion.current)setError(errorCode(value));}).finally(()=>{imageLock.current=false;if(mounted.current)setImageBusy(false);});
+   imageLock.current=true;onUpdateBlockedChange?.(true);setImageBusy(true);setError('');const epoch=conversion.current;
+   void readAiDroppedImages(paths).then(value=>{if(mounted.current&&epoch===conversion.current){if(value.length)onUpdateBlockedChange?.(true);setImages(previous=>[...previous,...value]);}}).catch(value=>{if(mounted.current&&epoch===conversion.current)setError(errorCode(value));}).finally(()=>{imageLock.current=false;if(mounted.current)setImageBusy(false);});
   }).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
   return()=>{disposed=true;unlisten?.();};
  },[active]);
@@ -159,12 +162,12 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
   finally{if(mounted.current)setHistoryBusy(false);}
  }
  async function addImages(files:File[]) {
-  if(!active||loading||busy||imageLock.current)return;
+  if(!active||frozen||loading||busy||unconfirmed||imageLock.current)return;
   if(!vision){setError('ai_images_unavailable');return;}
   const accepted=files.filter(file=>file.type.startsWith('image/'));if(!accepted.length){setError('ai_image_invalid');return;}
   if(accepted.length+images.length>MAX_IMAGES){setError('ai_image_limit');return;}
-  imageLock.current=true;setImageBusy(true);setError('');const epoch=conversion.current;
-  try{const normalized:AiImage[]=[];for(const file of accepted)normalized.push(await normalizeImage(file));if(mounted.current&&epoch===conversion.current)setImages(previous=>[...previous,...normalized]);}
+  imageLock.current=true;onUpdateBlockedChange?.(true);setImageBusy(true);setError('');const epoch=conversion.current;
+  try{const normalized:AiImage[]=[];for(const file of accepted)normalized.push(await normalizeImage(file));if(mounted.current&&epoch===conversion.current){onUpdateBlockedChange?.(true);setImages(previous=>[...previous,...normalized]);}}
   catch(value){if(mounted.current&&epoch===conversion.current)setError(errorCode(value));}
   finally{imageLock.current=false;if(mounted.current)setImageBusy(false);}
  }
@@ -173,24 +176,34 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
  async function cancel(){const id=currentRequest.current;if(!id)return;cancelRequested.current=true;setStatus('ai_chat_cancelled');if(!requestSubmitted.current)return;try{await cancelAiSuggestion(id);}catch(value){if(mounted.current)setError(errorCode(value));}}
  async function send(){
   if(!canSend||currentRequest.current)return;
-  const requestId=crypto.randomUUID();currentRequest.current=requestId;cancelRequested.current=false;requestSubmitted.current=false;setBusy(true);setError('');setStatus('');resetConfirmation();setHistoryMode(true);
-  const content=prompt.trim();const attached=[...images];const sentAt=new Date().toISOString();let sessionId=chatId;let accepted=false;
+  const requestId=crypto.randomUUID();currentRequest.current=requestId;cancelRequested.current=false;requestSubmitted.current=false;onUpdateBlockedChange?.(true);setBusy(true);setError('');setStatus('');resetConfirmation();setHistoryMode(true);
+  const content=prompt.trim();const attached=[...images];const sentAt=new Date().toISOString();let sessionId=chatId;let draft:UnconfirmedTurn|null=null;
   try{
    if(!sessionId){const detail=await createAiChat(presetId);sessionId=detail.chat.id;if(!mounted.current||currentRequest.current!==requestId)return;setChatId(sessionId);updateSummary(detail.chat);}
    if(cancelRequested.current)return;
-   setTurns(previous=>[...previous,{id:requestId,role:'user',content,images:attached,createdAt:sentAt,status:'pending'}]);setPrompt('');setImages([]);setImageTrayOpen(false);if(imageInput.current)imageInput.current.value='';accepted=true;requestSubmitted.current=true;
+   draft={chatId:sessionId,requestId,content,images:attached,priorIds:turns.map(turn=>turn.id)};setUnconfirmed(draft);setTurns(previous=>[...previous,{id:requestId,role:'user',content,images:attached,createdAt:sentAt,status:'pending'}]);setPrompt('');setImages([]);setImageTrayOpen(false);if(imageInput.current)imageInput.current.value='';requestSubmitted.current=true;
    await sendAiSuggestion({requestId,chatId:sessionId,entryId,appLanguage:locale,prompt:content,preset:'chat',scope,stores:hasOnline?[...stores]:[],...(category?{category}:{}),...(avatarId?{avatarId}:{}),images:attached});
   }catch(value){if(mounted.current&&currentRequest.current===requestId)setError(errorCode(value));}
   finally{
    if(mounted.current&&currentRequest.current===requestId){
     if(sessionId){
-     try{const detail=await getAiChat(sessionId);if(mounted.current&&currentRequest.current===requestId){setTurns(detail.messages);updateSummary(detail.chat);if(accepted&&!detail.messages.some(turn=>turn.role==='user'&&Date.parse(turn.createdAt)>=Date.parse(sentAt))){setPrompt(content);setImages(attached);}}}
+     try{const detail=await getAiChat(sessionId);if(mounted.current&&currentRequest.current===requestId){setTurns(detail.messages);updateSummary(detail.chat);if(draft)resolveDraft(draft,detail.messages);}}
      catch(value){if(mounted.current){setError(errorCode(value));setTurns(previous=>previous.map(turn=>turn.id===requestId?{...turn,status:'failed'}:turn));}}
     }
     currentRequest.current=null;requestSubmitted.current=false;setBusy(false);
    }
   }
  }
+ function resolveDraft(draft:UnconfirmedTurn,durable:AiStoredTurn[]){
+  const recorded=durable.some(turn=>turn.role==='user'&&!draft.priorIds.includes(turn.id)&&turn.content===draft.content&&turn.images.length===draft.images.length);
+  if(!recorded){onUpdateBlockedChange?.(true);setPrompt(draft.content);setImages(draft.images);}setUnconfirmed(null);
+ }
+ async function checkUnconfirmed(){
+  const draft=unconfirmed;if(!draft||busy||chatLoading||frozen)return;setChatLoading(true);setError('');
+  try{const detail=await getAiChat(draft.chatId);if(mounted.current){setTurns(detail.messages);updateSummary(detail.chat);resolveDraft(draft,detail.messages);}}
+  catch(value){if(mounted.current)setError(errorCode(value));}finally{if(mounted.current)setChatLoading(false);}
+ }
+ function discardUnconfirmed(){if(!unconfirmed||busy||chatLoading||frozen)return;setTurns(previous=>previous.filter(turn=>turn.id!==unconfirmed.requestId));setUnconfirmed(null);setError('');}
  async function openPage(url:string){try{await openExternal(url);}catch(value){if(mounted.current)setError(errorCode(value));}}
  const storeLabel=(store:string)=>store==='booth'?'BOOTH':store==='gumroad'?'Gumroad':store==='jinxxy'?'Jinxxy':store==='local'?L('library'):store;
  const apiLabel=(entry:AiEntry)=>{const label=`${entry.provider} · ${entry.model}`;if(entries.filter(value=>value.provider===entry.provider&&value.model===entry.model).length<2)return label;let host='';try{host=new URL(entry.endpoint).host;}catch{}return `${label} · ${host||entry.id.slice(0,6)}${entries.filter(value=>value.provider===entry.provider&&value.model===entry.model&&value.endpoint===entry.endpoint).length>1?' · '+entry.id.slice(0,6):''}`;};
@@ -239,7 +252,7 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
       {turn.images?.length>0&&<div className="ai-sent-images">{turn.images.map((image,index)=><img src={imageSource(image)} key={index} alt={`${L('image')} ${index+1}`}/>)}</div>}
       {turn.content&&<div className="ai-chat-message">{turn.content}</div>}
       {turn.status==='pending'&&<div className="ai-chat-note" role="status">{L('sending')}</div>}
-      {turn.status&&turn.status!=='sent'&&turn.status!=='pending'&&<div className="ai-chat-error">{L(turn.status==='cancelled'?'ai_chat_cancelled':'ai_chat_failed')}</div>}
+      {turn.status&&turn.status!=='sent'&&turn.status!=='pending'&&turn.id!==unconfirmed?.requestId&&<div className="ai-chat-error">{L(turn.status==='cancelled'?'ai_chat_cancelled':'ai_chat_failed')}</div>}
       {(['library','store'] as const).map(origin=>{const recommendations=turn.response?.recommendations.filter(result=>result.origin===origin)??[];return recommendations.length>0&&<div key={origin}><div className="ai-chat-result-heading">{L(origin==='library'?'library':'online')}</div><div className="ai-chat-results">{recommendations.map(resultCard)}</div></div>;})}
       {turn.response?.searchStatus.filter(item=>item.status!=='ok').map(item=><div className="ai-chat-note" key={item.provider}>{storeLabel(item.provider)} · {L(item.status==='unavailable'?'storeUnavailable':'noResults')}</div>)}
      </div>
@@ -249,13 +262,14 @@ export default function AiSuggestions({locale,active=true,onOpenProduct,avatarOp
    <form className="ai-chat-composer" onSubmit={event=>{event.preventDefault();void send();}}>
     <div className="ai-chat-composer-row">
      <div className="ai-chat-image-zone"><input ref={imageInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={event=>{const files=Array.from(event.target.files??[]);event.target.value='';void addImages(files);}}/>
-      <button type="button" className="ai-add-images" disabled={loading||busy||imageBusy||!vision||images.length>=MAX_IMAGES} title={!vision?L('ai_images_unavailable'):L('addImages')} onClick={()=>imageInput.current?.click()}>{images.length?<img src={imageSource(images[0])} alt={L('image')}/>:<ImagePlus size={24}/>}<span>{L('addImages')}</span></button>
+      <button type="button" className="ai-add-images" disabled={locked||imageBusy||!vision||images.length>=MAX_IMAGES} title={!vision?L('ai_images_unavailable'):L('addImages')} onClick={()=>imageInput.current?.click()}>{images.length?<img src={imageSource(images[0])} alt={L('image')}/>:<ImagePlus size={24}/>}<span>{L('addImages')}</span></button>
       {images.length>0&&<button type="button" className="ai-image-count" aria-label={L('attachments')} aria-expanded={imageTrayOpen} onClick={()=>setImageTrayOpen(value=>!value)}>{images.length}</button>}
       {images.length>0&&imageTrayOpen&&<div className="ai-chat-images">{images.map((image,index)=><div className="ai-chat-image" key={index}><img src={imageSource(image)} alt={`${L('image')} ${index+1}`}/><button type="button" disabled={busy||imageBusy} aria-label={`${L('removeImage')} ${index+1}`} onClick={()=>setImages(previous=>previous.filter((_,position)=>position!==index))}><X size={12}/></button></div>)}</div>}
      </div>
-     <textarea aria-label={L('prompt')} aria-invalid={promptTooLong} placeholder={L('promptPlaceholder')} value={prompt} disabled={busy||chatLoading} maxLength={4000} onChange={event=>setPrompt(event.target.value)} onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={()=>{composing.current=false;}} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!composing.current&&!event.nativeEvent.isComposing&&event.nativeEvent.keyCode!==229){event.preventDefault();void send();}}}/>
+     <textarea aria-label={L('prompt')} aria-invalid={promptTooLong} placeholder={L('promptPlaceholder')} value={prompt} disabled={busy||chatLoading||!!unconfirmed} maxLength={4000} onChange={event=>setPrompt(event.target.value)} onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={()=>{composing.current=false;}} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!composing.current&&!event.nativeEvent.isComposing&&event.nativeEvent.keyCode!==229){event.preventDefault();void send();}}}/>
      <div className="ai-chat-composer-actions">{busy?<button type="button" className="ai-chat-send" onClick={()=>void cancel()}><Square size={13}/>{L('cancel')}</button>:<button type="submit" className="primary ai-chat-send" disabled={!canSend}><Send size={15}/>{L('send')}</button>}<select aria-label={L('api')} title={provider?apiLabel(provider):L('selectApi')} value={entryId} disabled={loading||busy} onChange={event=>setEntryId(event.target.value)}>{!entries.length&&<option value="">{L('selectApi')}</option>}{entries.map(entry=><option key={entry.id} value={entry.id}>{apiLabel(entry)}</option>)}</select></div>
     </div>
+    {unconfirmed&&!busy&&<div className="ai-chat-unconfirmed" role="status"><span>{L('unconfirmedMessage')}</span><button type="button" disabled={chatLoading||frozen} onClick={()=>void checkUnconfirmed()}>{L('checkHistory')}</button><button type="button" disabled={chatLoading||frozen} onClick={discardUnconfirmed}>{L('discardPending')}</button></div>}
     {!loading&&!entries.length&&<div className="ai-chat-error" role="alert">{aiSettingsText(locale,'ai_not_configured')}</div>}{keyMissing&&<div className="ai-chat-error" role="alert">{L('ai_key_missing')}</div>}
     {!loading&&!vision&&images.length>0&&<div className="ai-chat-note" role="status">{L('ai_images_unavailable')}</div>}{hasOnline&&!stores.length&&<div className="ai-chat-note">{L('ai_online_scope_empty')}</div>}
     {promptTooLong&&<div className="ai-chat-error" role="alert">{L('ai_prompt_too_long')}</div>}{error&&<div className="ai-chat-error" role="alert">{L(error)}</div>}{status&&<div className="ai-chat-note" role="status">{L(status)}</div>}

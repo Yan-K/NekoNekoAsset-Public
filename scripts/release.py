@@ -105,6 +105,17 @@ def check_verification(current: str) -> None:
         raise ValueError("The current App sender / actual Unity import / durable receipt gate did not pass")
 
 
+def check_public_paths(paths: list[str]) -> None:
+    if any(path in FORBIDDEN_FILES or path.startswith(FORBIDDEN_PREFIXES) for path in paths):
+        raise ValueError("Internal documentation, tooling or portable inputs are tracked in the public repository")
+    if any(part in {"node_modules", "target", "dist", "__pycache__"} for path in paths for part in Path(path).parts):
+        raise ValueError("Generated build inputs must not be tracked")
+    if any(path.lower().endswith((".pyc", ".pyo")) for path in paths):
+        raise ValueError("Generated Python bytecode must not be tracked")
+    if any(path.endswith((".sqlite", ".sqlite3", ".db", ".cookies", ".cookie", ".key", ".pem")) for path in paths):
+        raise ValueError("Private databases or credential files must not be tracked")
+
+
 def check(tag: str | None, verification: bool, allow_internal: bool = False) -> str:
     current = version()
     if tag and tag != f"v{current}":
@@ -124,13 +135,7 @@ def check(tag: str | None, verification: bool, allow_internal: bool = False) -> 
         raise ValueError("Updates must require a version-bound trusted signature")
     release_config()
     if not allow_internal:
-        paths = tracked_paths()
-        if any(path in FORBIDDEN_FILES or path.startswith(FORBIDDEN_PREFIXES) for path in paths):
-            raise ValueError("Internal documentation, tooling or portable inputs are tracked in the public repository")
-        if any(part in {"node_modules", "target", "dist"} for path in paths for part in Path(path).parts):
-            raise ValueError("Generated build inputs must not be tracked")
-        if any(path.endswith((".sqlite", ".sqlite3", ".db", ".cookies", ".cookie", ".key", ".pem")) for path in paths):
-            raise ValueError("Private databases or credential files must not be tracked")
+        check_public_paths(tracked_paths())
     if verification:
         if MARKER not in tracked_paths():
             raise ValueError("A tracked, current local release verification marker is required")

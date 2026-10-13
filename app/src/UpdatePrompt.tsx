@@ -6,9 +6,9 @@ import {checkUpdates,errorCode,installUpdate,openExternal,subscribeUpdateProgres
 import {updateText} from './update-i18n';
 import './update.css';
 
-export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,installBlocked,open,request,onOpenChange,onAvailableChange,onBeforeInstall}:{
+export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,installBlocked,isInstallBlocked,open,request,onOpenChange,onAvailableChange,onBeforeInstall}:{
  locale:Locale;currentVersion:string;ready:boolean;canPrompt:boolean;installBlocked:boolean;open:boolean;request:number;
- onOpenChange:(open:boolean)=>void;onAvailableChange:(available:boolean)=>void;onBeforeInstall:()=>Promise<void>;
+ onOpenChange:(open:boolean)=>void;onAvailableChange:(available:boolean)=>void;onBeforeInstall:()=>Promise<void>;isInstallBlocked:()=>boolean;
 }){
  const L=(key:string)=>updateText(locale,key);
  const [result,setResult]=useState<UpdateCheck|null>(null),[checking,setChecking]=useState(false),[installing,setInstalling]=useState(false),[error,setError]=useState(''),[progress,setProgress]=useState<UpdateProgress|null>(null),[pendingPrompt,setPendingPrompt]=useState(false);
@@ -32,7 +32,7 @@ export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,inst
  async function install(){
   const available=result?.app.available;if(!available||installBlocked||operation.current)return;
   operation.current=true;setInstalling(true);setError('');setProgress(null);let stop:(()=>void)|undefined;
-  try{await onBeforeInstall();stop=await subscribeUpdateProgress(value=>{if(mounted.current)setProgress(value);});await installUpdate(available.version);}
+  try{await onBeforeInstall();stop=await subscribeUpdateProgress(value=>{if(mounted.current)setProgress(value);});if(isInstallBlocked())throw new Error('updates_busy');await installUpdate(available.version);}
   catch(error){if(mounted.current)setError(errorCode(error));}
   finally{stop?.();operation.current=false;if(mounted.current){setInstalling(false);setProgress(null);}}
  }

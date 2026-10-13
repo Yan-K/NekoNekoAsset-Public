@@ -6,6 +6,8 @@ build/
 coverage/
 .vite/
 *.log
+__pycache__/
+*.py[cod]
 
 # Local editor/OS state
 .vscode/
@@ -57,10 +59,22 @@ obj/
 *.tsbuildinfo
 
 
-# Internal instructions and agent documentation stay local.
+# Internal instructions, first-party drafts and verification tools stay local.
 /AGENTS.md
 /AgentDocs/
 /.agents/
 /.codex/
+/README.md
+/app/README.md
+/app/.gitignore
+/app/checks/
+/app/portable/
+/app/scripts/
 /app/src-tauri/gen/schemas/
+/unity/.gitignore
 /unity/.runs/
+/unity/verification/
+/unity/Packages/com.yank.nekonekoasset.bridge/README.md
+/unity/Packages/com.yank.nekonekoasset.bridge/README.md.meta
+/unity/scripts/*
+!/unity/scripts/package_bridge.py

@@ -89,6 +89,8 @@
 .ai-chat-composer-actions select { width:100%;font-size:11px;text-overflow:ellipsis; }
 .ai-chat-note { margin-top:6px;color:var(--muted);font-size:11px; }
 .ai-chat-error { margin-top:6px;color:var(--negative);overflow-wrap:anywhere; }
+.ai-chat-unconfirmed { display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:6px;color:var(--warning);font-size:11px; }
+.ai-chat-unconfirmed>button { font-size:11px; }
 .ai-drop-active .ai-chat-composer { outline:2px dashed var(--accent);outline-offset:-4px; }
 .ai-preset-editor-backdrop { position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;padding:20px;background:#0006; }
 .ai-preset-editor { display:flex;flex-direction:column;width:min(680px,100%);max-height:100%;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow); }

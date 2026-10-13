@@ -83,6 +83,15 @@ class ReleaseChecks(unittest.TestCase):
         source.write_bytes(b"changed\n")
         self.assertNotEqual(release.source_digest(), original)
 
+    def test_public_sources_reject_generated_python_cache(self):
+        sources = ["scripts/release.py", "scripts/test_release.py", "unity/scripts/package_bridge.py"]
+        release.check_public_paths(sources)
+        for generated in ("scripts/__pycache__/release.cpython-312.pyc", "unity/scripts/__pycache__/unexpected.txt",
+                          "release.pyc", "scripts/release.pyo"):
+            with self.subTest(path=generated):
+                with self.assertRaisesRegex(ValueError, "Generated"):
+                    release.check_public_paths(sources + [generated])
+
     def test_completed_gate_passes_and_stale_gate_fails(self):
         marker = self.marker()
         self.write_json(release.MARKER, marker)
