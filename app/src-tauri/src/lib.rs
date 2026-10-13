@@ -1536,7 +1536,10 @@ pub fn run() {
                 });
             });
             let handle = app.handle().clone();
+            let startup_gate = handle.state::<NativeOperationGate>().0.clone();
             tauri::async_runtime::spawn(async move {
+                // A failed installer releases this gate and startup work resumes normally.
+                let startup_permit = startup_gate.clone().read_owned().await;
                 let mut previous = catalogue.change_domains().unwrap_or((0, 0, 0));
                 let setup_was_complete = catalogue
                     .get("preferences", "app")
@@ -1551,6 +1554,7 @@ pub fn run() {
                 let _ = stores.start(handle.clone()).await;
                 let _ = ai_jobs.start(&handle).await;
                 let _ = unity.start(&handle).await;
+                drop(startup_permit);
                 #[cfg(debug_assertions)]
                 let skip_startup_sync = std::env::var_os("NNA_DATA_DIR").is_some()
                     && std::env::var("NNA_SKIP_STARTUP_SYNC").as_deref() == Ok("1");
@@ -1559,6 +1563,7 @@ pub fn run() {
                 if !skip_startup_sync && setup_was_complete {
                     // Native local state renders before authenticated network work.
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let _sync_permit = startup_gate.read_owned().await;
                     let _ = sync_connected_accounts(&handle, &catalogue, &stores).await;
                 }
                 loop {

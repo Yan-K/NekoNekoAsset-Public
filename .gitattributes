@@ -1,4 +1,7 @@
 # Preserve upstream license/notice bytes and their original whitespace.
 /app/src-tauri/resources/** -text -whitespace
+# Dependency notice ledgers attest the exact lockfile bytes.
+/app/pnpm-lock.yaml -text
+/app/src-tauri/Cargo.lock -text
 # Unity archives and provenance are verified against exact source/meta bytes.
 /unity/Packages/** -text -whitespace
