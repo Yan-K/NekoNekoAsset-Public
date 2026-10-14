@@ -48,10 +48,14 @@ impl Drop for Fixture {
 }
 
 fn product(c: &Catalogue, id: &str, provider: &str) {
+    let mut source = json!({"id":id,"provider":provider,"sourceTitle":id,"sourceCategory":{"name":"Hair"},"custom":provider=="local"});
+    if provider == "gumroad" {
+        source["sourceDescription"] = json!("Authored hair for VRChat.");
+    }
     c.put(
         "product",
         id,
-        json!({"id":id,"provider":provider,"sourceTitle":id,"sourceCategory":{"name":"Hair"},"custom":provider=="local"}),
+        source,
     )
     .unwrap();
 }

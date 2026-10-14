@@ -272,8 +272,15 @@ fn suggestions(
         .map(|tag| text(tag, 256))
         .filter(|tag| !tag.is_empty())
         .collect();
+    // Gumroad's bound JSON body is already decoded plain text; do not parse its
+    // literal angle brackets or HTML entities a second time.
+    let description = if provider == Some(StoreProvider::Gumroad) {
+        description.to_owned()
+    } else {
+        text(description, 40000)
+    };
     let mut product =
-        json!({"sourceTitle":title,"sourceDescription":text(description,40000),"sourceTags":tags});
+        json!({"sourceTitle":title,"sourceDescription":description,"sourceTags":tags});
     if let Some(provider) = provider { product["provider"] = json!(provider.key()); }
     if let Some(category) = source_category { product["sourceCategory"] = category.clone(); }
     let category = crate::taxonomy::infer_product_category(&product)["category"].clone();
@@ -286,7 +293,7 @@ fn suggestions(
 }
 
 fn gumroad_values(url: &Url, value: &Value) -> Result<Value> {
-    super::gumroad::parse_public_product(value, None)?;
+    let observation = super::gumroad::parse_public_product(value, None)?;
     if let Some(permalink) = value["short_permalink"]
         .as_str()
         .or_else(|| value["permalink"].as_str())
@@ -306,13 +313,13 @@ fn gumroad_values(url: &Url, value: &Value) -> Result<Value> {
     suggestions(
         url,
         value["name"].as_str().unwrap_or(""),
-        value["description"].as_str().unwrap_or(""),
+        observation.description.as_deref().unwrap_or(""),
         tags,
         value["preview_url"]
             .as_str()
             .or_else(|| value["cover_image_url"].as_str())
             .or_else(|| value["thumbnail_url"].as_str()),
-        None,
+        Some(StoreProvider::Gumroad),
         None,
     )
 }
@@ -432,6 +439,26 @@ mod tests {
             "description":"$a", "product_type":"DIGITAL_PRODUCT",
             "files":[{"secret":"NOT_PRESENTATION"}], "license":"NOT_PRESENTATION"
         })
+    }
+
+    #[test]
+    fn gumroad_url_fetch_requires_explicit_title_or_visible_product_body_vrchat_evidence() {
+        let source = Url::parse("https://authored.gumroad.com/l/shader").unwrap();
+        let mut product = json!({"api_version":1,"id":"authored-product",
+            "short_permalink":"shader","name":"Authored Shader",
+            "tags":["Shader","VRChat"],"description":"Blender shader"});
+        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "NonVRChat");
+        product["description"] = json!("<p>Shader for VR<strong>Chat</strong></p>");
+        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "Shader");
+        product["description"] = json!("<a href='https://example.invalid/VRChat' title='VRChat'>Read manual</a><img alt='VRC'><script>VRChat</script><style>VRC</style><nav>VRChat</nav>");
+        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "NonVRChat");
+        product["name"] = json!("Authored VRC Shader");
+        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "Shader");
+        product["name"] = json!("Authored Shader");
+        product["description"] = json!("Shader for &lt;VRChat&gt;");
+        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "Shader");
+        product["description"] = Value::Null;
+        assert_eq!(gumroad_values(&source, &product).unwrap()["category"], "NonVRChat");
     }
 
     fn authored_flight(product: Value, description: Option<&str>) -> String {

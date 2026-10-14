@@ -1545,10 +1545,9 @@ impl GumroadService {
                         self.cancelled(content_job)?;
                         let content = self.expanded_content(client, &row, None).await;
                         let public = if let Ok(observation) = &content {
-                            if needs_public_quote(observation)
-                                && selected.as_ref().is_none_or(|ids| {
-                                    ids.contains(&observation.catalogue_product_id())
-                                })
+                            if selected.as_ref().is_none_or(|ids| {
+                                ids.contains(&observation.catalogue_product_id())
+                            })
                             {
                                 if let Some(url) = &observation.public_product_url {
                                     let future = shared_public_read(
@@ -1626,8 +1625,11 @@ impl GumroadService {
                                     public_products
                                         .get(&observation.product_id)
                                         .and_then(Option::as_ref),
-                                    public_errors.get(&observation.product_id),
-                                    public_unavailable.contains(&observation.product_id),
+                                    public_errors
+                                        .get(&observation.product_id)
+                                        .filter(|_| needs_public_quote(&observation)),
+                                    needs_public_quote(&observation)
+                                        && public_unavailable.contains(&observation.product_id),
                                     &mut checkpoint,
                                 )?;
                                 for product in published {
@@ -1684,13 +1686,9 @@ impl GumroadService {
                         project_public(
                             &mut prepared,
                             observation,
-                            needs_public_quote(observation)
-                                .then(|| {
-                                    public_products
-                                        .get(&observation.product_id)
-                                        .and_then(Option::as_ref)
-                                })
-                                .flatten(),
+                            public_products
+                                .get(&observation.product_id)
+                                .and_then(Option::as_ref),
                         )?;
                         if let Some(error) = public_errors
                             .get(&observation.product_id)
@@ -2577,9 +2575,8 @@ fn project(
 }
 
 fn needs_public_quote(observation: &ContentObservation) -> bool {
-    // This endpoint contributes only a base listing quote and listing billing flags.
-    // It cannot supply the owned option's current price; content already supplies
-    // identity/title/files/date. Paid evidence is independent and never inferred.
+    // Public bodies enrich every product. Listing quotes and billing flags do not
+    // establish an owned option's current price. Paid evidence is independent.
     observation.variant_id.is_none()
 }
 
@@ -2594,7 +2591,7 @@ fn project_public(
         .ok_or_else(|| anyhow::anyhow!("PRODUCT_UNAVAILABLE"))?;
     product["priceCheckedAt"] = json!(now());
     product["priceRefreshErrorCode"] = Value::Null;
-    product["priceRefreshState"] = json!(if public.is_some() {
+    product["priceRefreshState"] = json!(if public.is_some() && needs_public_quote(observation) {
         "observed"
     } else {
         "unavailable"
@@ -2604,6 +2601,11 @@ fn project_public(
             public.product_id == observation.product_id,
             "GUMROAD_PRODUCT_BINDING_UNPROVEN"
         );
+        if let Some(description) = &public.description {
+            product["sourceDescription"] = json!(description);
+        }
+    }
+    if let Some(public) = public.filter(|_| needs_public_quote(observation)) {
         let amount = public
             .current_price
             .as_ref()
@@ -2950,6 +2952,69 @@ mod tests {
             catalogue.get("overlay", product).unwrap().unwrap()["note"],
             "Manual note"
         );
+    }
+
+    #[test]
+    fn public_body_enriches_owned_option_without_promoting_listing_price_or_unknown_body() {
+        let path = std::env::temp_dir().join(format!(
+            "nna-gumroad-public-body-{}", uuid::Uuid::new_v4()
+        ));
+        let catalogue = Catalogue::open(&path).unwrap();
+        let account = "authored-account";
+        let product = "gumroad:authored-product";
+        let acquisition_id = format!(
+            "gumroad:{account}:{}", fingerprint(&json!("authored-purchase"))
+        );
+        catalogue.put("product", product, json!({
+            "id":product, "store":"Gumroad", "provider":"gumroad",
+            "sourceDescription":"Previously observed VRChat body", "sourcePriceCents":1250,
+            "price":12.5, "priceCurrency":"USD", "priceBasis":"gumroadPublicPriceCents",
+            "isPayWhatYouWant":false, "isRecurringBilling":false
+        })).unwrap();
+        catalogue.put("acquisition", &acquisition_id, json!({
+            "id":acquisition_id, "accountId":account, "productId":product,
+            "paidPrice":7.5, "paidCurrency":"USD", "paidPriceBasis":"productLineTotal"
+        })).unwrap();
+        let card = LibraryPurchase {
+            purchase_id: "authored-purchase".into(), title: Some("Authored hair".into()),
+            author: None, thumbnail_url: None, native_type: Some("digital".into()),
+            variant_name: Some("Owned option".into()), archived: false, content_route: None,
+        };
+        let mut observation = content(
+            "authored-product", "authored-purchase", "authored-file", "AUTHORED_CAPABILITY"
+        );
+        observation.variant_id = Some("authored-option".into());
+        observation.public_product_url = Some(
+            Url::parse("https://authored.gumroad.com/l/product").unwrap()
+        );
+        assert!(!needs_public_quote(&observation));
+        for (body, expected) in [
+            (Some(json!("<p>Hair &amp; accessories for VRChat</p>")), "Hair & accessories for VRChat"),
+            (None, "Hair & accessories for VRChat"),
+            (Some(Value::Null), "Hair & accessories for VRChat"),
+            (Some(json!("")), ""),
+        ] {
+            let mut value = json!({"api_version":1,"id":"authored-product",
+                "price_cents":9999,"currency_code":"usd","price_formatted":"$99.99",
+                "is_pay_what_you_want":true,"is_recurring_billing":true});
+            if let Some(body) = body { value["description"] = body; }
+            let public = gumroad::parse_public_product(&value, Some("authored-product")).unwrap();
+            let mut batch = RecordBatch::new(&catalogue);
+            project(&mut batch, account, &card, &observation).unwrap();
+            project_public(&mut batch, &observation, Some(&public)).unwrap();
+            batch.commit().unwrap();
+            let stored = catalogue.get("product", product).unwrap().unwrap();
+            assert_eq!(stored["sourceDescription"], expected);
+            for field in ["price", "priceCurrency", "priceBasis", "priceFormatted"] {
+                assert!(stored[field].is_null(), "{field}");
+            }
+            assert_eq!(stored["sourcePriceCents"], 1250);
+            assert_eq!(stored["isPayWhatYouWant"], false);
+            assert_eq!(stored["isRecurringBilling"], false);
+            assert_eq!(stored["priceRefreshState"], "unavailable");
+            assert_eq!(catalogue.get("acquisition", &acquisition_id).unwrap().unwrap()["paidPrice"], 7.5);
+            assert_eq!(catalogue.related("remote_file", product).unwrap().len(), 1);
+        }
     }
 
     #[test]

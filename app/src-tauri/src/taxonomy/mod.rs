@@ -297,6 +297,9 @@ pub fn infer_product_category(source: &Value) -> Value {
     let jinxxy = ["provider", "store"]
         .iter()
         .any(|key| normalize(text(key)) == "jinxxy");
+    let gumroad = ["provider", "store"]
+        .iter()
+        .any(|key| normalize(text(key)) == "gumroad");
     let has_vr = |v: &str| {
         word_match(v, "vrchat")
             || word_match(v, "vrc")
@@ -311,8 +314,8 @@ pub fn infer_product_category(source: &Value) -> Value {
             || v.contains("unitypackage")
     };
     let explicit_vr_tag = normalized_tags.iter().any(|v| has_vr(v));
-    let vr_scope =
-        jinxxy || explicit_vr_tag || has_vr(&title_normalized) || has_vr(&description_normalized);
+    let explicit_vr_text = has_vr(&title_normalized) || has_vr(&description_normalized);
+    let vr_scope = jinxxy || (!gumroad && explicit_vr_tag) || explicit_vr_text;
     // A passing mention of Unity in a long description is not sufficient. A
     // retained tag/title or actual engine/package vocabulary provides context.
     let unity_scope = normalized_tags.iter().any(|v| has_unity(v))
@@ -512,7 +515,15 @@ pub fn infer_product_category(source: &Value) -> Value {
                 "evidence":[{"field":"provider","value":"jinxxy"}]})
         };
     }
-    result["scope"] = json!(if jinxxy {
+    // Gumroad is a general-purpose store. Generic type/engine tags are not
+    // evidence of a VRChat product without an explicit source title/body mention.
+    let gumroad_without_vr_text = gumroad && !explicit_vr_text;
+    if gumroad_without_vr_text {
+        result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":[]});
+    }
+    result["scope"] = json!(if gumroad_without_vr_text {
+        "other"
+    } else if jinxxy {
         "vrchat"
     } else if (outside_app_context || outside_category) && !explicit_vr_tag
         || os_without_target_context
@@ -1342,6 +1353,54 @@ pub fn dictionary() -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gumroad_requires_explicit_vrchat_in_source_title_or_description() {
+        for (category, title, description) in [
+            ("Shader", "Authored paint shader for Blender", "A rendering material."),
+            ("World", "Authored Unreal classroom", "An environment tutorial."),
+            ("Clothes", "Authored clothing mesh", "For Unity and other engines."),
+            ("Base", "Original 3D Avatar Soraneko", "A generic 3D character."),
+            ("Udon", "Authored script", "Includes tools and VR controller models."),
+            ("Shader", "Authored shader", "VRChatters and avrcollision are unrelated words."),
+        ] {
+            let source = json!({"store":"Gumroad","sourceTitle":title,
+                "sourceDescription":description,"sourceCategory":{"name":category,"parentName":"VRChat"},
+                "sourceTags":["VRChat","VRC","Unity","Avatar","Shader","Udon"]});
+            let unchanged = source.clone();
+            let inference = infer_product_category(&source);
+            assert_eq!(inference["category"], "NonVRChat", "{title}");
+            assert_eq!(inference["scope"], "other", "{title}");
+            assert_eq!(inference["scopeEvidence"]["vrchat"], false);
+            assert_eq!(source, unchanged);
+        }
+        for (title, description, expected) in [
+            ("[VRC] Authored Hair", "", "Hair"),
+            ("Authored Shader", "Works with VRChat avatars.", "Shader"),
+            ("ＶＲＣ対応 Authored Hair", "", "Hair"),
+            ("Authored Hair", "Designed for vRc.", "Hair"),
+            ("Authored Hair for VRチャット", "", "Hair"),
+            ("Authored Hair (VRCFury)", "", "Hair"),
+        ] {
+            let inference = infer_product_category(&json!({"provider":"gumroad",
+                "sourceTitle":title,"sourceDescription":description}));
+            assert_eq!(inference["category"], expected, "{title}");
+            assert_eq!(inference["scope"], "vrchat", "{title}");
+        }
+        let renamed = infer_product_category(&json!({"store":"Gumroad",
+            "sourceTitle":"Authored Hair","title":"Human VRChat nickname"}));
+        assert_eq!(renamed["category"], "NonVRChat");
+    }
+
+    #[test]
+    fn gumroad_text_gate_does_not_change_booth_or_jinxxy() {
+        for store in ["BOOTH", "Jinxxy"] {
+            let inference = infer_product_category(&json!({"store":store,
+                "sourceTitle":"Authored Shader","sourceTags":["VRChat","Shader"]}));
+            assert_eq!(inference["category"], "Shader", "{store}");
+            assert_eq!(inference["scope"], "vrchat", "{store}");
+        }
+    }
+
     #[test]
     fn jinxxy_scope_preserves_specific_types_and_falls_back_inside_vrchat() {
         let generic = infer_product_category(

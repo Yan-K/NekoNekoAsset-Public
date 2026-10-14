@@ -2420,6 +2420,37 @@ fn source_overlay_restart_and_cjk_index() {
         json!(["100"])
     );
 }
+
+#[test]
+fn gumroad_scope_rule_applies_to_new_source_sync_without_reclassifying_on_open() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    let id = "gumroad:authored-existing-shader";
+    let mut source = json!({"id":id,"provider":"gumroad","store":"Gumroad",
+        "sourceTitle":"Authored shader for Blender","sourceTags":["VRChat","Shader"],
+        "observedAt":"2026-10-01T00:00:00Z"});
+    c.put("product", id, source.clone()).unwrap();
+    // Preserve a category materialized before the stricter Gumroad rule.
+    let old = json!({"category":"Shader","basis":"tags","inferred":true,
+        "evidence":[],"scope":"vrchat","scopeEvidence":{"vrchat":true}});
+    c.inner.lock().unwrap().execute(
+        "UPDATE products SET category='Shader',in_all=1,body=json_set(body,'$.category','Shader','$.categoryInference',json(?2)),summary=json_set(summary,'$.category','Shader','$.categoryInference',json(?2)) WHERE id=?1",
+        params![id,serde_json::to_string(&old).unwrap()],
+    ).unwrap();
+    drop(c);
+
+    let reopened = fixture.open();
+    assert_eq!(projection(&reopened, id)["category"], "Shader");
+    assert_eq!(reopened.get("product", id).unwrap().unwrap(), source);
+    reopened.put("product", id, source.clone()).unwrap();
+    assert_eq!(projection(&reopened, id)["category"], "Shader");
+
+    source["observedAt"] = json!("2026-10-14T00:00:00Z");
+    reopened.put("product", id, source).unwrap();
+    assert_eq!(projection(&reopened, id)["category"], "NonVRChat");
+    assert_eq!(reopened.command("query", json!({})).unwrap()["matched"], 0);
+    assert_eq!(reopened.command("query", json!({"category":"NonVRChat"})).unwrap()["matchedIds"], json!([id]));
+}
 #[test]
 fn atomic_batch_and_collections() {
     let f = Fixture::new();
@@ -3116,7 +3147,11 @@ fn provider_prices_preserve_currency_identity_scope_and_portable_facts() {
         ("gumroad:cheap", "gumroad", "Gumroad", 2.0, "USD"),
         ("jinxxy:unknown", "jinxxy", "Jinxxy", 5.0, ""),
     ] {
-        c.put("product", id, json!({"id":id,"provider":provider,"store":store,"title":"Same synthetic Hair","sourceCategory":{"name":"Hair"},"price":amount,"priceCurrency":currency})).unwrap();
+        let mut source = json!({"id":id,"provider":provider,"store":store,"title":"Same synthetic Hair","sourceCategory":{"name":"Hair"},"price":amount,"priceCurrency":currency});
+        if provider == "gumroad" {
+            source["sourceDescription"] = json!("Authored hair for VRChat.");
+        }
+        c.put("product", id, source).unwrap();
     }
     let mut booth = c.get("product", "900001").unwrap().unwrap();
     booth["publicVariants"] = json!([{"id":"owned","name":"Owned","price":800,"currency":"JPY"}]);

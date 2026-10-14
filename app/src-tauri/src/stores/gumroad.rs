@@ -688,9 +688,55 @@ impl PublicPrice {
 #[derive(Clone, Debug)]
 pub struct PublicProductObservation {
     pub product_id: String,
+    // Missing/unknown preserves the last observed body; an observed empty string clears it.
+    pub description: Option<String>,
     pub current_price: Option<PublicPrice>,
     pub price_formatted: Option<String>,
     pub price_source_currency: Option<String>,
+}
+
+fn public_description(raw: &str) -> String {
+    const TEXT_LIMIT: usize = 40_000;
+    let bounded: String = raw.chars().take(TEXT_LIMIT * 4).collect();
+    let fragment = Html::parse_fragment(&bounded);
+    let mut text = String::new();
+    let mut pending: Vec<_> = fragment.root_element().children()
+        .rev().map(|node| (node, false)).collect();
+    while let Some((node, closing)) = pending.pop() {
+        if closing {
+            text.push(' ');
+            continue;
+        }
+        if let Some(part) = node.value().as_text() {
+            text.extend(
+                part.chars()
+                    .filter(|character| !character.is_control() || character.is_whitespace()),
+            );
+            continue;
+        }
+        if let Some(element) = node.value().as_element() {
+            if matches!(element.name(), "script" | "style" | "template" | "noscript" | "nav") {
+                continue;
+            }
+            if matches!(element.name(),
+                "address" | "article" | "aside" | "blockquote" | "br" | "dd" | "details"
+                | "div" | "dl" | "dt" | "fieldset" | "figcaption" | "figure" | "footer"
+                | "form" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "header"
+                | "hgroup" | "hr" | "li" | "main" | "ol" | "p" | "pre" | "section"
+                | "summary" | "table" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr" | "ul"
+            ) {
+                text.push(' ');
+                pending.push((node, true));
+            }
+        }
+        pending.extend(node.children().rev().map(|child| (child, false)));
+    }
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(TEXT_LIMIT)
+        .collect()
 }
 
 pub fn parse_public_product(
@@ -727,6 +773,7 @@ pub fn parse_public_product(
     };
     Ok(PublicProductObservation {
         product_id,
+        description: value["description"].as_str().map(public_description),
         current_price,
         price_formatted: value["price_formatted"]
             .as_str()
@@ -824,6 +871,35 @@ mod tests {
         let public = parse_public_product(&value, None).unwrap();
         assert!(public.current_price.unwrap().usd_amount().is_none());
         assert!(public.price_formatted.is_none());
+    }
+
+    #[test]
+    fn public_description_observation_distinguishes_unknown_empty_and_visible_text() {
+        let mut value = json!({"api_version":1,"id":"authored-product"});
+        assert!(parse_public_product(&value, None).unwrap().description.is_none());
+        for unknown in [Value::Null, json!({"text":"VRChat"}), json!(42)] {
+            value["description"] = unknown;
+            assert!(parse_public_product(&value, None).unwrap().description.is_none());
+        }
+        for empty in ["", " \n\t", "<p></p>"] {
+            value["description"] = json!(empty);
+            assert_eq!(parse_public_product(&value, None).unwrap().description.as_deref(), Some(""));
+        }
+        value["description"] = json!("<p>Authored &amp; decoded</p><p>For VR<strong>Chat</strong><br>VRC &#x8863;&#x88c5;</p><a href='https://example.invalid/VRChat' title='VRChat'>Read manual</a><img alt='VRChat'><script>VRChat</script><style>VRC</style><nav>VRChat</nav><template>VRChat</template><!-- VRC -->");
+        assert_eq!(
+            parse_public_product(&value, None).unwrap().description.as_deref(),
+            Some("Authored & decoded For VRChat VRC 衣装 Read manual")
+        );
+        value["description"] = json!("<a href='https://example.invalid/VRChat' title='VRChat'>Read manual</a><img alt='VRChat'><script>VRChat</script><style>VRC</style><nav>VRChat</nav>");
+        assert_eq!(parse_public_product(&value, None).unwrap().description.as_deref(), Some("Read manual"));
+        value["description"] = json!("&lt;literal&gt; &amp;copy; VRChat");
+        assert_eq!(parse_public_product(&value, None).unwrap().description.as_deref(), Some("<literal> &copy; VRChat"));
+        for blocks in ["<p>VR</p><p>Chat</p>", "VR<br>Chat", "VR<hr>Chat"] {
+            value["description"] = json!(blocks);
+            assert_eq!(parse_public_product(&value, None).unwrap().description.as_deref(), Some("VR Chat"));
+        }
+        value["description"] = json!("猫".repeat(40_001));
+        assert_eq!(parse_public_product(&value, None).unwrap().description.unwrap().chars().count(), 40_000);
     }
 
     #[test]
