@@ -24,7 +24,7 @@ PAGES = "https://yan-k.github.io/NekoNekoAsset-Public"
 VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 BUILD_PREFIXES = ("app/", f"unity/Packages/{PACKAGE}/", "unity/scripts/package_bridge.py",
                   "scripts/", ".github/workflows/", "rust-toolchain.toml", "release/config.json",
-                  ".gitattributes")
+                  ".gitattributes", "changelog.md")
 FORBIDDEN_PREFIXES = ("AgentDocs/", ".tools/", ".local/", "work/", "tools/",
                       "unity/verification/", "app/verification/", "app/checks/", "app/portable/")
 FORBIDDEN_FILES = {"AGENTS.md", "README.md", "app/scripts/test-native.ps1",
@@ -73,11 +73,30 @@ def version() -> str:
 
 def release_config() -> dict:
     config = read_json("release/config.json")
-    if set(config) != {"prerelease", "notes"} or type(config["prerelease"]) is not bool:
-        raise ValueError("Release config requires only prerelease (boolean) and notes (text)")
-    if not isinstance(config["notes"], str) or not config["notes"].strip():
-        raise ValueError("Release notes are required")
+    if set(config) != {"prerelease"} or type(config["prerelease"]) is not bool:
+        raise ValueError("Release config requires only prerelease (boolean); notes come from changelog.md")
     return config
+
+
+def release_notes(current: str) -> str:
+    text = (ROOT / "changelog.md").read_text(encoding="utf-8")
+    headings = list(re.finditer(r"^##[ \t]+(.+)$", text, re.MULTILINE))
+    versions = []
+    for heading in headings:
+        match = re.fullmatch(r"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?:[ \t]+.+)?",
+                             heading.group(1).strip())
+        if not match:
+            raise ValueError("Changelog release headings must start with a numeric version: ## 0.2.1 Beta - YYYY-MM-DD")
+        versions.append(match.group(1))
+    if not versions or versions[0] != current:
+        raise ValueError("The newest changelog.md section must match the App and Bridge version")
+    if len(versions) != len(set(versions)):
+        raise ValueError("Changelog release versions must not be duplicated")
+    end = headings[1].start() if len(headings) > 1 else len(text)
+    body = text[headings[0].end():end].strip()
+    if not body or not any(line.strip() and not line.lstrip().startswith("#") for line in body.splitlines()):
+        raise ValueError("The current changelog.md section requires nonempty release notes")
+    return text[headings[0].start():end].strip()
 
 
 def check_verification(current: str) -> None:
@@ -134,6 +153,7 @@ def check(tag: str | None, verification: bool, allow_internal: bool = False) -> 
     if updater.get("requireSignedVersion") is not True:
         raise ValueError("Updates must require a version-bound trusted signature")
     release_config()
+    release_notes(current)
     if not allow_internal:
         check_public_paths(tracked_paths())
     if verification:
@@ -290,7 +310,7 @@ def prepare(tag: str) -> None:
     config = release_config()
     details = {"tag_name": tag, "target_commitish": git("rev-parse", "HEAD").decode().strip(),
                "name": f"NekoNekoAsset {current}" + (" Beta" if config["prerelease"] else ""),
-               "body": config["notes"], "draft": True, "prerelease": config["prerelease"]}
+               "body": release_notes(current), "draft": True, "prerelease": config["prerelease"]}
     if existing:
         api.request(f"releases/{existing['id']}", "PATCH", details)
     else:
@@ -309,6 +329,7 @@ def publish(tag: str, directory: Path) -> None:
     if not release["draft"]:
         print("Published release is immutable; no artifacts changed.")
         return
+    notes = release_notes(current)
     files = check_artifacts(directory, current, False)
     checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in files)
     (directory / "SHA256SUMS.txt").write_text(checksums, encoding="ascii", newline="\n")
@@ -323,7 +344,7 @@ def publish(tag: str, directory: Path) -> None:
     uploaded = api.release(tag)["assets"]
     if {asset["name"] for asset in uploaded} != expected or any(asset["state"] != "uploaded" for asset in uploaded):
         raise ValueError("Draft upload is incomplete")
-    api.request(f"releases/{release['id']}", "PATCH", {"draft": False})
+    api.request(f"releases/{release['id']}", "PATCH", {"body": notes, "draft": False})
     print(f"Published {tag} with {len(files)} verified assets.")
 
 

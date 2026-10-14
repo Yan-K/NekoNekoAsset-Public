@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "version": "0.2.0",
-  "sourceSha256": "294aa1b87552f1bded65a28c7ba77811ba9ba70d1e58e39e9b7951e4fb3c228e",
-  "verifiedAt": "2026-10-13T18:24:00.370666Z",
+  "version": "0.2.1",
+  "sourceSha256": "69b653945cefcd3b422390806c4eeb0909abdeca519b076c6c0f08e6d87f7117",
+  "verifiedAt": "2026-10-14T03:26:46.391586Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -28,40 +28,41 @@
     }
   },
   "aggregateEvidence": {
-    "products": 171,
-    "attachedFiles": 1204,
-    "decodedThumbnails": 163,
+    "products": 172,
+    "attachedFiles": 1205,
+    "decodedThumbnails": 164,
     "firstPublicationObservedBounds": {
-      "Jinxxy": {
-        "lowerSeconds": 7.223,
-        "upperSeconds": 12.371
+      "jinxxy": {
+        "lowerSeconds": 8.926,
+        "upperSeconds": 14.658
       },
-      "BOOTH": {
-        "lowerSeconds": 22.856,
-        "upperSeconds": 28.018
+      "booth": {
+        "lowerSeconds": 19.865,
+        "upperSeconds": 25.063
       },
-      "Gumroad": {
-        "lowerSeconds": 48.886,
-        "upperSeconds": 54.057
+      "gumroad": {
+        "lowerSeconds": 51.447,
+        "upperSeconds": 56.684
       }
     },
     "storeElapsedSeconds": {
-      "Gumroad": 182.173,
-      "BOOTH": 186.366,
-      "Jinxxy": 12.163
+      "gumroad": 193.243,
+      "booth": 199.803,
+      "jinxxy": 15.773
+    },
+    "storeRequestCounts": {
+      "gumroad": 211,
+      "booth": 137,
+      "jinxxy": null
     },
     "authoredUnityFiles": 2,
-    "authoredUnityBytes": 1048921,
+    "authoredUnityBytes": 1048920,
     "unityFullRestartReceiptMatched": true,
     "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "da785ce3f5c2f7f6c59bb422f5642e4dcbaf13dc367a49a1b38b1354cf937ad0",
-    "postVerificationTestOnlyChange": {
-      "files": [
-        "app/src-tauri/src/taxonomy/mod.rs",
-        "app/src-tauri/src/taxonomy/phonetic.rs"
-      ],
-      "productionBytesUnchanged": true,
-      "reason": "Keep strict kana rejection/native fallback and bounded-input assertions; diagnose authored WinRT fixture failures without changing shipping code."
-    }
+    "verifierExecutableSha256": "c556d3ddc7762df2340ebfb77df7a194feef30b9dbd25be67fab15069909091d",
+    "frozenPublicBuildInputs": 375,
+    "actualNativeStoreAppVersionVerified": true,
+    "nativeWindowMemoryPassed": true,
+    "nativeVisibleMaximizationVerified": false
   }
 }

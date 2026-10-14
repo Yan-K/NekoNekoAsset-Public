@@ -275,6 +275,7 @@ impl UpdateState {
             bytes.len() as u64,
             Some(bytes.len() as u64),
         );
+        crate::window_state::flush_app(app).await;
         update
             .install(&bytes)
             .map_err(|_| anyhow::anyhow!("updates_install_failed"))

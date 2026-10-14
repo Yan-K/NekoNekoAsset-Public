@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing shared version tag (v0.2.0); published tags refresh Pages only
+        description: Existing shared version tag (v0.2.1); published tags refresh Pages only
         required: true
         type: string
 

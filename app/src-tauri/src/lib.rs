@@ -19,6 +19,7 @@ mod taxonomy;
 mod unity;
 mod updates;
 mod verification;
+mod window_state;
 
 use anyhow::Context;
 use booth::BoothService;
@@ -1142,6 +1143,7 @@ fn open_selected_catalogue(
 fn restart_for_library(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        window_state::flush_app(&app).await;
         app.restart();
     });
 }
@@ -1326,6 +1328,14 @@ async fn updates_install(
 pub fn run() {
     let mut context = tauri::generate_context!();
     profile::configure(&mut context).expect("NekoNekoAsset profile could not be selected");
+    // Apply remembered bounds before revealing the main window. Authored hidden
+    // verification windows keep their configured visibility and never gain focus.
+    let main_visible = context.config().app.windows.iter()
+        .find(|window| window.label == "main").is_some_and(|window| window.visible);
+    if let Some(window) = context.config_mut().app.windows.iter_mut()
+        .find(|window| window.label == "main") {
+        window.visible = false;
+    }
     tauri::Builder::default()
         .manage(NativeOperationGate::default())
         .manage(updates::UpdateState::default())
@@ -1339,6 +1349,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
+            window_state::on_event(window, event);
             if window.label() == "main"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {
@@ -1347,7 +1358,7 @@ pub fn run() {
                 window.app_handle().exit(0);
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let data_dir = if cfg!(debug_assertions) {
                 std::env::var_os("NNA_DATA_DIR")
                     .map(std::path::PathBuf::from)
@@ -1356,6 +1367,7 @@ pub fn run() {
                 app.path().app_local_data_dir()?
             };
             std::fs::create_dir_all(&data_dir)?;
+            window_state::initialize(app, &data_dir, main_visible);
             // Explicit reset retains its unconfigured fallback; no unrelated
             // completed default is opened or changed while returning to setup.
             let applying_reset = app_reset::pending(&data_dir);

@@ -49,6 +49,11 @@ class ReleaseChecks(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(data), encoding="utf-8")
 
+    def write_changelog(self, current="0.2.1"):
+        section = f"## {current} Beta - 2026-10-14\n\n### Fixed\n\n- Authored VRChat 分類 fix."
+        (self.root / "changelog.md").write_text("# Changelog\n\nIntroductory text.\n\n" + section + "\n", encoding="utf-8")
+        return section
+
     def marker(self):
         return {"formatVersion": 1, "version": "0.2.0", "sourceSha256": "a" * 64,
                 "verifiedAt": datetime.now(timezone.utc).isoformat(), "checks": {
@@ -76,12 +81,45 @@ class ReleaseChecks(unittest.TestCase):
         app.mkdir()
         source = app / "input.ts"
         source.write_bytes(b"line one\nline two\n")
+        changelog = self.root / "changelog.md"
+        changelog.write_text("# Changelog\n\nAuthored release notes.\n", encoding="utf-8")
         subprocess.run(["git", "-C", self.root, "add", "."], check=True)
         original = release.source_digest()
         source.write_bytes(b"line one\r\nline two\r\n")
         self.assertEqual(release.source_digest(), original)
+        changelog.write_text("# Changelog\n\nChanged release notes.\n", encoding="utf-8")
+        self.assertNotEqual(release.source_digest(), original)
+        changelog.write_text("# Changelog\n\nAuthored release notes.\n", encoding="utf-8")
         source.write_bytes(b"changed\n")
         self.assertNotEqual(release.source_digest(), original)
+
+    def test_changelog_extracts_only_current_heading_and_body(self):
+        expected = self.write_changelog()
+        with (self.root / "changelog.md").open("a", encoding="utf-8") as stream:
+            stream.write("\n## 0.2.0 Beta - 2026-10-13\n\n- Previous authored notes.\n")
+        self.assertEqual(release.release_notes("0.2.1"), expected)
+
+    def test_missing_empty_duplicate_or_mismatched_changelog_blocks(self):
+        with self.assertRaises(FileNotFoundError):
+            release.release_notes("0.2.1")
+        for text in ("# Changelog\n", "## 0.2.0 Beta\n\n- Old notes.\n",
+                     "## 0.2.1 Beta\n\n", "## 0.2.1 Beta\n\n### Fixed\n\n",
+                     "## 0.2.1 Beta\n\n- Fix.\n\n## 0.2.1 Beta\n\n- Duplicate.\n",
+                     "## 0.2.2 Beta\n\n- Future notes.\n\n## 0.2.1 Beta\n\n- Stale notes.\n",
+                     "## Unreleased\n\n- Notes.\n\n## 0.2.1 Beta\n\n- Notes.\n"):
+            with self.subTest(text=text):
+                (self.root / "changelog.md").write_text(text, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    release.release_notes("0.2.1")
+
+    def test_release_config_has_no_duplicate_notes_source(self):
+        self.write_json("release/config.json", {"prerelease": True})
+        self.assertEqual(release.release_config(), {"prerelease": True})
+        for config in ({"prerelease": True, "notes": "Duplicated notes"}, {"prerelease": "true"}):
+            with self.subTest(config=config):
+                self.write_json("release/config.json", config)
+                with self.assertRaises(ValueError):
+                    release.release_config()
 
     def test_public_sources_reject_generated_python_cache(self):
         sources = ["scripts/release.py", "scripts/test_release.py", "unity/scripts/package_bridge.py"]
@@ -179,6 +217,7 @@ class ReleaseChecks(unittest.TestCase):
         app = json.loads((output / "app/latest.json").read_text(encoding="utf-8"))
         bridge = json.loads((output / "bridge/latest.json").read_text(encoding="utf-8"))
         self.assertEqual(app["version"], "0.10.0")
+        self.assertEqual(app["notes"], "Authored notes")
         self.assertEqual(set(app["platforms"]), {"windows-x86_64"})
         self.assertEqual(bridge["version"], app["version"])
         self.assertTrue(bridge["unitypackageUrl"].endswith(".unitypackage"))
@@ -203,6 +242,42 @@ class ReleaseChecks(unittest.TestCase):
         with patch.object(release, "check", return_value="0.2.0"), patch.object(release, "GitHub", return_value=fake_api):
             release.publish("v0.2.0", self.root / "does-not-exist")
         fake_api.request.assert_not_called()
+
+    def test_published_prepare_rerun_preserves_body_and_assets(self):
+        fake_api = unittest.mock.Mock(spec=release.GitHub)
+        fake_api.release.return_value = {"draft": False}
+        with patch.object(release, "check", return_value="0.2.0"), \
+                patch.object(release, "GitHub", return_value=fake_api), \
+                patch.object(release, "set_output"):
+            release.prepare("v0.2.0")
+        fake_api.request.assert_not_called()
+
+    def test_publish_refreshes_draft_body_from_same_changelog_section(self):
+        directory = self.artifacts()
+        expected = self.write_changelog("0.2.0")
+        fake_api = unittest.mock.Mock(spec=release.GitHub)
+        draft = {"id": 11, "draft": True, "body": "Manually changed draft notes", "assets": []}
+        uploaded = [{"name": name, "state": "uploaded"} for name in release.asset_names("0.2.0")]
+        fake_api.release.side_effect = [draft, {"assets": uploaded}]
+        with patch.object(release, "check", return_value="0.2.0"), patch.object(release, "GitHub", return_value=fake_api):
+            release.publish("v0.2.0", directory)
+        self.assertEqual(fake_api.request.call_args.args, ("releases/11", "PATCH", {"body": expected, "draft": False}))
+
+    def test_missing_changelog_blocks_prepare_or_publish_before_mutation(self):
+        self.write_json("release/config.json", {"prerelease": True})
+        for command in ("prepare", "publish"):
+            with self.subTest(command=command):
+                fake_api = unittest.mock.Mock(spec=release.GitHub)
+                fake_api.release.return_value = {"id": 11, "draft": True, "assets": []}
+                with patch.object(release, "check", return_value="0.2.1"), \
+                        patch.object(release, "GitHub", return_value=fake_api), \
+                        patch.object(release, "git", return_value=b"authored-head"):
+                    with self.assertRaises(FileNotFoundError):
+                        if command == "prepare":
+                            release.prepare("v0.2.1")
+                        else:
+                            release.publish("v0.2.1", self.root / "does-not-exist")
+                fake_api.request.assert_not_called()
 
     def test_published_tag_lookup_never_lists_or_changes_releases(self):
         api = object.__new__(release.GitHub)
@@ -229,6 +304,7 @@ class ReleaseChecks(unittest.TestCase):
             api.release("v0.2.0")
 
     def test_prepare_retry_reuses_listed_draft_without_duplicate_creation(self):
+        expected = self.write_changelog("0.2.0")
         api = object.__new__(release.GitHub)
         draft = {"id": 73, "tag_name": "v0.2.0", "draft": True}
         api.request = unittest.mock.Mock(side_effect=[None, [draft], draft])
@@ -236,11 +312,12 @@ class ReleaseChecks(unittest.TestCase):
                 patch.object(release, "GitHub", return_value=api), \
                 patch.object(api, "assert_tag_checkout"), \
                 patch.object(release, "git", return_value=b"authored-head"), \
-                patch.object(release, "release_config", return_value={"prerelease": True, "notes": "Authored notes"}), \
+                patch.object(release, "release_config", return_value={"prerelease": True}), \
                 patch.object(release, "set_output"):
             release.prepare("v0.2.0")
         self.assertEqual(api.request.call_count, 3)
         self.assertEqual(api.request.call_args.args[:2], ("releases/73", "PATCH"))
+        self.assertEqual(api.request.call_args.args[2]["body"], expected)
         self.assertFalse(any(len(call.args) > 1 and call.args[1] == "POST" for call in api.request.call_args_list))
 
 

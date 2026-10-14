@@ -49,10 +49,21 @@ catalogue, library paths, user edits, settings and protected device sessions.
 
 ## Maintainer releases
 
-App and Bridge share one numeric version (`0.2.0`) and one tag (`v0.2.0`). Keep
+App and Bridge share one numeric version (`0.2.1`) and one tag (`v0.2.1`). Keep
 `app/package.json`, Cargo, Tauri config and Bridge `package.json` in agreement.
-`release/config.json` contains the current public release notes and Beta
-`prerelease` flag. Windows releases contain the NSIS installer and its Tauri
+Use a patch increment for routine releases. A minor or major increment requires
+the project owner's explicit agreement before changing the version.
+
+Starting with 0.2.1, every release needs an entry in the root `changelog.md` and
+the same notes on its GitHub Release page. Keep release sections newest first,
+with a heading such as `## 0.2.1 Beta - 2026-10-14`, then describe the actual
+user-facing changes. The newest section must match the shared version and have
+nonempty notes; duplicate version sections are rejected. Release tooling copies
+that complete heading and section into the draft and published Release body.
+The App update feed uses the published Release body, so release notes have one
+source of truth. `release/config.json` contains only the Beta `prerelease` flag.
+
+Windows releases contain the NSIS installer and its Tauri
 signature; no portable App is distributed. Bridge assets include `.unitypackage`,
 UPM `.tgz`, ZIP and the verified inventory. VCC listing is not yet configured.
 
@@ -75,7 +86,7 @@ then record the completed checks in the tracked `release/verification.json`:
 ```json
 {
   "formatVersion": 1,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "sourceSha256": "<source-digest output>",
   "verifiedAt": "<completed UTC timestamp, RFC 3339>",
   "checks": {
@@ -101,7 +112,7 @@ then record the completed checks in the tracked `release/verification.json`:
 This is a maintainer attestation after actual local checks; CI never receives
 private sessions or local verification harnesses. Include only aggregate
 evidence. Build-input changes invalidate the digest. Run
-`python scripts/release.py check --tag v0.2.0 --require-verification`, commit the
+`python scripts/release.py check --tag v0.2.1 --require-verification`, commit the
 source and marker, then push the matching tag. The Release workflow builds both
 components, uploads the complete checked set to a draft, publishes it together,
 and updates GitHub Pages `/app/latest.json` and `/bridge/latest.json` directly.
