@@ -1,5 +1,7 @@
 import type {Locale} from './model';
 const labels:Record<string,string[]>={
+ 'catalogue.invalid_avatar_selection':['Selected avatar is no longer available','選択したアバターは利用できなくなりました','선택한 아바타를 더 이상 사용할 수 없습니다','所选素体已不可用','選取的素體已無法使用'],
+ 'catalogue.invalid_avatar_delta':['Avatar selection could not be saved','アバターの選択を保存できませんでした','아바타 선택을 저장할 수 없습니다','无法保存素体选择','無法儲存素體選擇'],
  'catalogue.hide_store_only':['Only store products can be hidden','非表示にできるのはストア商品のみです','스토어 상품만 숨길 수 있습니다','仅可隐藏商店商品','僅可隱藏商店產品'],
  local_product_required:['Only offline products can be deleted here','削除できるのはオフライン商品のみです','오프라인 상품만 삭제할 수 있습니다','此处仅可删除离线商品','此處僅可刪除離線產品'],
  local_delete_unsafe_path:['Product folder could not be safely verified; nothing deleted','商品フォルダーの安全性を確認できません。削除していません','상품 폴더를 안전하게 확인할 수 없어 삭제하지 않았습니다','无法安全验证商品文件夹，未删除任何内容','無法安全確認產品資料夾，未刪除任何內容'],

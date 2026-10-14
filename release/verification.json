@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "version": "0.2.1",
-  "sourceSha256": "69b653945cefcd3b422390806c4eeb0909abdeca519b076c6c0f08e6d87f7117",
-  "verifiedAt": "2026-10-14T03:26:46.391586Z",
+  "version": "0.2.2",
+  "sourceSha256": "0a115ff09ca459f97ec4ad2aebed818d726387597e5f1aaf15270fd53c4fa690",
+  "verifiedAt": "2026-10-14T04:52:10.668416Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -32,36 +32,38 @@
     "attachedFiles": 1205,
     "decodedThumbnails": 164,
     "firstPublicationObservedBounds": {
-      "jinxxy": {
-        "lowerSeconds": 8.926,
-        "upperSeconds": 14.658
-      },
       "booth": {
-        "lowerSeconds": 19.865,
-        "upperSeconds": 25.063
+        "lowerSeconds": 0,
+        "upperSeconds": 34.435
+      },
+      "jinxxy": {
+        "lowerSeconds": 0,
+        "upperSeconds": 34.435
       },
       "gumroad": {
-        "lowerSeconds": 51.447,
-        "upperSeconds": 56.684
+        "lowerSeconds": 49.911,
+        "upperSeconds": 55.077
       }
     },
     "storeElapsedSeconds": {
-      "gumroad": 193.243,
-      "booth": 199.803,
-      "jinxxy": 15.773
+      "booth": 201.739,
+      "gumroad": 192.2,
+      "jinxxy": 10.444
     },
     "storeRequestCounts": {
-      "gumroad": 211,
       "booth": 137,
+      "gumroad": 211,
       "jinxxy": null
     },
     "authoredUnityFiles": 2,
     "authoredUnityBytes": 1048920,
     "unityFullRestartReceiptMatched": true,
     "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "c556d3ddc7762df2340ebfb77df7a194feef30b9dbd25be67fab15069909091d",
+    "verifierExecutableSha256": "8fb5042ee736e9839962fa0da3170969507a79417d53c677fa1d5d13d893a7d3",
     "frozenPublicBuildInputs": 375,
     "actualNativeStoreAppVersionVerified": true,
+    "metadataNormalSetupRestartVerified": true,
+    "metadataAppClosedNormally": true,
     "nativeWindowMemoryPassed": true,
     "nativeVisibleMaximizationVerified": false
   }

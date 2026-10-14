@@ -9,6 +9,16 @@ pub(super) struct Registry {
     alias_keys: BTreeMap<String, String>,
 }
 impl Registry {
+    pub(super) fn resolver(&self) -> crate::taxonomy::AvatarTagResolver {
+        let options: Vec<_> = self.entries.values().cloned().map(|mut entry| {
+            // Presentation overrides never become automatic compatibility aliases.
+            entry["displayName"] = entry["sourceDisplayName"].as_str()
+                .map(|name| json!(name))
+                .unwrap_or_else(|| json!(crate::taxonomy::avatar_display_name(&entry)));
+            entry
+        }).collect();
+        crate::taxonomy::AvatarTagResolver::from_options(&options)
+    }
     pub fn resolve(&self, value: &str) -> String {
         if self.entries.contains_key(value) {
             return value.to_owned();
@@ -68,10 +78,11 @@ fn names(entry: &Value) -> Vec<String> {
     strings(&entry["aliases"])
         .into_iter()
         .chain(
-            ["id", "officialName", "englishName", "displayName"]
+            ["id", "officialName", "englishName"]
                 .into_iter()
                 .filter_map(|k| entry[k].as_str().map(str::to_owned)),
         )
+        .chain(std::iter::once(crate::taxonomy::avatar_display_name(entry)))
         .filter(|v| !v.is_empty())
         .collect()
 }
@@ -89,12 +100,34 @@ fn add_alias(registry: &mut Registry, alias: &str, id: &str, overwrite: bool) {
         }
     }
 }
+fn persisted_alias_allowed(entry: &Value, settings: &Value, alias: &str) -> bool {
+    if identity(alias) {
+        return true;
+    }
+    let key = normalized(&crate::taxonomy::clean_avatar_name(alias));
+    let explicit = strings(&settings["aliases"]).into_iter()
+        .chain(["originalName", "englishName"].into_iter()
+            .filter_map(|field| settings[field].as_str().map(str::to_owned)))
+        .any(|name| !name.trim().is_empty() && normalized(&crate::taxonomy::clean_avatar_name(&name)) == key);
+    if matches!(text(entry, "nameKind"), "bundle" | "fallback") && !explicit {
+        return false;
+    }
+    let display = text(settings, "displayName").trim();
+    if !display.is_empty() && normalized(&crate::taxonomy::clean_avatar_name(display)) == key && !explicit {
+        return names(entry).iter().any(|name| normalized(&crate::taxonomy::clean_avatar_name(name)) == key);
+    }
+    true
+}
 fn decorate(entry: &mut Value, settings: &Value) {
     if let Some(name) = settings["originalName"]
         .as_str()
         .filter(|v| !v.trim().is_empty())
     {
         entry["officialName"] = json!(name.trim());
+        if crate::taxonomy::avatar_label_is_unambiguous(name)
+            && crate::taxonomy::parsed_avatar_label(name).name_kind == "single" {
+            entry["nameKind"] = json!("single");
+        }
     }
     if let Some(name) = settings["englishName"]
         .as_str()
@@ -103,7 +136,15 @@ fn decorate(entry: &mut Value, settings: &Value) {
         entry["englishName"] = json!(name.trim());
         entry["englishNameStatus"] = json!("user");
     }
-    entry["displayName"] = json!(crate::taxonomy::avatar_display_name(entry));
+    let source_display = crate::taxonomy::avatar_display_name(entry);
+    entry["sourceDisplayName"] = json!(source_display);
+    entry["displayName"] = json!(settings["displayName"].as_str()
+        .filter(|name| !name.trim().is_empty()).map(str::trim).unwrap_or(&source_display));
+    let source_shop = entry["sourceShopName"].as_str()
+        .unwrap_or_else(|| text(entry, "shopName")).to_owned();
+    entry["sourceShopName"] = json!(source_shop);
+    entry["shopName"] = json!(settings["shopName"].as_str()
+        .filter(|name| !name.trim().is_empty()).map(str::trim).unwrap_or(&source_shop));
     entry["labelStatus"] = entry["englishNameStatus"].clone();
     let aliases: BTreeSet<_> = names(entry)
         .into_iter()
@@ -126,11 +167,7 @@ pub(super) fn tag_resolver(conn: &Connection) -> Result<crate::taxonomy::AvatarT
         set_raw(conn, "preferences", "app", &preferences)?;
         Catalogue::bump_revision(conn)?;
     }
-    let options: Vec<_> = registry_from_bases(&bases, &preferences, None)?
-        .entries
-        .into_values()
-        .collect();
-    Ok(crate::taxonomy::AvatarTagResolver::from_options(&options))
+    Ok(registry_from_bases(&bases, &preferences, None)?.resolver())
 }
 /// Historical names derive solely from source metadata of this exact Base.
 /// Never harvest a decorated registry entry, user settings or product nickname.
@@ -328,11 +365,17 @@ fn registry_from_bases(
         .iter()
         .filter(|e| text(e, "id").starts_with("booth:"))
     {
+        if matches!(text(entry, "nameKind"), "bundle" | "fallback") {
+            continue;
+        }
         for name in names(entry) {
             add_alias(&mut registry, &name, text(entry, "id"), false);
         }
     }
     for entry in &entries {
+        if matches!(text(entry, "nameKind"), "bundle" | "fallback") {
+            continue;
+        }
         for name in names(entry) {
             add_alias(&mut registry, &name, text(entry, "id"), false);
         }
@@ -345,6 +388,10 @@ fn registry_from_bases(
         if let Some(id) = id.as_str().filter(|id| {
             id.starts_with("booth:") || id.starts_with("product:") || id.starts_with("avatar:")
         }) {
+            if registry.entries.get(id).is_some_and(|entry|
+                !persisted_alias_allowed(entry, &preferences["avatarSettings"][id], alias)) {
+                continue;
+            }
             add_alias(&mut registry, alias, id, false);
         }
     }
@@ -356,7 +403,8 @@ fn registry_from_bases(
         let canonical = registry.resolve(id);
         let display = if let Some(entry) = registry.entries.get_mut(&canonical) {
             decorate(entry, settings);
-            Some(text(entry, "displayName").to_owned())
+            (!matches!(text(entry, "nameKind"), "bundle" | "fallback"))
+                .then(|| text(entry, "sourceDisplayName").to_owned())
         } else {
             None
         };
@@ -401,6 +449,13 @@ fn normalize_with_registry(registry: &Registry, preferences: &mut Value) {
         .cloned()
         .unwrap_or_default();
     for (alias, id) in &registry.aliases {
+        // Keep rejected historical mappings intact on disk, but do not reuse
+        // them to resolve an uncertain Base or a presentation-only name.
+        if aliases.get(alias).and_then(Value::as_str).is_some_and(|previous|
+            registry.entries.get(previous).is_some_and(|entry|
+                !persisted_alias_allowed(entry, &preferences["avatarSettings"][previous], alias))) {
+            continue;
+        }
         aliases.insert(alias.clone(), json!(id));
     }
     preferences["avatarAliases"] = Value::Object(aliases);
@@ -409,6 +464,22 @@ pub(super) fn options(
     conn: &Connection,
     bases: &[Value],
     prepared_options: &[Value],
+) -> Result<Vec<Value>> {
+    build_options(conn, bases, prepared_options, true)
+}
+
+/// Same derived registry as bootstrap without updating preferences or defaults.
+pub(super) fn option_snapshot(conn: &Connection) -> Result<Vec<Value>> {
+    let bases = projection::bases(conn)?;
+    let owned = crate::taxonomy::owned_base_options(&bases);
+    build_options(conn, &bases, &owned, false)
+}
+
+fn build_options(
+    conn: &Connection,
+    bases: &[Value],
+    prepared_options: &[Value],
+    persist_aliases: bool,
 ) -> Result<Vec<Value>> {
     let before = raw(conn, "preferences", "app")?.unwrap_or(json!({"id":"app"}));
     let mut prefs = before.clone();
@@ -434,14 +505,15 @@ pub(super) fn options(
                 text(item, "avatarId")
             };
             let mut id = registry.resolve(key);
+            let parsed = crate::taxonomy::parsed_avatar_label(name);
             let (original, spelling) =
                 if !registry.entries.contains_key(&id) || id.starts_with("avatar:") {
-                    crate::taxonomy::avatar_label_parts(name)
+                    (parsed.original.clone(), parsed.source_latin.clone())
                 } else {
                     (String::new(), None)
                 };
             if !registry.entries.contains_key(&id)
-                && !crate::taxonomy::avatar_label_is_unambiguous(name)
+                && (!crate::taxonomy::avatar_label_is_unambiguous(name) || parsed.name_kind != "single")
             {
                 // Retain ambiguous source/overlay text; it is not evidence of
                 // one named identity. Explicit saved identity names may resolve it.
@@ -451,15 +523,29 @@ pub(super) fn options(
                 }
             }
             if !registry.entries.contains_key(&id) && !id.starts_with("avatar:") {
+                // Presentation improvements must not rename an existing derived
+                // identity or abandon its saved user settings.
+                let (identity_name, _) = crate::taxonomy::avatar_label_parts(name);
                 id = format!(
                     "avatar:{:x}",
-                    Sha256::digest(normalized(&original).as_bytes())
+                    Sha256::digest(normalized(&identity_name).as_bytes())
                 );
             }
             if !registry.entries.contains_key(&id) {
-                let english = spelling
-                    .clone()
-                    .unwrap_or_else(|| crate::taxonomy::romanized_name(&original));
+                let corrected = crate::taxonomy::parsed_avatar_label(
+                    text(&prefs["avatarSettings"][&id], "originalName"));
+                let fallback_stem = if corrected.name_kind == "single" {
+                    corrected.original.as_str()
+                } else if parsed.name_kind == "single" {
+                    original.as_str()
+                } else {
+                    ""
+                };
+                let english = if parsed.name_kind == "single" {
+                    spelling.clone().unwrap_or_else(|| crate::taxonomy::romanized_name(fallback_stem))
+                } else {
+                    crate::taxonomy::romanized_name(fallback_stem)
+                };
                 let status = if english.is_empty() {
                     "unresolvedReading"
                 } else if spelling.is_some() {
@@ -467,9 +553,9 @@ pub(super) fn options(
                 } else {
                     "romanizationFallback"
                 };
-                let mut entry = json!({"id":id,"officialName":original,"englishName":english,"englishNameStatus":status,"shopName":"","shopId":"","aliases":[name,key],"baseProductIds":[]});
+                let mut entry = json!({"id":id,"officialName":original,"englishName":english,"englishNameStatus":status,"nameKind":parsed.name_kind,"labelQualifiers":parsed.qualifiers,"sourceIdentityValue":name,"shopName":"","shopId":"","aliases":[name,key],"baseProductIds":[]});
                 decorate(&mut entry, &prefs["avatarSettings"][&id]);
-                let display = text(&entry, "displayName").to_owned();
+                let display = text(&entry, "sourceDisplayName").to_owned();
                 registry.entries.insert(id.clone(), entry);
                 add_alias(&mut registry, &display, &id, true);
             }
@@ -495,10 +581,8 @@ pub(super) fn options(
             memberships.entry(id).or_default().insert(product.clone());
         }
     }
-    for (alias, id) in &registry.aliases {
-        prefs["avatarAliases"][alias] = json!(id);
-    }
-    if prefs != before {
+    normalize_with_registry(&registry, &mut prefs);
+    if persist_aliases && prefs != before {
         set_raw(conn, "preferences", "app", &prefs)?;
         Catalogue::bump_revision(conn)?;
     }
@@ -510,6 +594,94 @@ pub(super) fn options(
             .unwrap_or(prefs["avatarAutomaticEnabled"][id].as_bool().unwrap_or(false)));
     }
     Ok(registry.entries.into_values().collect())
+}
+
+pub(super) struct AvatarDeltaResolver {
+    options: BTreeMap<String, Value>,
+    resolver: crate::taxonomy::AvatarTagResolver,
+}
+impl AvatarDeltaResolver {
+    pub(super) fn new(conn: &Connection) -> Result<Self> {
+        let mut options = option_snapshot(conn)?;
+        for entry in &mut options {
+            entry["displayName"] = entry["sourceDisplayName"].clone();
+        }
+        let resolver = crate::taxonomy::AvatarTagResolver::from_options(&options);
+        Ok(Self { options: options.into_iter().map(|entry| (text(&entry, "id").to_owned(), entry)).collect(), resolver })
+    }
+
+    /// Resolve each current membership by exact evidence before considering a
+    /// unique name. A shared friendly label never removes an unrelated identity.
+    pub(super) fn apply(&self, product: &Value, delta: &Value) -> Result<Vec<String>> {
+        let add = strings(&delta["add"]);
+        let remove: BTreeSet<_> = strings(&delta["remove"]).into_iter().collect();
+        let mut values = Vec::new();
+        let mut retained = BTreeSet::new();
+        for value in strings(&product["ownedAvatars"]) {
+            let mut identities = BTreeSet::new();
+            if self.options.contains_key(&value) {
+                identities.insert(value.clone());
+            } else {
+                for evidence in product["ownedAvatarEvidence"].as_array().into_iter().flatten()
+                    .filter(|e| normalized(text(e, "avatar")) == normalized(&value))
+                {
+                    let id = text(evidence, "avatarId");
+                    if self.options.contains_key(id) || remove.contains(id) && identity(id) {
+                        identities.insert(id.to_owned());
+                    }
+                }
+                if identities.is_empty() {
+                    if let Some(entry) = self.resolver.resolve_manual_avatar(&value) {
+                        identities.insert(text(&entry, "id").to_owned());
+                    }
+                }
+            }
+            if identities.is_empty() {
+                if !remove.contains(&value) {
+                    values.push(value);
+                }
+                continue;
+            }
+            for id in identities {
+                if remove.contains(&id) || remove.contains(&value) {
+                    continue;
+                }
+                retained.insert(id.clone());
+                // Evidence-only choices are derived from existing human/source
+                // labels; keep their text rather than persisting a guessed ID.
+                values.push(if id.starts_with("avatar:") { value.clone() } else { id });
+            }
+        }
+        for value in add {
+            if !identity(&value) {
+                if let Some(entry) = self.resolver.resolve_manual_avatar(&value) {
+                    if !retained.insert(text(&entry, "id").to_owned()) {
+                        continue;
+                    }
+                }
+                values.push(value);
+                continue;
+            }
+            let entry = self.options.get(&value).context("catalogue.invalid_avatar_selection")?;
+            if !retained.insert(value.clone()) {
+                continue;
+            }
+            values.push(if value.starts_with("avatar:") {
+                // The derived ID hashes this raw representative, not its newer
+                // cleaned presentation. Keep it stable without an alias write.
+                text(entry, "sourceIdentityValue").to_owned()
+            } else {
+                value
+            });
+        }
+        let mut seen = BTreeSet::new();
+        values.retain(|value| seen.insert(value.clone()));
+        Ok(values)
+    }
+}
+
+fn identity(value: &str) -> bool {
+    ["booth:", "product:", "avatar:"].iter().any(|prefix| value.starts_with(prefix))
 }
 
 impl Catalogue {

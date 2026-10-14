@@ -4,11 +4,11 @@ import { categoryKeys, sourceCategoryLabel, normalizeSearch, getEffectiveTags, g
 import { editorText } from './editor-i18n';
 import { nativeWorkflowText } from './native-workflow-i18n';
 import TagPicker, { resolveTag } from './TagPicker';
-import AvatarPicker,{productAvatarOptions,productAvatarSelection,productAvatarValues} from './AvatarPicker';
+import AvatarPicker,{productsAvatarOptions,productAvatarOptions,productAvatarSelection,productAvatarValues,productAvatarDelta} from './AvatarPicker';
 import Preview from './Preview';
 import Toggle from './Toggle';
 import {dialog, nativeFileAction, previewSource, errorCode, dismissAiSourceUrlCandidate} from './backend';
-import type {AvatarOption,TagOption,FetchedProductMetadata} from './backend';
+import type {AvatarOption,TagOption,FetchedProductMetadata,ProductOverlayChange} from './backend';
 import {collectionMembership} from './collections';
 import {Pencil,Trash2,Check,X,Plus,Users} from 'lucide-react';
 import {getCurrentWebview} from '@tauri-apps/api/webview';
@@ -21,7 +21,7 @@ export interface EditDialogsProps {
   dialog: string | null; locale: Locale; products: Product[]; selected: string[]; active: Product | undefined;
   aiFeaturesEnabled?:boolean;
   onClose: () => void; onPatch: (ids: string[], patch: Partial<Product>) => void | Promise<void>;
-  onBatchPatch?: (changes: { id: string; patch: Partial<Product> }[]) => void | Promise<void>;
+  onBatchPatch?: (changes: ProductOverlayChange[]) => void | Promise<void>;
   onNotice: (s: string) => void; onSaveSearch: (name: string) => void | Promise<void>; onCollection: (name: string, ids: string[], included: boolean) => void | Promise<void>;
   collections?: Record<string, string[]>;
   collectionBusy?: boolean;
@@ -29,6 +29,7 @@ export interface EditDialogsProps {
   tagOptions?:TagOption[];
   avatarOptions?:AvatarOption[];
   avatarLabel?:(id:string)=>string;
+  onRefreshAvatars?:()=>void|Promise<void>;
   onFetchMetadata?:(url:string)=>Promise<FetchedProductMetadata>;
   onLocalFiles?:(productId:string,args:{draftId:string;addSources:string[];removeFileIds:string[]})=>Promise<unknown>;
   onCreateCollection?: (name:string)=>void | Promise<void>;
@@ -85,8 +86,9 @@ function DialogBody(p: EditDialogsProps) {
   // turn untouched opening values into manual overrides when another field saves.
   const opening = useRef(active).current;
   const offline=opening?.provider==='local';
-  const scoped = p.products.filter(item => p.selected.includes(item.id));
   const batch = p.dialog === 'batch';
+  const openingBatch=useRef(batch?p.products.filter(item=>p.selected.includes(item.id)):[]).current;
+  const scoped = batch?openingBatch.map(item=>p.products.find(current=>current.id===item.id)??item):p.products.filter(item => p.selected.includes(item.id));
   const allSuggestions = useMemo(()=>[...new Set([...(p.tagOptions??[]).map(option=>option.label),...p.products.flatMap(product=>[...getEffectiveTags(product),...(product.tagSuggestions??[]).map(option=>option.label)])])],[p.products,p.tagOptions]);
   const [title, setTitle] = useState(active?.title ?? '');
   const [sourceUrl,setSourceUrl]=useState(active?.sourceUrl??'');
@@ -105,10 +107,19 @@ function DialogBody(p: EditDialogsProps) {
   const chooseLocalFiles=async()=>{if(inFlight.current)return;try{const picked=await dialog('open_file',{multiple:true});if(picked&&alive.current&&!inFlight.current&&!confirmationOpen.current)appendLocalFiles(picked.paths??[picked.path]);}catch(error){if(alive.current)setError(errorCode(error));}};
   const returnToFileList=()=>requestAnimationFrame(()=>localFileList.current?.focus({preventScroll:true}));
   const [category, setCategory] = useState(batch ? '' : active?.category ?? 'NonVRChat');
-  const initialAvatarOptions=useRef(opening?productAvatarOptions(opening,p.avatarOptions??[]):p.avatarOptions??[]).current;
+  const initialAvatarOptions=useRef(batch?productsAvatarOptions(scoped,p.avatarOptions??[]):opening?productAvatarOptions(opening,p.avatarOptions??[]):p.avatarOptions??[]).current;
   const avatarOptions=useMemo(()=>[...(p.avatarOptions??[]),...initialAvatarOptions.filter(option=>'legacyValue' in option)],[p.avatarOptions,initialAvatarOptions]);
-  const initialAvatarSelection=useRef(opening?productAvatarSelection(opening,initialAvatarOptions):[]).current;
+  const initialAvatarSelection=useRef(!batch&&opening?productAvatarSelection(opening,initialAvatarOptions):[]).current;
   const [selectedAvatars,setSelectedAvatars]=useState(initialAvatarSelection);
+  const initialBatchAvatarSelections=useRef(Object.fromEntries(scoped.map(item=>[item.id,productAvatarSelection(item,initialAvatarOptions)]))).current;
+  const [batchAvatarSelections,setBatchAvatarSelections]=useState(initialBatchAvatarSelections);
+  const batchAvatarEnabled=(id:string)=>scoped.length>0&&scoped.every(item=>batchAvatarSelections[item.id]?.includes(id));
+  const batchAvatarMixed=(id:string)=>!batchAvatarEnabled(id)&&scoped.some(item=>batchAvatarSelections[item.id]?.includes(id));
+  const pickerSelection=batch?avatarOptions.filter(option=>batchAvatarEnabled(option.id)).map(option=>option.id):selectedAvatars;
+  const batchAvatarCount=avatarOptions.filter(option=>scoped.some(item=>batchAvatarSelections[item.id]?.includes(option.id))).length;
+  const batchAvatarDeltas=scoped.map(item=>({id:item.id,delta:productAvatarDelta(avatarOptions,initialBatchAvatarSelections[item.id]??[],batchAvatarSelections[item.id]??[])}));
+  const batchAvatarChanged=batchAvatarDeltas.some(item=>item.delta.add.length||item.delta.remove.length);
+  const [avatarsRefreshing,setAvatarsRefreshing]=useState(false);
   const [avatarPickerOpen,setAvatarPickerOpen]=useState(false);
   const avatarPickerShown=useRef(avatarPickerOpen);avatarPickerShown.current=avatarPickerOpen;
   const avatarTrigger=useRef<HTMLButtonElement>(null),avatarWasOpen=useRef(false);
@@ -134,6 +145,9 @@ function DialogBody(p: EditDialogsProps) {
   const [thumbnailPath,setThumbnailPath]=useState<string|null>();
 
   const [rating,setRating]=useState('unchanged');
+  const initialBatchRating=openingBatch.length>0&&openingBatch.every(item=>item.sensitive)?'on':openingBatch.some(item=>item.sensitive)?'mixed':'off';
+  const batchRating=rating==='unchanged'?initialBatchRating:rating;
+  const ratingChanged=rating!=='unchanged'&&rating!==initialBatchRating;
   const alive=useRef(true),thumbnailRequest=useRef(0),metadataRequest=useRef(0),metadataPending=useRef(false),draftUrl=useRef(sourceUrl);
   draftUrl.current=sourceUrl;
   const [fetching,setFetching]=useState<'metadata'|'thumbnail'|null>(null);
@@ -197,7 +211,7 @@ function DialogBody(p: EditDialogsProps) {
   const themeValid = Object.keys(builtInTheme).every(key => validColor(theme[key]));
   if(themeValid) lastValidTheme.current = theme;
   const singleChanged = opening && (resetTitle || title !== opening.title || sourceUrl!==(opening.sourceUrl??'') || sourceThumbnailUrl!==opening.sourceThumbnailUrl || note !== opening.note || category !== opening.category || avatarChanged || !equal(tags, initialTags) || !!pendingTag.trim() || !equal(rejected, opening.rejectedTags ?? []) || thumbnailPath!==undefined || thumbnailChoice !== initialThumbnailChoice || thumbnailURL !== initialThumbnailURL || sensitive !== opening.sensitive);
-  const dirty = p.dialog === 'theme' ? !equal(theme, initialTheme.current) || name !== (p.themeName??'') : batch ? !!category || noteChanged || rating!=='unchanged' || (tagMode !== 'unchanged' && (!!tagDelta.length || !!pendingDelta.trim())) : p.dialog === 'edit' ? !!singleChanged||!!addedFiles.length||!!removedFiles.length : !!name.trim();
+  const dirty = p.dialog === 'theme' ? !equal(theme, initialTheme.current) || name !== (p.themeName??'') : batch ? !!category || noteChanged || ratingChanged || batchAvatarChanged || (tagMode !== 'unchanged' && (!!tagDelta.length || !!pendingDelta.trim())) : p.dialog === 'edit' ? !!singleChanged||!!addedFiles.length||!!removedFiles.length : !!name.trim();
   const close = () => { if(inFlight.current)return;cancelFetch();if (p.dialog === 'theme') p.onThemePreview(null); p.onClose(); };
   const requestClose = () => {if(inFlight.current)return;cancelFetch();confirmClose ? setConfirmClose(false) : dirty ? setConfirmClose(true) : close();};
   const closeRef = useRef(requestClose); closeRef.current = requestClose;
@@ -240,6 +254,7 @@ function DialogBody(p: EditDialogsProps) {
     return ()=>{if(prior?.isConnected) prior.focus();};
   },[confirmClose]);
   useEffect(() => { if (p.dialog === 'theme' && themeValid) p.onThemePreview(prefixed(theme)); }, [theme]);
+  const openAvatarPicker=async()=>{if(inFlight.current||avatarsRefreshing)return;setAvatarsRefreshing(true);setError('');try{await p.onRefreshAvatars?.();if(alive.current&&!inFlight.current&&!confirmationOpen.current)setAvatarPickerOpen(true);}catch(error){if(alive.current)setError(errorCode(error));}finally{if(alive.current)setAvatarsRefreshing(false);}};
   const invalid = (message:string) => { setConfirmClose(false); setError(message); requestAnimationFrame(()=>box.current?.querySelector<HTMLInputElement>('input[required]')?.focus()); };
   const save = async () => {
     if(inFlight.current)return;
@@ -275,13 +290,14 @@ function DialogBody(p: EditDialogsProps) {
         const patch: Partial<Product> = {};
         if (category) { patch.category = category; patch.categoryOverride=true; }
         if (noteChanged) patch.note = note;
-        if(rating!=='unchanged')patch.sensitive=rating==='on';
+        if(ratingChanged)patch.sensitive=rating==='on';
         if (tagMode === 'addTag' && delta.length) { patch.tags = [...new Set([...getEffectiveTags(item), ...delta])]; patch.rejectedTags=(item.rejectedTags??[]).filter(tag=>!delta.some(value=>sameTag(value,tag))); }
         if (tagMode === 'removeTag' && delta.length) { patch.tags = getEffectiveTags(item).filter(tag => !delta.some(value=>sameTag(value,tag))); patch.rejectedTags=[...new Set([...(item.rejectedTags??[]),...item.tags.filter(tag=>delta.some(value=>sameTag(value,tag)))])]; }
         if(patch.tags) patch.sourceTags=item.sourceTags??[...item.tags];
-        return { id: item.id, patch };
-      }).filter(change => Object.keys(change.patch).length);
-      if (p.onBatchPatch) await p.onBatchPatch(changes); else for(const change of changes)await p.onPatch([change.id],change.patch);
+        const avatarDelta=batchAvatarDeltas.find(change=>change.id===item.id)?.delta;
+        return { id: item.id, patch, ...(avatarDelta&&(avatarDelta.add.length||avatarDelta.remove.length)?{ownedAvatarsDelta:avatarDelta}:{}) };
+      }).filter(change => Object.keys(change.patch).length||change.ownedAvatarsDelta);
+      if (changes.length) { if (p.onBatchPatch) await p.onBatchPatch(changes); else for(const change of changes)await p.onPatch([change.id],change.patch); }
     } else if (p.dialog === 'theme') {
       if (!themeValid) { invalid('invalidTheme'); return; }
       if (!name.trim()) { invalid('themeNameRequired'); return; }
@@ -335,12 +351,12 @@ function DialogBody(p: EditDialogsProps) {
               {!batch && <><Field label={L('title')}><input value={title} onChange={e=>{setTitle(e.target.value);setResetTitle(false);}} required /></Field>{!offline&&<div className="form-row"><small className="muted">{L('sourceValue')}: {active?.sourceTitle ?? active?.title}</small><button type="button" onClick={()=>{setTitle(active?.sourceTitle ?? active?.title ?? '');setResetTitle(true);}}>{L('resetToSource')}</button></div>}</>}
               {!batch&&<Field label={L('productURL')}><div className="editor-url-control"><input id="editor-product-url" inputMode="url" autoCapitalize="none" spellCheck={false} value={sourceUrl} aria-invalid={normalizeProductUrl(sourceUrl)===null} onChange={e=>{draftUrl.current=e.target.value;setSourceUrl(e.target.value);cancelFetch();if(error==='invalidURL')setError('');}}/><button type="button" disabled={!!fetching||!p.onFetchMetadata} aria-busy={fetching==='metadata'} onClick={()=>void fetchDraft()}>{L(fetching==='metadata'?'fetchingProductData':'fetchProductData')}</button></div></Field>}
               {!batch&&aiUrlCandidates.map(candidate=><div className="field" key={candidate.url}><small>{AIText('aiUrlCandidate')} · {AIText(candidate.status==='supported'?'aiUrlSupported':'aiUrlUncertain')}</small><small style={{overflowWrap:'anywhere'}}>{candidate.url}</small><small title={candidate.evidenceRefs.join(' · ')}>{AIText(candidate.basis)}</small><div className="form-row"><button type="button" disabled={!!fetching} onClick={()=>{const url=normalizeProductUrl(candidate.url);if(!url)return;cancelFetch();draftUrl.current=url;setSourceUrl(url);if(error==='invalidURL')setError('');}}>{AIText('aiUseUrl')}</button><button type="button" disabled={!!fetching} onClick={()=>void ignoreAiUrl(candidate.url)}>{AIText('aiIgnoreUrl')}</button></div></div>)}
-              <div className="editor-category-row"><Field label={L('category')}><select value={category} onChange={e=>setCategory(e.target.value)}>{batch && <option value="">{L('unchanged')} · {new Set(scoped.map(p=>p.category)).size > 1 ? L('mixed') : L(scoped[0]?.category ?? 'unknown')}</option>}{categoryKeys.map(key=><option key={key} value={key}>{L(key)}</option>)}</select></Field>{!batch&&<button type="button" className="editor-avatar-trigger" ref={avatarTrigger} title={L('compatibleAvatars')} aria-label={L('compatibleAvatars')} aria-haspopup="dialog" aria-expanded={avatarPickerOpen} onClick={()=>setAvatarPickerOpen(true)}><Users size={14}/><span>{L('editAvatars')}</span>{selectedAvatars.length>0&&<small>{selectedAvatars.length}</small>}</button>}</div>
+              <div className="editor-category-row"><Field label={L('category')}><select value={category} onChange={e=>setCategory(e.target.value)}>{batch && <option value="">{L('unchanged')} · {new Set(scoped.map(p=>p.category)).size > 1 ? L('mixed') : L(scoped[0]?.category ?? 'unknown')}</option>}{categoryKeys.map(key=><option key={key} value={key}>{L(key)}</option>)}</select></Field><button type="button" className="editor-avatar-trigger" ref={avatarTrigger} title={L('compatibleAvatars')} aria-label={L('compatibleAvatars')} aria-haspopup="dialog" aria-expanded={avatarPickerOpen} aria-busy={avatarsRefreshing} disabled={avatarsRefreshing||(batch&&!p.onBatchPatch)} onClick={()=>void openAvatarPicker()}><Users size={14}/><span>{L('editAvatars')}</span>{(batch?batchAvatarCount:selectedAvatars.length)>0&&<small>{batch?batchAvatarCount:selectedAvatars.length}</small>}</button></div>
               {!batch&&!offline&&active?.sourceCategory&&<small className="muted">{[...new Set((active.sources??[]).map(source=>source.provider).filter(Boolean))].map(provider=>provider+' · ').join('')}{L('sourceValue')}: {sourceCategoryLabel(active.sourceCategory)||L('unknown')}</small>}
               {batch ? <><Field label={L('tags')}><select value={tagMode} onChange={e=>{setTagMode(e.target.value);setTagDelta([]);setPendingDelta('');}}>{['unchanged','addTag','removeTag'].map(key=><option key={key} value={key}>{L(key)}</option>)}</select></Field>{tagMode !== 'unchanged' && <TagPicker key={tagMode} locale={p.locale} label={L(tagMode)} value={tagDelta} suggestions={tagMode==='removeTag'?[...new Set(scoped.flatMap(item=>getEffectiveTags(item)))]:suggestions} aliases={aliases} onChange={setTagDelta} onDraftChange={setPendingDelta}/>}</> : <TagPicker locale={p.locale} value={tags} suggestions={suggestions} aliases={aliases} onChange={updateTags} onDraftChange={setPendingTag}/>}
               {batch && <label className="form-row"><input type="checkbox" checked={noteChanged} onChange={e=>setNoteChanged(e.target.checked)}/>{L('replaceNote')}</label>}
               {batch&&<Field label={L('note')}><textarea rows={3} value={note} disabled={!noteChanged} placeholder={L('unchanged')} onChange={e=>setNote(e.target.value)}/></Field>}
-              {batch&&<Field label="R-18"><select aria-label="R-18" value={rating} onChange={e=>setRating(e.target.value)}><option value="unchanged">{L('unchanged')}</option><option value="on">{L('ratingOn')}</option><option value="off">{L('ratingOff')}</option></select></Field>}
+              {batch&&<div className="editor-batch-rating"><span className="editor-sensitive-toggle"><span className="nna-toggle"><span id="editor-batch-sensitive-label">R-18</span><button type="button" role="checkbox" aria-checked={batchRating==='mixed'?'mixed':batchRating==='on'} aria-labelledby="editor-batch-sensitive-label" title={ratingChanged?L(batchRating==='on'?'ratingOn':'ratingOff'):L('unchanged')+(batchRating==='mixed'?' · '+L('mixed'):'')} onClick={()=>setRating(batchRating==='on'?'off':'on')}><span aria-hidden="true"/></button></span></span></div>}
               {!batch&&<>
                 <div className="editor-thumbnail-note"><div><div className="field"><span>{L('thumbnail')}</span></div><div className="editor-thumbnail-preview"><Preview src={thumbnailPreview} title={L('thumbnail')} placeholderTitle={L('noImage')}/></div></div><Field label={L('note')}><textarea rows={5} value={note} onChange={e=>setNote(e.target.value)}/></Field></div>
                 <div className="editor-thumbnail-bottom"><div className="editor-thumbnail-actions"><button type="button" disabled={!!fetching||!p.onFetchMetadata} aria-busy={fetching==='thumbnail'} onClick={resetThumbnail}>{L(fetching==='thumbnail'?'resettingThumbnail':'resetThumbnail')}</button><button type="button" onClick={()=>void uploadThumbnail()}>{L('uploadThumbnail')}</button></div><label className="editor-sensitive-toggle" htmlFor="editor-sensitive"><Toggle id="editor-sensitive" label="R-18" checked={sensitive} onChange={setSensitive}/></label></div>
@@ -362,7 +378,7 @@ function DialogBody(p: EditDialogsProps) {
         </form>
       </div>
     </div>
-    {avatarPickerOpen&&<AvatarPicker locale={p.locale} options={avatarOptions} value={selectedAvatars} label={id=>{const option=avatarOptions.find(option=>option.id===id);return option&&'legacyValue' in option?String(option.legacyValue):p.avatarLabel?.(id)||option?.displayName||option?.officialName||id;}} onChange={(ids,selected)=>setSelectedAvatars(current=>selected?[...new Set([...current,...ids])]:current.filter(id=>!ids.includes(id)))} onClose={()=>setAvatarPickerOpen(false)}/>}
+    {avatarPickerOpen&&<AvatarPicker locale={p.locale} options={avatarOptions} value={pickerSelection} mixed={batch?batchAvatarMixed:undefined} label={id=>{const option=avatarOptions.find(option=>option.id===id);return option&&'legacyValue' in option?String(option.legacyValue):p.avatarLabel?.(id)||option?.displayName||option?.officialName||id;}} onChange={(ids,selected)=>{if(batch)setBatchAvatarSelections(current=>Object.fromEntries(scoped.map(item=>{const values=current[item.id]??[];return [item.id,selected?[...new Set([...values,...ids])]:values.filter(id=>!ids.includes(id))];})));else setSelectedAvatars(current=>selected?[...new Set([...current,...ids])]:current.filter(id=>!ids.includes(id)));}} onClose={()=>setAvatarPickerOpen(false)}/>}
     {confirmClose && <div className="modal-backdrop editor-confirm-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!inFlight.current)setConfirmClose(false);}}>
       <div className="modal editor-confirm" role="alertdialog" aria-modal="true" aria-labelledby="editor-unsaved-title" ref={confirmation} style={themeDialogStyle}>
         <div className="modal-header"><h2 id="editor-unsaved-title">{L('unsavedChanges')}</h2></div>

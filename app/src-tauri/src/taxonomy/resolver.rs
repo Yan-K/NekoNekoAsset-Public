@@ -34,6 +34,11 @@ impl AvatarTagResolver {
                 continue;
             };
             resolver.entries.insert(id.to_owned(), entry.clone());
+            // Uncertain labels remain available through explicit IDs; their
+            // words and bundle components do not establish one avatar name.
+            if matches!(entry["nameKind"].as_str(), Some("bundle" | "fallback")) {
+                continue;
+            }
             let names: BTreeSet<_> = ["officialName", "englishName", "displayName"]
                 .into_iter()
                 .filter_map(|field| entry[field].as_str())
@@ -160,6 +165,22 @@ impl AvatarTagResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncertain_base_choices_require_explicit_identity_selection() {
+        let mut fallback = base("product:authored-fallback", "星猫 / 海猫", "");
+        fallback["nameKind"] = json!("fallback");
+        fallback["aliases"] = json!(["Authored alias"]);
+        let mut bundle = base("product:authored-bundle", "苺佳 and GLC and 蒼葉", "");
+        bundle["nameKind"] = json!("bundle");
+        let resolver = AvatarTagResolver::from_options(&[fallback, bundle]);
+        for tag in ["星猫 / 海猫", "Authored alias", "苺佳 and GLC and 蒼葉", "苺佳", "GLC"] {
+            assert!(resolver.resolve_tag(tag).is_none(), "{tag}");
+        }
+        assert!(resolver.resolve_manual_avatar("product:authored-fallback").is_some());
+        assert!(resolver.resolve_manual_avatar("product:authored-bundle").is_some());
+    }
+
 
     fn base(id: &str, original: &str, english: &str) -> Value {
         json!({"id":id,"officialName":original,"englishName":english,"displayName":format!("{original} / {english}"),"aliases":[format!("product:{id}"),"123456"]})

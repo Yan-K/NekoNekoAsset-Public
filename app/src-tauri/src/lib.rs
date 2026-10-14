@@ -423,6 +423,7 @@ async fn catalogue_action(
     let invalidates = !matches!(
         action.as_str(),
         "bootstrap"
+            | "avatar_options"
             | "query"
             | "conflicts"
             | "product_details"

@@ -33,5 +33,11 @@ const extra:Record<string,[string,string,string,string,string]>={
   selectAllAvatars:['Select all','すべて選択','모두 선택','全选','全選'],
   ratingOn:['Enabled','有効','활성화','已启用','已啟用'],
   ratingOff:['Disabled','無効','비활성화','已停用','已停用'],
+  avatarSearch:['Search avatars or shops','アバター・ショップを検索','아바타 또는 상점 검색','搜索素体或商店','搜尋素體或商店'],
+  avatarNoResults:['No matching avatars','該当するアバターなし','일치하는 아바타 없음','没有符合的素体','沒有符合的素體'],
+  editAvatar:['Edit avatar name and shop','アバター名・ショップ名を編集','아바타 이름 및 상점 편집','编辑素体名称和商店','編輯素體名稱和商店'],
+  avatarName:['Avatar name','アバター名','아바타 이름','素体名称','素體名稱'],
+  avatarShop:['Shop name','ショップ名','상점 이름','商店名称','商店名稱'],
+  avatarEditFailed:['Could not save the avatar. Try again.','アバターを保存できませんでした。もう一度お試しください。','아바타를 저장하지 못했습니다. 다시 시도하세요.','无法保存素体，请重试。','無法儲存素體，請重試。'],
 };
 export function editorText(locale: Locale, key: string): string { return extra[key]?.[['en','ja','ko','zh-Hans','zh-Hant'].indexOf(locale)] ?? (labels[locale] as Record<string,string>)[key] ?? (['productURL','invalidURL'].includes(key)?wf(locale,key):t(locale,key)); }

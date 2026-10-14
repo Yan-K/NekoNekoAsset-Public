@@ -842,8 +842,40 @@ pub fn clean_avatar_name(text: &str) -> String {
         .to_owned()
 }
 
-/// Avatar-label presentation only; this does not establish product identity or
-/// extract avatar mentions from file names, tags, or apparel titles.
+/// Compact Base-label presentation. Kind describes parsing certainty, never
+/// product identity, entitlement or automatic enablement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AvatarLabelParts {
+    pub original: String,
+    pub source_latin: Option<String>,
+    pub qualifiers: Vec<String>,
+    pub name_kind: &'static str,
+}
+
+pub fn parsed_avatar_label(title: &str) -> AvatarLabelParts {
+    names::structured_base_parts(title)
+}
+
+/// A bounded presentation correction tied to the public product identity.
+/// Similar titles and user renames never inherit another product's name.
+pub fn parsed_product_avatar_label(product_id: &str, title: &str) -> AvatarLabelParts {
+    let mut parsed = parsed_avatar_label(title);
+    let corrected = match product_id.strip_prefix("booth:").unwrap_or(product_id) {
+        // https://booth.pm/ja/items/8547624 — name stem only; Latin unverified.
+        "8547624" if title.contains("メイネーラ") => Some("メイネーラ"),
+        // https://booth.pm/en/items/4309253 — franchise prefix is not the name.
+        "4309253" if title.contains("棗") && title.contains("イロハ") => Some("棗 イロハ"),
+        _ => None,
+    };
+    if let Some(original) = corrected {
+        parsed.original = original.to_owned();
+        parsed.source_latin = None;
+        parsed.name_kind = "single";
+    }
+    parsed
+}
+
+/// Conservative legacy label parsing used by exact identity/alias paths.
 pub fn avatar_label_parts(title: &str) -> (String, Option<String>) {
     let (original, english) = names::base_parts(title);
     (
@@ -1098,11 +1130,17 @@ fn romanize_kana(clean: &str) -> String {
 pub fn avatar_display_name(avatar: &Value) -> String {
     let original = avatar["officialName"].as_str().unwrap_or("");
     let english = avatar["englishName"].as_str().unwrap_or("");
-    if english.is_empty() {
+    let mut display = if english.is_empty() || normalize(original) == normalize(english) {
         original.to_owned()
     } else {
         format!("{original} / {english}")
+    };
+    let qualifiers: Vec<_> = avatar["labelQualifiers"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).filter(|value| !value.is_empty()).collect();
+    if !qualifiers.is_empty() {
+        display.push_str(&format!(" ({})", qualifiers.join(", ")));
     }
+    display
 }
 
 // Conservative boundaries keep short names such as 萌 out of unrelated words.
@@ -1227,33 +1265,38 @@ pub fn owned_base_options(products: &[Value]) -> Vec<Value> {
         let Some(id) = product["id"].as_str().filter(|id| !id.trim().is_empty()) else {
             continue;
         };
-        let known = avatars()
-            .iter()
-            .find(|avatar| avatar.value["productId"].as_str() == Some(id));
+        let known = avatars().iter().find(|avatar| avatar.value["productId"].as_str() == Some(id));
+        let source_title = product["sourceTitle"].as_str().filter(|name| !name.trim().is_empty())
+            .or_else(|| product["title"].as_str().filter(|name| !name.trim().is_empty()));
+        let title = source_title.unwrap_or(id);
         let mut entry = known.map(|avatar| avatar.value.clone()).unwrap_or_else(|| json!({
-            "id":format!("product:{id}"), "productId":id,
-            "officialName":product["sourceTitle"].as_str().filter(|name| !name.trim().is_empty()).or_else(|| product["title"].as_str()).unwrap_or(id),
+            "id":format!("product:{id}"), "productId":id, "officialName":title,
             "aliases":[], "provenance":{"kind":"catalogueBaseProduct", "productId":id},
         }));
         if known.is_none() {
-            if !names::has_name(entry["officialName"].as_str().unwrap_or("")) {
-                continue;
-            }
-            let (name, source_spelling) =
-                avatar_label_parts(entry["officialName"].as_str().unwrap_or(id));
-            let english = source_spelling
-                .clone()
-                .unwrap_or_else(|| romanized_name(&name));
-            entry["officialName"] = json!(name);
+            let parsed = if source_title.is_some() { parsed_product_avatar_label(id, title) } else {
+                AvatarLabelParts { original: id.to_owned(), source_latin: None, qualifiers: vec![], name_kind: "fallback" }
+            };
+            let english = if parsed.name_kind == "single" {
+                parsed.source_latin.clone().unwrap_or_else(|| romanized_name(&parsed.original))
+            } else {
+                String::new()
+            };
+            entry["officialName"] = json!(parsed.original);
+            entry["nameKind"] = json!(parsed.name_kind);
+            entry["labelQualifiers"] = json!(parsed.qualifiers);
             entry["englishNameStatus"] = json!(if english.is_empty() {
                 "unresolvedReading"
-            } else if source_spelling.is_some() {
+            } else if parsed.source_latin.is_some() {
                 "sourceTitleSpelling"
             } else {
                 "romanizationFallback"
             });
             entry["englishName"] = json!(english);
-            entry["englishNameEvidence"] = json!({"kind":if source_spelling.is_some(){"sourceTitleSpelling"}else{"presentationFallback"},"identityEstablished":false});
+            entry["englishNameEvidence"] = json!({"kind":if parsed.source_latin.is_some(){"sourceTitleSpelling"}else{"presentationFallback"},"identityEstablished":false});
+        } else {
+            entry["nameKind"] = json!("single");
+            entry["labelQualifiers"] = json!([]);
         }
         entry["displayName"] = json!(avatar_display_name(&entry));
         entry["basis"] = json!("catalogueBaseProduct");
@@ -1462,7 +1505,11 @@ mod tests {
             super::avatar_label_parts("Original 3D Avatar"),
             ("Original 3D Avatar".into(), None)
         );
-        assert!(super::owned_base_options(&[serde_json::json!({"id":"synthetic-unnamed","category":"Base","sourceTitle":"Original 3D Avatar"})]).is_empty());
+        let unnamed = super::owned_base_options(&[serde_json::json!({"id":"synthetic-unnamed","category":"Base","sourceTitle":"Original 3D Avatar"})]);
+        assert_eq!(unnamed.len(), 1);
+        assert_eq!(unnamed[0]["id"], "product:synthetic-unnamed");
+        assert_eq!(unnamed[0]["nameKind"], "fallback");
+        assert_eq!(unnamed[0]["englishName"], "");
         assert_eq!(
             super::clean_avatar_name("Original 3D Modeler"),
             "Original 3D Modeler"
@@ -2013,7 +2060,7 @@ mod tests {
         assert_eq!(romanized_name("未確認漢字"), "");
         assert_eq!(
             avatar_display_name(&json!({"officialName":"Example","englishName":"Example"})),
-            "Example / Example"
+            "Example"
         );
         let options = owned_base_options(&[
             json!({"id":"unknown-id","category":"Base","sourceTitle":"オリジナル3Dモデル「真冬」"}),
@@ -2049,6 +2096,53 @@ mod tests {
             .iter()
             .all(|option| option["entitlementEstablished"] == false));
     }
+
+    #[test]
+    fn every_effective_base_keeps_its_identity_even_when_label_is_uncertain() {
+        let products = [
+            json!({"id":"authored-wrapper","category":"Base","sourceTitle":"Original 3D Avatar"}),
+            json!({"id":"authored-ambiguous","category":"Base","sourceTitle":"星猫 / 海猫"}),
+            json!({"id":"authored-bundle","category":"Base","sourceTitle":"【 R18 Edition】苺佳(ichica) and GLC and 蒼葉(aoba)"}),
+            json!({"id":"authored-latin","category":"Base","sourceTitle":"【無料】Ren♡Ai"}),
+            json!({"id":"authored-unsupported","category":"Base","sourceTitle":"そらΩ"}),
+            json!({"id":"authored-empty","category":"Base","sourceTitle":"","title":""}),
+            json!({"id":"authored-other","category":"Clothes","sourceTitle":"アマト"}),
+        ];
+        let options = owned_base_options(&products);
+        assert_eq!(options.len(), 6);
+        for product in &products[..6] {
+            assert!(options.iter().any(|option| option["id"] == format!("product:{}", product["id"].as_str().unwrap())));
+        }
+        for id in ["authored-wrapper", "authored-ambiguous", "authored-bundle"] {
+            let option = options.iter().find(|option| option["productId"] == id).unwrap();
+            assert!(!option["displayName"].as_str().unwrap().is_empty());
+            assert_eq!(option["englishName"], "");
+            assert_ne!(option["nameKind"], "single");
+        }
+        let latin = options.iter().find(|option| option["productId"] == "authored-latin").unwrap();
+        assert_eq!(latin["displayName"], "Ren♡Ai");
+        assert_eq!(latin["englishNameStatus"], "sourceTitleSpelling");
+        assert!(options.iter().all(|option| option["entitlementEstablished"] == false));
+    }
+
+    #[test]
+    fn public_identity_presentation_corrections_never_spread_to_similar_products() {
+        for (id, source, expected) in [
+            ("8547624", "銀髪スーツの悪魔 メイネーラ VRChat向けオリジナル3Dアバター #e62f8b", "メイネーラ"),
+            ("4309253", "ブルーアーカイブ 二次創作3Dアバター 棗 イロハ", "棗 イロハ"),
+        ] {
+            let options = owned_base_options(&[json!({"id":id,"category":"Base","sourceTitle":source})]);
+            assert_eq!(options[0]["id"], format!("product:{id}"));
+            assert_eq!(options[0]["officialName"], expected);
+            assert!(matches!(options[0]["englishNameStatus"].as_str(), Some("romanizationFallback" | "unresolvedReading")));
+            assert_eq!(options[0]["englishNameEvidence"]["kind"], "presentationFallback");
+            assert_ne!(parsed_product_avatar_label("authored-other", source).original, expected);
+        }
+        assert_eq!(parsed_product_avatar_label("8547624", "Authored other name").original, "Authored other name");
+        let label = owned_base_options(&[json!({"id":"authored-nanase","category":"Base","sourceTitle":"【VRChat想定 オリジナル3Dモデル『ナナセ・ノワール -Nanase Noir-』Gen3.0"})]);
+        assert_eq!(label[0]["displayName"], "ナナセ・ノワール / Nanase Noir (Gen3.0)");
+    }
+
 
     #[test]
     fn bundled_identities_are_unique_and_have_public_provenance() {

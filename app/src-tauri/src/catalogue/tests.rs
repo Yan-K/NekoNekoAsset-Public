@@ -1629,7 +1629,7 @@ fn saved_human_base_name_overrides_ambiguous_source_before_registry_rejection() 
 }
 
 #[test]
-fn ambiguous_slash_sources_remain_products_without_fabricated_avatar_options() {
+fn ambiguous_slash_bases_remain_selectable_without_fabricated_individual_identities() {
     let f = Fixture::new();
     let c = f.open();
     let sources = [
@@ -1660,9 +1660,12 @@ fn ambiguous_slash_sources_remain_products_without_fabricated_avatar_options() {
     assert_eq!(named["officialName"], "星空猫");
     #[cfg(target_os = "windows")]
     assert_eq!(named["displayName"], "星空猫 / Hoshizoraneko");
-    assert!(!options.iter().any(|a| a["id"] == "product:multiple"
-        || a["id"] == "product:platform"
-        || text(a, "id").starts_with("avatar:")));
+    for id in ["product:multiple", "product:platform"] {
+        let fallback = options.iter().find(|a| a["id"] == id).unwrap();
+        assert_eq!(fallback["nameKind"], "fallback");
+        assert_eq!(fallback["englishName"], "");
+    }
+    assert!(!options.iter().any(|a| text(a, "id").starts_with("avatar:")));
     assert_eq!(boot["products"].as_array().unwrap().len(), 4);
     for (id, title) in sources {
         assert_eq!(c.get("product", id).unwrap().unwrap()["sourceTitle"], title);
@@ -1671,6 +1674,300 @@ fn ambiguous_slash_sources_remain_products_without_fabricated_avatar_options() {
         c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"],
         json!(["星猫 / 海猫"])
     );
+}
+
+#[test]
+fn avatar_snapshot_is_pure_and_manual_base_visibility_does_not_change_defaults() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("product", "manual-base", json!({"id":"manual-base","sourceTitle":"VRChat / 3D Avatar","sourceCategory":{"name":"Clothes"}})).unwrap();
+    c.put("job", "running-store", json!({"id":"running-store","type":"boothSync","state":"running"})).unwrap();
+    c.command("overlay", json!({"ids":["manual-base"],"patch":{"category":"Base"}})).unwrap();
+    let preferences = c.get("preferences", "app").unwrap();
+    let revision = c.revision().unwrap();
+    let snapshot = c.command("avatar_options", json!({})).unwrap();
+    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
+        .find(|option| option["id"] == "product:manual-base").unwrap();
+    assert_eq!(option["nameKind"], "fallback");
+    assert_eq!(option["enabled"], false);
+    assert_eq!(option["baseProductIds"], json!(["manual-base"]));
+    assert_eq!(c.get("preferences", "app").unwrap(), preferences);
+    assert_eq!(c.revision().unwrap(), revision);
+    let bootstrap = c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    assert_eq!(snapshot["avatarOptions"], bootstrap["avatarOptions"]);
+    product(&c, "selected-fallback");
+    c.command("overlay", json!({"ids":["selected-fallback"],"patch":{"ownedAvatars":["product:manual-base"]}})).unwrap();
+    let selected = dynamic_details(&c, "selected-fallback");
+    assert_eq!(selected["ownedAvatarEvidence"], json!([{"avatarId":"product:manual-base","avatar":option["displayName"],"source":"user"}]));
+    c.put("product", "generic-tag", json!({"id":"generic-tag","sourceTitle":"Authored clothing","sourceCategory":{"name":"Clothes"},"sourceTags":["VRChat / 3D Avatar"]})).unwrap();
+    assert!(dynamic_tag_ids(&c, "generic-tag").is_empty());
+    assert_eq!(c.get("preferences", "app").unwrap().unwrap()["avatarAutomaticEnabled"], preferences.unwrap()["avatarAutomaticEnabled"]);
+}
+
+#[test]
+fn avatar_presentation_overrides_survive_source_refresh_without_becoming_tag_evidence() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("product", "named-base", json!({"id":"named-base","sourceTitle":"シロネコ","shop":"Authored source shop","sourceCategory":{"name":"3Dアバター"}})).unwrap();
+    for (id, tag) in [("source-tag", "Shironeko"), ("presentation-tag", "Custom display")] {
+        c.put("product", id, json!({"id":id,"sourceTitle":"Authored clothing","sourceCategory":{"name":"Clothes"},"sourceTags":[tag]})).unwrap();
+    }
+    c.command("preferences", json!({"patch":{"avatarSettings":{"product:named-base":{"displayName":"Custom display","shopName":"Custom group","enabled":false}},"avatarAliases":{"custom display":"product:named-base"}}})).unwrap();
+    product(&c, "legacy-display");
+    c.command("overlay", json!({"ids":["legacy-display"],"patch":{"ownedAvatars":["Custom display"]}})).unwrap();
+    let option = |catalogue: &Catalogue| catalogue.command("avatar_options", json!({})).unwrap()["avatarOptions"]
+        .as_array().unwrap().iter().find(|entry| entry["id"] == "product:named-base").unwrap().clone();
+    let first = option(&c);
+    assert_eq!(first["displayName"], "Custom display");
+    assert_eq!(first["shopName"], "Custom group");
+    assert_eq!(first["sourceDisplayName"], "シロネコ / Shironeko");
+    assert_eq!(first["sourceShopName"], "Authored source shop");
+    assert_eq!(first["matchingProductCount"], 2);
+    assert!(!strings(&first["aliases"]).contains(&"Custom display".into()));
+    assert_eq!(dynamic_tag_ids(&c, "source-tag"), BTreeSet::from(["product:named-base".into()]));
+    assert!(dynamic_tag_ids(&c, "presentation-tag").is_empty());
+    c.put("product", "named-base", json!({"id":"named-base","sourceTitle":"クロネコ","shop":"Refreshed source shop","sourceCategory":{"name":"3Dアバター"}})).unwrap();
+    assert_eq!(option(&c)["displayName"], "Custom display");
+    assert_eq!(option(&c)["sourceDisplayName"], "クロネコ / Kuroneko");
+    assert_eq!(option(&c)["sourceShopName"], "Refreshed source shop");
+    drop(c);
+    let c = f.open();
+    assert_eq!(option(&c)["displayName"], "Custom display");
+    assert_eq!(option(&c)["shopName"], "Custom group");
+    c.command("preferences", json!({"patch":{"avatarSettings":{"product:named-base":{"displayName":"  ","shopName":"","enabled":false}}}})).unwrap();
+    assert_eq!(option(&c)["displayName"], "クロネコ / Kuroneko");
+    assert_eq!(option(&c)["shopName"], "Refreshed source shop");
+    for invalid in [json!({"displayName":true}), json!({"shopName":[]}), json!({"enabled":"false"})] {
+        let before = c.get("preferences", "app").unwrap();
+        assert!(c.command("preferences", json!({"patch":{"avatarSettings":{"product:named-base":invalid}}})).is_err());
+        assert_eq!(c.get("preferences", "app").unwrap(), before);
+    }
+}
+
+#[test]
+fn avatar_delta_uses_current_exact_evidence_preserves_legacy_and_undoes_atomically() {
+    let f = Fixture::new();
+    let c = f.open();
+    for id in ["base-a", "base-b"] { synthetic_named_base(&c, id, "Sharedcat"); }
+    product(&c, "edited");
+    // Represents a newer edit committed after the popup captured its draft.
+    c.command("overlay", json!({"ids":["edited"],"patch":{"ownedAvatars":["product:base-a","product:base-b","  Legacy label  "]}})).unwrap();
+    let before = c.get("overlay", "edited").unwrap();
+    let result = c.command("overlay", json!({"changes":[{"id":"edited","patch":{"note":"Changed together"},"ownedAvatarsDelta":{"add":["Mafuyu","booth:5007531"],"remove":["product:base-a"]}}]})).unwrap();
+    let overlay = c.get("overlay", "edited").unwrap().unwrap();
+    assert_eq!(strings(&overlay["ownedAvatars"]).into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["product:base-b".into(), "  Legacy label  ".into(), "Mafuyu".into()]));
+    let evidence: BTreeSet<_> = dynamic_details(&c, "edited")["ownedAvatarEvidence"].as_array().unwrap().iter()
+        .map(|entry| text(entry, "avatarId").to_owned()).collect();
+    assert!(evidence.contains("product:base-b"));
+    assert!(!evidence.contains("product:base-a"));
+    assert_eq!(overlay["note"], "Changed together");
+    c.command("undo", json!({"token":result["undoToken"]})).unwrap();
+    assert_eq!(c.get("overlay", "edited").unwrap(), before);
+    c.command("overlay", json!({"ids":["edited"],"patch":{},"ownedAvatarsDelta":{"add":[],"remove":["product:base-a","product:base-b","  Legacy label  "]}})).unwrap();
+    assert_eq!(c.get("overlay", "edited").unwrap().unwrap()["ownedAvatars"], json!([]));
+    c.put("product", "edited", json!({"id":"edited","sourceTitle":"Refreshed clothing","sourceCategory":{"name":"Clothes"},"sourceTags":["Mafuyu"]})).unwrap();
+    assert_eq!(dynamic_details(&c, "edited")["ownedAvatarEvidence"], json!([]));
+}
+
+#[test]
+fn avatar_delta_rejects_conflicts_and_rolls_back_all_changes_for_missing_identity() {
+    let f = Fixture::new();
+    let c = f.open();
+    product(&c, "one");
+    product(&c, "two");
+    for change in [
+        json!({"id":"one","patch":{"ownedAvatars":[]},"ownedAvatarsDelta":{"add":[],"remove":[]}}),
+        json!({"id":"one","patch":{},"ownedAvatarsDelta":{"add":["Mafuyu"],"remove":["Mafuyu"]}}),
+        json!({"id":"one","patch":{},"ownedAvatarsDelta":{"add":[true],"remove":[]}}),
+    ] {
+        assert!(c.command("overlay", json!({"changes":[change]})).is_err());
+    }
+    assert!(c.command("overlay", json!({"changes":[
+        {"id":"one","patch":{"note":"Must roll back"},"ownedAvatarsDelta":{"add":["booth:5007531"],"remove":[]}},
+        {"id":"two","patch":{},"ownedAvatarsDelta":{"add":["product:missing"],"remove":[]}}
+    ]})).is_err());
+    assert!(c.get("overlay", "one").unwrap().is_none());
+    assert!(c.get("overlay", "two").unwrap().is_none());
+    assert!(dynamic_tag_ids(&c, "one").is_empty());
+}
+
+#[test]
+fn avatar_delta_can_add_existing_evidence_only_choice_without_storing_its_derived_id() {
+    let f = Fixture::new();
+    let c = f.open();
+    for id in ["origin", "target"] { product(&c, id); }
+    c.command("overlay", json!({"ids":["origin"],"patch":{"ownedAvatars":["ソラネコ / Skycat"]}})).unwrap();
+    let snapshot = c.command("avatar_options", json!({})).unwrap();
+    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
+        .find(|option| text(option, "id").starts_with("avatar:")).unwrap();
+    c.command("overlay", json!({"ids":["target"],"ownedAvatarsDelta":{"add":[option["id"]],"remove":[]}})).unwrap();
+    assert_eq!(c.get("overlay", "target").unwrap().unwrap()["ownedAvatars"], json!(["ソラネコ / Skycat"]));
+    let after = c.command("avatar_options", json!({})).unwrap();
+    assert_eq!(after["avatarOptions"].as_array().unwrap().iter()
+        .find(|entry| entry["id"] == option["id"]).unwrap()["matchingProductCount"], 2);
+}
+
+#[test]
+fn avatar_delta_preserves_wrapped_derived_identity_before_origin_and_after_origin_deletion() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let c = f.open();
+    for id in ["a-target", "z-origin"] { product(&c, id); }
+    let label = "【無料】Ren♡Ai";
+    let (identity_name, _) = crate::taxonomy::avatar_label_parts(label);
+    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
+    c.command("overlay", json!({"ids":["z-origin"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    c.command("preferences", json!({"patch":{"avatarSettings":{(id.clone()):{"displayName":"Saved Ren name","shopName":"Saved Ren group","enabled":true}}}})).unwrap();
+    let read_snapshot = |catalogue: &Catalogue| {
+        let preferences = catalogue.get("preferences", "app").unwrap();
+        let revision = catalogue.revision().unwrap();
+        let snapshot = catalogue.command("avatar_options", json!({})).unwrap();
+        assert_eq!(catalogue.get("preferences", "app").unwrap(), preferences);
+        assert_eq!(catalogue.revision().unwrap(), revision);
+        let derived: Vec<_> = snapshot["avatarOptions"].as_array().unwrap().iter()
+            .filter(|entry| text(entry, "id").starts_with("avatar:")).cloned().collect();
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0]["id"], id);
+        assert_eq!(derived[0]["officialName"], "Ren♡Ai");
+        assert_eq!(derived[0]["sourceIdentityValue"], label);
+        assert_eq!(derived[0]["displayName"], "Saved Ren name");
+        assert_eq!(derived[0]["shopName"], "Saved Ren group");
+        assert_eq!(derived[0]["enabled"], true);
+        derived[0].clone()
+    };
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
+    c.command("overlay", json!({"ids":["a-target"],"ownedAvatarsDelta":{"add":[id.clone()],"remove":[]}})).unwrap();
+    assert_eq!(c.get("overlay", "a-target").unwrap().unwrap()["ownedAvatars"], json!([label]));
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 2);
+    c.delete("product", "z-origin").unwrap();
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
+    assert!(c.get("preferences", "app").unwrap().unwrap()["avatarSettings"].get(&id).is_some());
+    drop(c);
+    let c = f.open();
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
+}
+
+#[test]
+fn avatar_single_overlay_keeps_raw_derived_identity_after_origin_deletion_and_reopen() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let c = f.open();
+    for id in ["a-target", "z-origin"] { product(&c, id); }
+    let label = "【無料】Ren♡Ai";
+    let (identity_name, _) = crate::taxonomy::avatar_label_parts(label);
+    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
+    c.command("overlay", json!({"ids":["z-origin"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    c.command("preferences", json!({"patch":{"avatarSettings":{(id.clone()):{
+        "displayName":"Saved single Ren name","shopName":"Saved single Ren group","enabled":true
+    }}}})).unwrap();
+    let read_snapshot = |catalogue: &Catalogue| {
+        let preferences = catalogue.get("preferences", "app").unwrap();
+        let revision = catalogue.revision().unwrap();
+        let snapshot = catalogue.command("avatar_options", json!({})).unwrap();
+        assert_eq!(catalogue.get("preferences", "app").unwrap(), preferences);
+        assert_eq!(catalogue.revision().unwrap(), revision);
+        let derived: Vec<_> = snapshot["avatarOptions"].as_array().unwrap().iter()
+            .filter(|entry| text(entry, "id").starts_with("avatar:")).cloned().collect();
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0]["id"], id);
+        assert_eq!(derived[0]["officialName"], "Ren♡Ai");
+        assert_eq!(derived[0]["sourceDisplayName"], "Ren♡Ai");
+        assert_eq!(derived[0]["sourceIdentityValue"], label);
+        assert_eq!(derived[0]["displayName"], "Saved single Ren name");
+        assert_eq!(derived[0]["shopName"], "Saved single Ren group");
+        assert_eq!(derived[0]["enabled"], true);
+        derived[0].clone()
+    };
+    let origin = read_snapshot(&c);
+    assert_eq!(origin["matchingProductCount"], 1);
+    // Single Edit sends the raw representative from the selected option through
+    // the existing exact overlay patch, rather than the runtime hash ID.
+    c.command("overlay", json!({"ids":["a-target"],"patch":{
+        "ownedAvatars":[origin["sourceIdentityValue"]]
+    }})).unwrap();
+    assert_eq!(c.get("overlay", "a-target").unwrap().unwrap()["ownedAvatars"], json!([label]));
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 2);
+    c.delete("product", "z-origin").unwrap();
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
+    assert!(c.get("preferences", "app").unwrap().unwrap()["avatarSettings"].get(&id).is_some());
+    drop(c);
+    let c = f.open();
+    assert_eq!(read_snapshot(&c)["matchingProductCount"], 1);
+}
+
+#[test]
+fn avatar_label_cleanup_keeps_existing_derived_identity_settings() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let c = f.open();
+    product(&c, "label-owner");
+    let label = "【無料】Syntheticcat";
+    let (identity_name, _) = crate::taxonomy::avatar_label_parts(label);
+    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
+    c.command("overlay", json!({"ids":["label-owner"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    c.command("preferences", json!({"patch":{"avatarSettings":{(id.clone()):{"displayName":"Saved presentation","enabled":false}}}})).unwrap();
+    let snapshot = c.command("avatar_options", json!({})).unwrap();
+    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
+        .find(|option| option["id"] == id).unwrap();
+    assert_eq!(option["officialName"], "Syntheticcat");
+    assert_eq!(option["sourceDisplayName"], "Syntheticcat");
+    assert_eq!(option["displayName"], "Saved presentation");
+    assert_eq!(option["enabled"], false);
+    assert!(!strings(&option["aliases"]).contains(&"Saved presentation".into()));
+}
+
+#[test]
+fn avatar_uncertain_base_ignores_historical_text_aliases_without_erasing_them() {
+    let f = Fixture::new();
+    let c = f.open();
+    synthetic_named_base(&c, "uncertain-base", "星猫 / 海猫");
+    c.command("preferences", json!({"patch":{"avatarAliases":{"legacy guessed":"product:uncertain-base","product:uncertain-base":"product:uncertain-base"}}})).unwrap();
+    for n in 0..6 {
+        let id = format!("legacy-member-{n}");
+        product(&c, &id);
+        c.command("overlay", json!({"ids":[id],"patch":{"ownedAvatars":["Legacy guessed"]}})).unwrap();
+    }
+    let before = c.get("preferences", "app").unwrap().unwrap();
+    let snapshot = c.command("avatar_options", json!({})).unwrap();
+    let uncertain = snapshot["avatarOptions"].as_array().unwrap().iter()
+        .find(|entry| entry["id"] == "product:uncertain-base").unwrap();
+    assert_eq!(uncertain["matchingProductCount"], 1);
+    assert_eq!(uncertain["enabled"], false);
+    assert_eq!(c.get("preferences", "app").unwrap().unwrap(), before);
+    c.refresh_avatar_defaults().unwrap();
+    let preferences = c.get("preferences", "app").unwrap().unwrap();
+    assert_eq!(preferences["avatarAliases"]["legacy guessed"], "product:uncertain-base");
+    assert_eq!(preferences["avatarAliases"]["product:uncertain-base"], "product:uncertain-base");
+    assert!(preferences["avatarAutomaticEnabled"].get("product:uncertain-base").is_none());
+    c.command("overlay", json!({"ids":["legacy-member-0"],"patch":{"ownedAvatars":["product:uncertain-base"]}})).unwrap();
+    let snapshot = c.command("avatar_options", json!({})).unwrap();
+    assert_eq!(snapshot["avatarOptions"].as_array().unwrap().iter()
+        .find(|entry| entry["id"] == "product:uncertain-base").unwrap()["matchingProductCount"], 2);
+}
+
+#[test]
+fn avatar_legacy_human_name_romanizes_corrected_stem_instead_of_uncertain_source() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let c = f.open();
+    product(&c, "legacy-owner");
+    let source_label = "【 R18 Edition】苺佳(ichica) and GLC and 蒼葉(aoba)";
+    let (identity_name, _) = crate::taxonomy::avatar_label_parts(source_label);
+    let id = format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes()));
+    let source_key = crate::taxonomy::canonical_tag(source_label);
+    c.command("overlay", json!({"ids":["legacy-owner"],"patch":{"ownedAvatars":[source_label]}})).unwrap();
+    c.command("preferences", json!({"patch":{
+        "avatarAliases":{(source_key):id.clone()},
+        "avatarSettings":{(id.clone()):{"originalName":"シロネコ","enabled":false}}
+    }})).unwrap();
+    let snapshot = c.command("avatar_options", json!({})).unwrap();
+    let option = snapshot["avatarOptions"].as_array().unwrap().iter()
+        .find(|option| option["id"] == id).unwrap();
+    assert_eq!(option["officialName"], "シロネコ");
+    assert_eq!(option["englishName"], "Shironeko");
+    assert_eq!(option["nameKind"], "single");
+    assert_eq!(c.get("overlay", "legacy-owner").unwrap().unwrap()["ownedAvatars"], json!([source_label]));
 }
 
 #[test]

@@ -968,8 +968,7 @@ pub(crate) fn verification_expected(conn: &Connection, id: &str) -> Result<Optio
     };
     let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
     let registry = avatars::registry(conn, &preferences)?;
-    let options: Vec<_> = registry.entries.into_values().collect();
-    let resolver = crate::taxonomy::AvatarTagResolver::from_options(&options);
+    let resolver = registry.resolver();
     compatibility(
         &mut product,
         |tag| resolver.resolve_tag(tag),

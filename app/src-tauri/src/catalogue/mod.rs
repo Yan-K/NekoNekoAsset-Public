@@ -1257,6 +1257,23 @@ fn default_batch_actions() -> Value {
 }
 
 fn validate_ui_preferences(patch: &Value) -> Result<()> {
+    if let Some(value) = patch.get("avatarSettings") {
+        let settings = value.as_object().context("catalogue.invalid_preferences")?;
+        for setting in settings.values() {
+            ensure!(setting.is_object(), "catalogue.invalid_preferences");
+            for field in ["originalName", "englishName", "displayName", "shopName"] {
+                if let Some(name) = setting.get(field) {
+                    ensure!(name.is_string(), "catalogue.invalid_preferences");
+                }
+            }
+            if let Some(enabled) = setting.get("enabled") {
+                ensure!(enabled.is_boolean(), "catalogue.invalid_preferences");
+            }
+            if let Some(aliases) = setting.get("aliases") {
+                ensure!(aliases.as_array().is_some_and(|values| values.iter().all(Value::is_string)), "catalogue.invalid_preferences");
+            }
+        }
+    }
     if let Some(value) = patch.get("aiFeaturesEnabled") {
         ensure!(value.is_boolean(), "catalogue.invalid_preferences");
     }
@@ -2903,6 +2920,10 @@ impl Catalogue {
                 tx.commit()?;
                 Ok(result)
             }
+            "avatar_options" => {
+                let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                Ok(json!({"avatarOptions":avatars::option_snapshot(&conn)?}))
+            }
             "product_details" => {
                 let conn = self
                     .inner
@@ -2974,7 +2995,13 @@ impl Catalogue {
         let changes = if let Some(changes) = args["changes"].as_array() {
             changes.clone()
         } else {
-            strings(&args["ids"]).into_iter().collect::<BTreeSet<_>>().into_iter().map(|id|json!({"id":id,"patch":args.get("patch").cloned().unwrap_or(json!({})),"clearFields":args["clearFields"]})).collect()
+            strings(&args["ids"]).into_iter().collect::<BTreeSet<_>>().into_iter().map(|id| {
+                let mut change = json!({"id":id,"patch":args.get("patch").cloned().unwrap_or(json!({})),"clearFields":args["clearFields"]});
+                if let Some(delta) = args.get("ownedAvatarsDelta") {
+                    change["ownedAvatarsDelta"] = delta.clone();
+                }
+                change
+            }).collect()
         };
         ensure!(!changes.is_empty(), "catalogue.empty_selection");
         let mut seen = BTreeSet::new();
@@ -2984,6 +3011,21 @@ impl Catalogue {
                 "catalogue.invalid_selection"
             );
             validate_patch(change.get("patch").unwrap_or(&json!({})))?;
+            if let Some(delta) = change.get("ownedAvatarsDelta") {
+                ensure!(delta.is_object() && delta.as_object().unwrap().len() == 2,
+                    "catalogue.invalid_avatar_delta");
+                for field in ["add", "remove"] {
+                    ensure!(delta[field].as_array().is_some_and(|values| values.iter()
+                        .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))),
+                        "catalogue.invalid_avatar_delta");
+                }
+                let add: BTreeSet<_> = strings(&delta["add"]).into_iter().collect();
+                ensure!(!strings(&delta["remove"]).iter().any(|value| add.contains(value)),
+                    "catalogue.invalid_avatar_delta");
+                ensure!(change["patch"].get("ownedAvatars").is_none()
+                    && !strings(&change["clearFields"]).iter().any(|field| field == "ownedAvatars"),
+                    "catalogue.invalid_avatar_delta");
+            }
             ensure!(
                 strings(&change["clearFields"])
                     .iter()
@@ -2993,6 +3035,9 @@ impl Catalogue {
         }
         self.mutate(|tx, projections| {
             let mut entries = vec![];
+            let delta_resolver = if changes.iter().any(|change| change.get("ownedAvatarsDelta").is_some()) {
+                Some(avatars::AvatarDeltaResolver::new(tx)?)
+            } else { None };
             let tag_resolver = if changes
                 .iter()
                 .any(|change| change["patch"].get("tags").is_some())
@@ -3027,6 +3072,13 @@ impl Catalogue {
                 }
                 for (k, v) in patch.as_object().unwrap() {
                     after[k] = v.clone();
+                }
+                if let Some(delta) = change.get("ownedAvatarsDelta") {
+                    if !strings(&delta["add"]).is_empty() || !strings(&delta["remove"]).is_empty() {
+                        let body: String = tx.query_row("SELECT body FROM products WHERE id=?1", [&id], |row| row.get(0))?;
+                        let current: Value = serde_json::from_str(&body)?;
+                        after["ownedAvatars"] = json!(delta_resolver.as_ref().unwrap().apply(&current, delta)?);
+                    }
                 }
                 // Removing a suggested source tag records a durable rejection.
                 if let Some(tags) = patch.get("tags") {

@@ -16,8 +16,10 @@ export function progressPercent(job:(NativeJob&UnityPreparation)|undefined):numb
  return typeof done==='number'&&typeof total==='number'&&total>0?Math.min(100,100*done/total):undefined;
 }
 export interface NativeRoot {id:string;path:string;label?:string;status:string;usedBytes?:number;freeBytes?:number}
-export interface AvatarOption {id:string;productId?:string;displayName?:string;officialName:string;englishName?:string;labelStatus?:string;shopName?:string;shopId?:string;aliases:string[];matchingProductCount?:number;baseProductIds?:string[];enabled?:boolean;explicitEnabled?:boolean}
-export interface AvatarSetting {enabled:boolean;originalName?:string;englishName?:string;aliases?:string[]}
+export interface AvatarOption {id:string;productId?:string;displayName?:string;sourceDisplayName?:string;sourceIdentityValue?:string;officialName:string;englishName?:string;labelStatus?:string;nameKind?:'single'|'bundle'|'fallback';labelQualifiers?:string[];shopName?:string;sourceShopName?:string;shopId?:string;aliases:string[];matchingProductCount?:number;baseProductIds?:string[];enabled?:boolean;explicitEnabled?:boolean}
+export interface AvatarSetting {enabled?:boolean;originalName?:string;englishName?:string;displayName?:string;shopName?:string;aliases?:string[]}
+export interface AvatarDelta {add:string[];remove:string[]}
+export interface ProductOverlayChange {id:string;patch:Partial<Product>;ownedAvatarsDelta?:AvatarDelta}
 export interface TagOption {id:string;label:string;kind:string;aliases:string[]}
 export interface FetchedProductMetadata {sourceUrl:string;title:string;category:Product['category'];tags:string[];thumbnailUrl:string|null}
 export interface LocalFileChanges {draftId:string;addSources:string[];removeFileIds:string[]}

@@ -1,5 +1,5 @@
 import {useLayoutEffect,useRef} from 'react';
-import type {AvatarOption} from './backend';
+import type {AvatarOption,AvatarDelta} from './backend';
 import type {Locale,Product} from './model';
 import {getAvatarAliases,normalizeSearch} from './model';
 import {editorText} from './editor-i18n';
@@ -8,10 +8,16 @@ import AvatarManager from './AvatarManager';
 
 type AvatarProduct=Pick<Product,'ownedAvatars'|'ownedAvatarEvidence'>;
 export interface ProductAvatarOption extends AvatarOption {legacyValue?:string}
-const optionNames=(option:AvatarOption)=>[option.id,option.displayName,option.officialName,option.englishName,...option.aliases].filter((name):name is string=>!!name);
+function persistedAvatarValue(option:ProductAvatarOption):string{
+ if(option.legacyValue!==undefined)return option.legacyValue;
+ if(!option.id.startsWith('avatar:'))return option.id;
+ if(!option.sourceIdentityValue?.trim())throw new Error('catalogue.invalid_avatar_selection');
+ return option.sourceIdentityValue;
+}
+const optionNames=(option:AvatarOption)=>[option.id,option.officialName,option.englishName,...option.aliases].filter((name):name is string=>!!name);
 function matchingOptions(value:string,options:ProductAvatarOption[]):ProductAvatarOption[]{
  const aliases=new Set(getAvatarAliases(value).map(normalizeSearch));
- return options.filter(option=>option.legacyValue===undefined&&optionNames(option).some(name=>getAvatarAliases(name).some(alias=>aliases.has(normalizeSearch(alias)))));
+ return options.filter(option=>option.legacyValue===undefined&&option.nameKind!=='bundle'&&option.nameKind!=='fallback'&&optionNames(option).some(name=>getAvatarAliases(name).some(alias=>aliases.has(normalizeSearch(alias)))));
 }
 function avatarIdentities(product:AvatarProduct,value:string,options:ProductAvatarOption[]):string[]{
  const direct=options.find(option=>option.id===value);if(direct)return [direct.id];
@@ -20,9 +26,14 @@ function avatarIdentities(product:AvatarProduct,value:string,options:ProductAvat
  const legacy=options.find(option=>option.legacyValue===value);if(legacy)return [legacy.id];
  const matches=matchingOptions(value,options);return matches.length===1?[matches[0].id]:[];
 }
-export function productAvatarOptions(product:AvatarProduct,options:AvatarOption[]):ProductAvatarOption[]{
- const existing=[...new Set(product.ownedAvatars)].filter(value=>!avatarIdentities(product,value,options).length);
- return [...options,...existing.map((value,index)=>({id:`editor-existing:${index}`,officialName:value,displayName:value,aliases:[],legacyValue:value,matchingProductCount:1}))];
+export function productsAvatarOptions(products:AvatarProduct[],options:AvatarOption[]):ProductAvatarOption[]{
+ const existing=[...new Set(products.flatMap(product=>product.ownedAvatars.filter(value=>!avatarIdentities(product,value,options).length)))];
+ return [...options,...existing.map((value,index)=>({id:`editor-existing:${index}`,officialName:value,displayName:value,aliases:[],legacyValue:value,matchingProductCount:products.filter(product=>product.ownedAvatars.includes(value)).length}))];
+}
+export function productAvatarOptions(product:AvatarProduct,options:AvatarOption[]):ProductAvatarOption[]{return productsAvatarOptions([product],options);}
+export function productAvatarDelta(options:ProductAvatarOption[],initial:readonly string[],selected:readonly string[]):AvatarDelta{
+ const value=(id:string)=>options.find(option=>option.id===id)?.legacyValue??id;
+ return {add:selected.filter(id=>!initial.includes(id)).map(value),remove:initial.filter(id=>!selected.includes(id)).map(value)};
 }
 export function productAvatarSelection(product:AvatarProduct,options:ProductAvatarOption[]):string[]{
  return [...new Set(product.ownedAvatars.flatMap(value=>avatarIdentities(product,value,options)))];
@@ -35,20 +46,21 @@ export function productAvatarValues(product:AvatarProduct,options:ProductAvatarO
   for(const id of ids){
    if(!selected.includes(id))continue;
    // A shared friendly label cannot retain one of several exact identities.
-   const legacy=openingOptions.find(option=>option.id===id)?.legacyValue;
+   const option=options.find(option=>option.id===id)??openingOptions.find(option=>option.id===id);if(!option)continue;
+   const legacy=option.legacyValue;
    const ambiguous=legacy===undefined&&(ids.length>1||matchingOptions(value,openingOptions).length>1);
-   values.push(ambiguous?id:value);retained.add(id);
+   values.push(ambiguous||value===id?persistedAvatarValue(option):value);retained.add(id);
   }
  }
  for(const id of selected){
   if(retained.has(id))continue;
   const option=options.find(option=>option.id===id);if(!option)continue;
-  values.push(option.legacyValue??id);retained.add(id);
+  values.push(persistedAvatarValue(option));retained.add(id);
  }
  return [...new Set(values)];
 }
 
-export default function AvatarPicker({locale,options,value,label,onChange,onClose}:{locale:Locale;options:AvatarOption[];value:string[];label:(id:string)=>string;onChange:(ids:string[],selected:boolean)=>void;onClose:()=>void}){
+export default function AvatarPicker({locale,options,value,mixed,label,onChange,onClose}:{locale:Locale;options:AvatarOption[];value:string[];mixed?:(id:string)=>boolean;label:(id:string)=>string;onChange:(ids:string[],selected:boolean)=>void;onClose:()=>void}){
  const box=useRef<HTMLDivElement>(null),close=useRef(onClose);close.current=onClose;
  const L=(key:string)=>editorText(locale,key);
  useLayoutEffect(()=>{
@@ -67,9 +79,9 @@ export default function AvatarPicker({locale,options,value,label,onChange,onClos
   document.addEventListener('keydown',key,true);
   return()=>{document.removeEventListener('keydown',key,true);if(prior?.isConnected)prior.focus();};
  },[]);
- return <div className="modal-backdrop editor-avatar-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><div className="modal editor-avatar-picker" role="dialog" aria-modal="true" aria-labelledby="editor-avatar-title" ref={box}>
+ return <div className="modal-backdrop editor-avatar-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}><div className="modal editor-avatar-picker avatar-dialog" role="dialog" aria-modal="true" aria-labelledby="editor-avatar-title" ref={box}>
   <header className="modal-header"><h2 id="editor-avatar-title">{L('compatibleAvatars')}</h2><button type="button" aria-label={L('close')} onClick={onClose}>×</button></header>
-  <div className="modal-body"><AvatarManager options={options} enabled={id=>value.includes(id)} label={label} onChange={onChange} q={key=>key==='unknownShop'?(shellText(locale,key)??L(key)):L(key==='allAvatarsOn'?'selectAllAvatars':key==='allAvatarsOff'?'clearSelection':key)}/></div>
+  <div className="modal-body"><AvatarManager options={options} enabled={id=>value.includes(id)} mixed={mixed} label={label} onChange={onChange} q={key=>key==='unknownShop'?(shellText(locale,key)??L(key)):L(key==='allAvatarsOn'?'selectAllAvatars':key)}/></div>
   <footer className="modal-footer"><button type="button" onClick={onClose}>{L('close')}</button></footer>
  </div></div>;
 }
