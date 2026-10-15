@@ -11,6 +11,19 @@ use std::collections::{BTreeMap, BTreeSet};
 fn sel(s: &str) -> Selector {
     Selector::parse(s).expect("fixed selector")
 }
+fn html_language(doc: &Html) -> &'static str {
+    doc.select(&sel("html"))
+        .next()
+        .and_then(|node| node.value().attr("lang"))
+        .filter(|value| !value.trim().is_empty())
+        .map_or("unknown", |value| {
+            match value.trim().split(['-', '_']).next().unwrap_or("") {
+                value if value.eq_ignore_ascii_case("ja") => "ja",
+                value if value.eq_ignore_ascii_case("en") => "en",
+                _ => "other",
+            }
+        })
+}
 fn text(e: ElementRef<'_>) -> String {
     safety::short(&e.text().collect::<String>())
 }
@@ -929,6 +942,11 @@ pub(super) struct ProductLineFieldDiagnostics {
     explicit_boost_items: usize,
     product_line_proof_items: usize,
     ambiguous_items: usize,
+    digital_control_binding_unproven_items: usize,
+    metadata_shape_unrecognized_items: usize,
+    unit_price_unrecognized_items: usize,
+    quantity_unrecognized_items: usize,
+    boost_unrecognized_items: usize,
 }
 // Only the needed product fields participate; unrelated receipt UI has no role.
 struct ProductLineProof {
@@ -1556,6 +1574,11 @@ fn product_line_proof_document(
     let mut result = ProductLineProof {
         diagnostics: ProductLineFieldDiagnostics {
             version: 1,
+            digital_control_binding_unproven_items: rows
+                .iter()
+                .filter(|row| row.order_id.as_deref() == Some(receipt_id))
+                .count()
+                .saturating_sub(matching.len()),
             ..Default::default()
         },
         charges: Vec::new(),
@@ -1623,10 +1646,12 @@ fn product_line_proof_document(
             .collect();
         if duplicate || conflicting_files || bound.len() != 1 {
             result.diagnostics.ambiguous_items += 1;
+            result.diagnostics.digital_control_binding_unproven_items += 1;
             continue;
         }
         let Some(fields) = receipt_item_metadata(bound[0], row) else {
             result.diagnostics.ambiguous_items += 1;
+            result.diagnostics.metadata_shape_unrecognized_items += 1;
             continue;
         };
         let scope = fields[0].parent().and_then(ElementRef::wrap).unwrap();
@@ -1637,6 +1662,7 @@ fn product_line_proof_document(
                 .any(financial_attribute)
         {
             result.diagnostics.ambiguous_items += 1;
+            result.diagnostics.metadata_shape_unrecognized_items += 1;
             continue;
         }
         result.diagnostics.unique_metadata_items += 1;
@@ -1653,6 +1679,10 @@ fn product_line_proof_document(
         };
         result.diagnostics.unit_price_items += usize::from(unit.is_some());
         result.diagnostics.explicit_boost_items += usize::from(boost.is_some());
+        result.diagnostics.unit_price_unrecognized_items += usize::from(unit.is_none());
+        result.diagnostics.quantity_unrecognized_items +=
+            usize::from(fields.len() == 4 && quantity.is_none());
+        result.diagnostics.boost_unrecognized_items += usize::from(boost.is_none());
         let amount = match (unit, boost, quantity) {
             (Some(unit), Some(boost), Some(quantity)) => unit
                 .checked_mul(quantity)
@@ -2309,6 +2339,7 @@ fn parse_internal(
     let path = safety::source_path(&source)?;
     let is_detail = path == "/orders" && url.path() != path;
     let doc = Html::parse_document(html);
+    crate::support_trace::parser_language(&source, html_language(&doc));
     // The site's anonymous OAuth page has no password/login form. Its explicit
     // signed-out marker must also reject an otherwise recognizable empty shelf.
     if doc
@@ -2780,18 +2811,7 @@ fn parse_internal(
                             ),
                     )
                 });
-            let language = doc
-                .select(&sel("html"))
-                .next()
-                .and_then(|node| node.value().attr("lang"))
-                .filter(|value| !value.trim().is_empty())
-                .map_or("unknown", |value| {
-                    match value.trim().split(['-', '_']).next().unwrap_or("") {
-                        value if value.eq_ignore_ascii_case("ja") => "ja",
-                        value if value.eq_ignore_ascii_case("en") => "en",
-                        _ => "other",
-                    }
-                });
+            let language = html_language(&doc);
             // This counts parser calls in the current job attempt, not unique
             // receipts. Only fixed counters/booleans and a closed language code
             // leave the parser; receipt identities and source values stay here.
@@ -2915,9 +2935,42 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn parser_language_counts_received_pages_before_early_errors() {
+        let cases = [
+            ("<html lang='ja-JP'><head><meta name='js_const_user_signed_in' content='false'></head><body>PRIVATE_AUTH</body></html>", "AUTH_REQUIRED"),
+            ("<html lang='EN_us'><body><main><h1>Library</h1><form id='challenge-form'></form></main></body></html>", "AUTH_CHALLENGE"),
+            ("<html lang='zh-Hant-PRIVATE_LANGUAGE'><body><main><h1>PRIVATE_HEADING</h1></main></body></html>", "SOURCE_MARKER_UNKNOWN"),
+            ("<main><h1>Library</h1></main>", "NO_RECOGNIZED_ROWS"),
+            ("<html lang='  '><body><main><h1>Library</h1></main></body></html>", "NO_RECOGNIZED_ROWS"),
+        ];
+        let (_, trace) = crate::support_trace::capture(async {
+            for (html, expected) in cases {
+                let error = parse(html, "library", "/library?page=1").unwrap_err();
+                assert_eq!(error.to_string(), expected);
+            }
+        }).await;
+        let counts = &trace["sources"]["library"];
+        for (key, expected) in [
+            ("parserCalls", 5), ("htmlJa", 1), ("htmlEn", 1),
+            ("htmlOther", 1), ("htmlUnknown", 2),
+        ] {
+            assert_eq!(counts[key], expected, "{key}");
+        }
+        assert_eq!(counts.as_object().unwrap().len(), 5);
+        assert!(trace["financial"].as_object().unwrap().is_empty());
+        for private in ["PRIVATE", "ja-JP", "EN_us", "zh-Hant", "Library", "AUTH_REQUIRED"] {
+            assert!(!trace.to_string().contains(private), "{private}");
+        }
+    }
+    #[tokio::test]
     async fn receipt_trace_counts_only_current_parser_calls_without_source_values() {
         let item = charge_item("900001", "700001", "¥ 137", None, "0");
         let known = charge_receipt(&item, "¥ 137", "");
+        let expected = serde_json::to_value(parse(&known, "purchase", "/orders/910001").unwrap()).unwrap();
+        for language in ["ja-JP", "en-US", "zh-Hant-PRIVATE_LANGUAGE"] {
+            let localized = format!("<html lang='{language}'><body>{known}</body></html>");
+            assert_eq!(serde_json::to_value(parse(&localized, "purchase", "/orders/910001").unwrap()).unwrap(), expected);
+        }
         let unknown_price = charge_receipt(
             &charge_item("900001", "700001", "PRIVATE_INVALID_PRICE", None, "0"),
             "¥ 137",
@@ -2961,6 +3014,12 @@ mod tests {
             ("explicitBoostItems", 5),
             ("productLineProofItems", 4),
             ("ambiguousItems", 1),
+            ("digitalControlBindingUnprovenItems", 0),
+            ("metadataShapeUnrecognizedItems", 0),
+            ("unitPriceUnrecognizedItems", 1),
+            ("quantityUnrecognizedItems", 0),
+            ("boostUnrecognizedItems", 0),
+            ("dateProofUnavailableRows", 1),
             ("htmlJa", 2),
             ("htmlEn", 1),
             ("htmlOther", 1),
@@ -3582,8 +3641,13 @@ mod tests {
                 "explicitBoostItems",
                 "productLineProofItems",
                 "ambiguousItems",
+                "digitalControlBindingUnprovenItems",
+                "metadataShapeUnrecognizedItems",
+                "unitPriceUnrecognizedItems",
+                "quantityUnrecognizedItems",
+                "boostUnrecognizedItems",
             ];
-            assert_eq!(counts.as_object().unwrap().len(), 10);
+            assert_eq!(counts.as_object().unwrap().len(), keys.len());
             assert!(counts
                 .as_object()
                 .unwrap()
@@ -3597,6 +3661,12 @@ mod tests {
             assert_eq!(counts["explicitBoostItems"], 1);
             assert_eq!(counts["productLineProofItems"], 1);
             assert_eq!(counts["ambiguousItems"], 0);
+            for key in [
+                "digitalControlBindingUnprovenItems", "metadataShapeUnrecognizedItems",
+                "unitPriceUnrecognizedItems", "quantityUnrecognizedItems", "boostUnrecognizedItems",
+            ] {
+                assert_eq!(counts[key], 0, "{key}");
+            }
             assert!(counts.as_object().unwrap().iter().all(|(key, value)| {
                 if key == "savedReceiptWitness" {
                     value.is_boolean()
@@ -3621,6 +3691,41 @@ mod tests {
                 counts
             );
         }
+    }
+    #[test]
+    fn product_field_rejection_counts_describe_existing_decisions_without_source_values() {
+        let item = charge_item("900001", "700001", "¥ 100", Some("Quantity: 2"), "30");
+        let html = charge_receipt(&item, "¥ 230", "");
+        let saved = parse(&html, "purchase", "/orders/910001").unwrap().rows;
+        let reasons = [
+            "digitalControlBindingUnprovenItems", "metadataShapeUnrecognizedItems",
+            "unitPriceUnrecognizedItems", "quantityUnrecognizedItems", "boostUnrecognizedItems",
+        ];
+        for (changed, expected_reason) in [
+            (html.replace("700001", "700002"), reasons[0]),
+            (html.replace("<div>¥ 100</div>", "<div>¥ 100</div><div>PRIVATE_EXTRA_FIELD</div>"), reasons[1]),
+            (html.replace("<div>¥ 100</div>", "<div>PRIVATE_UNIT_VALUE</div>"), reasons[2]),
+            (html.replace("Quantity: 2", "PRIVATE_QUANTITY_VALUE"), reasons[3]),
+            (html.replace("<span>30</span>", "<span>PRIVATE_BOOST_VALUE</span>"), reasons[4]),
+        ] {
+            let proof = product_line_proof(&changed, &saved, "910001").unwrap();
+            assert!(proof.charges.is_empty());
+            assert_eq!(proof.diagnostics.ambiguous_items, 1);
+            let counts = serde_json::to_value(&proof.diagnostics).unwrap();
+            for reason in reasons {
+                assert_eq!(counts[reason], usize::from(reason == expected_reason), "{reason}");
+            }
+            for private in ["PRIVATE", "900001", "700001", "700002", "910001", "https://", "Authored", "¥"] {
+                assert!(!counts.to_string().contains(private), "{private}");
+            }
+        }
+        let mut unavailable = saved;
+        unavailable.iter_mut().find(|row| row.product_id.is_some()).unwrap().unavailable = true;
+        let proof = product_line_proof(&html, &unavailable, "910001").unwrap();
+        assert!(proof.charges.is_empty());
+        assert_eq!(proof.diagnostics.digital_control_binding_unproven_items, 1);
+        // Eligibility failures did not previously enter the ambiguous-item denominator.
+        assert_eq!(proof.diagnostics.ambiguous_items, 0);
     }
     #[test]
     fn independent_product_fields_reject_bad_needed_values_and_duplicate_binding() {

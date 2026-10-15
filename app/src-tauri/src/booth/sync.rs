@@ -206,7 +206,61 @@ struct Publications {
     final_records: Vec<(String, String, Value)>,
     incomplete_scopes: BTreeSet<(String, String, String)>,
     unbound_sources: BTreeSet<(String, String)>,
+    // Exact scan facts retained only until publication refreshes diagnostics.
+    // These booleans never enter a source checkpoint or catalogue record.
+    source_closures: BTreeMap<(String, String), (bool, bool)>,
     additive_versions: BTreeMap<String, String>,
+}
+fn source_incomplete_product_count(
+    checkpoint: &Checkpoint,
+    scopes: &BTreeSet<(String, String, String)>,
+) -> u64 {
+    scopes.iter().filter(|(account, source, _)| {
+        account == &checkpoint.account_id && source == &checkpoint.source
+    }).count() as u64
+}
+fn trace_source_closure(checkpoint: &Checkpoint, publications: &Publications) {
+    let Some(&(unbound, head_stable)) = publications.source_closures
+        .get(&(checkpoint.account_id.clone(), checkpoint.source.clone())) else { return };
+    crate::support_trace::source_closure(
+        &checkpoint.source, checkpoint.terminal, checkpoint.pending.len() as u64,
+        checkpoint.unresolved as u64, checkpoint.enrichment_pending.len() as u64,
+        source_incomplete_product_count(checkpoint, &publications.incomplete_scopes),
+        unbound, head_stable,
+    );
+}
+fn trace_source_assembly(checkpoint: &Checkpoint, publications: &Publications, terminal_unproven_observed: bool) {
+    let incomplete_products = source_incomplete_product_count(checkpoint, &publications.incomplete_scopes);
+    if incomplete_products != 0 {
+        crate::support_trace::source_reason(&checkpoint.source, "SOURCE_MANIFEST_INCOMPLETE", incomplete_products);
+    }
+    if !checkpoint.terminal && !terminal_unproven_observed {
+        crate::support_trace::source_reason(&checkpoint.source, "SOURCE_TERMINAL_UNPROVEN", 1);
+    }
+    trace_source_closure(checkpoint, publications);
+}
+fn trace_checked_journal(page: &parser::Page, unbound: bool) -> bool {
+    // Journal observations can repeat within an attempt; these are neither
+    // unique orders nor committed catalogue counts. Only closed codes escape.
+    for code in page.rows.iter().filter_map(|row| row.error_code.as_deref())
+        .chain(page.free_item.as_ref().and_then(|e| e.error_code.as_deref()))
+    {
+        crate::support_trace::source_reason(&page.source, crate::support::safe_code(code), 1);
+    }
+    let terminal_unproven = !page.is_detail && !page.terminal && page.next.is_empty();
+    if terminal_unproven {
+        crate::support_trace::source_reason(&page.source, "SOURCE_TERMINAL_UNPROVEN", 1);
+    }
+    if unbound {
+        crate::support_trace::source_reason(&page.source, "SOURCE_MEMBERSHIP_UNBOUND", 1);
+    }
+    terminal_unproven
+}
+fn record_source_head(checkpoint: &mut Checkpoint, final_head: &parser::Page) {
+    if final_head.fingerprint != checkpoint.head {
+        checkpoint.unresolved += 1;
+        crate::support_trace::source_reason(&checkpoint.source, "SOURCE_HEAD_CHANGED", 1);
+    }
 }
 fn source_has_incomplete_product(
     checkpoint: &Checkpoint,
@@ -798,6 +852,7 @@ impl BoothService {
                         .extend(entries);
                 }
                 publications.checkpoints.extend(collected.checkpoints);
+                publications.source_closures.extend(collected.source_closures);
                 publications.final_records.extend(collected.final_records);
                 publications
                     .incomplete_scopes
@@ -1459,9 +1514,7 @@ impl BoothService {
         if self.cancelled(job)? {
             bail!("CANCELLED");
         }
-        if final_head.fingerprint != checkpoint.head {
-            checkpoint.unresolved += 1;
-        }
+        record_source_head(&mut checkpoint, &final_head);
         if let Some(prefetch) = prefetch {
             let early = prefetch
                 .early
@@ -1478,6 +1531,7 @@ impl BoothService {
         let mut row_routes = BTreeMap::new();
         let mut free_routes = BTreeMap::new();
         let mut unbound_membership = false;
+        let mut terminal_unproven_observed = false;
         let mut incomplete_products = BTreeSet::new();
         let mut availability_products = BTreeSet::new();
         for (index, journal_id) in checkpoint.journal_ids.iter().enumerate() {
@@ -1495,6 +1549,7 @@ impl BoothService {
                 .get("checkpoint", journal_id)?
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
             let page = checked_journal_page(&journal, account, source, &checkpoint.run_id)?;
+            let mut page_unbound = false;
             // Normal parser unresolved rows are either exact product-bound
             // failures or unbound controls/routes. Free item evidence has its
             // own complete product-file-list scope.
@@ -1523,11 +1578,14 @@ impl BoothService {
                     );
                 } else {
                     unbound_membership = true;
+                    page_unbound = true;
                 }
             }
             if !page.is_detail && !page.terminal && page.next.is_empty() {
                 unbound_membership = true;
+                page_unbound = true;
             }
+            terminal_unproven_observed |= trace_checked_journal(&page, page_unbound);
             for row in &page.rows {
                 row_routes.insert(row.source_record_id.clone(), page.route.clone());
             }
@@ -1915,6 +1973,11 @@ impl BoothService {
                 .insert((account.into(), source.into()));
         }
         publications.checkpoints.insert(key, checkpoint.clone());
+        publications.source_closures.insert(
+            (account.into(), source.into()),
+            (unbound_membership, !checkpoint.head.is_empty() && checkpoint.head == final_head.fingerprint),
+        );
+        trace_source_assembly(&checkpoint, publications, terminal_unproven_observed);
         publications.final_records.extend(records);
         if prefetch.is_none() {
             job["progress"]["stage"] = json!("finalizing");
@@ -2499,6 +2562,11 @@ impl BoothService {
                 publication_entries(publications, product).all(|entry| !entry.needs_enrichment)
             })
             .count();
+        // Publication can settle enrichment work after source assembly. Refresh
+        // the last closure without counting its observed reasons a second time.
+        for checkpoint in publications.checkpoints.values() {
+            trace_source_closure(checkpoint, publications);
+        }
         job["progress"] = publication_progress(publications, "finalizing", completed, published);
         self.progress(app, job)?;
         for _ in 0..4 {
@@ -3901,6 +3969,86 @@ fn revision_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn source_diagnostics_keep_checked_journal_reasons_and_changed_head() {
+        let page = parser::Page {
+            source: "purchase".into(), route: "/orders/910001".into(),
+            rows: vec![parser::Row {
+                source_record_id: "AUTHORED_SOURCE_MARKER".into(),
+                product_id: Some("900001".into()),
+                name: Some("AUTHORED_TITLE_MARKER".into()),
+                error_code: Some("DIGITAL_CONTROLS_UNRESOLVED".into()),
+                ..Default::default()
+            }],
+            next: vec![], details: vec![], terminal: false, unresolved: 1,
+            fingerprint: "AUTHORED_CHANGED_HEAD".into(), is_detail: true,
+            ordering: parser::Ordering::Unknown, free_item: None,
+        };
+        let mut checkpoint = Checkpoint::fresh("AUTHORED_ACCOUNT_MARKER", "purchase", "forced").unwrap();
+        checkpoint.head = "AUTHORED_ORIGINAL_HEAD".into();
+        let (_, trace) = crate::support_trace::capture(async {
+            assert!(!trace_checked_journal(&page, false));
+            // A resumed journal observation is counted again, not deduplicated
+            // into an invented number of unique orders.
+            assert!(!trace_checked_journal(&page, false));
+            record_source_head(&mut checkpoint, &page);
+            let mut missing_terminal = page.clone();
+            missing_terminal.source = "library".into();
+            missing_terminal.is_detail = false;
+            missing_terminal.rows.clear();
+            missing_terminal.unresolved = 0;
+            assert!(trace_checked_journal(&missing_terminal, true));
+            let free = free_item::Evidence::unknown("900002", "FREE_FILE_CONTROLS_UNAVAILABLE", false)
+                .page().unwrap();
+            trace_checked_journal(&free, false);
+        }).await;
+        assert_eq!(checkpoint.unresolved, 1);
+        assert_eq!(trace["sources"]["purchase"]["reasons"]["DIGITAL_CONTROLS_UNRESOLVED"], 2);
+        assert_eq!(trace["sources"]["purchase"]["reasons"]["SOURCE_HEAD_CHANGED"], 1);
+        assert_eq!(trace["sources"]["library"]["reasons"]["SOURCE_TERMINAL_UNPROVEN"], 1);
+        assert_eq!(trace["sources"]["library"]["reasons"]["SOURCE_MEMBERSHIP_UNBOUND"], 1);
+        assert_eq!(trace["sources"]["free"]["reasons"]["FREE_FILE_CONTROLS_UNAVAILABLE"], 1);
+        let text = crate::support::report(&json!({"type":"boothSync","supportDiagnostics":trace}), &[], &[]);
+        assert!(text.contains("checkedJournalAndAssemblyObservationsThisAttempt"));
+        for marker in ["AUTHORED_", "/orders/", "900001", "900002", "910001"] {
+            assert!(!text.contains(marker));
+        }
+    }
+    #[tokio::test]
+    async fn source_diagnostics_refresh_closure_without_recounting_incomplete_manifests() {
+        let account = "AUTHORED_ACCOUNT_MARKER";
+        let mut checkpoint = Checkpoint::fresh(account, "purchase", "forced").unwrap();
+        checkpoint.unresolved = 3;
+        checkpoint.enrichment_pending.extend(["900001".into(), "900002".into()]);
+        let mut publications = Publications::default();
+        publications.source_closures.insert((account.into(), "purchase".into()), (true, false));
+        publications.incomplete_scopes.extend([
+            (account.into(), "purchase".into(), "900001".into()),
+            (account.into(), "purchase".into(), "900002".into()),
+            (account.into(), "gift".into(), "900003".into()),
+            ("AUTHORED_OTHER_ACCOUNT".into(), "purchase".into(), "900004".into()),
+        ]);
+        let before = serde_json::to_value(&checkpoint).unwrap();
+        let (_, trace) = crate::support_trace::capture(async {
+            trace_source_assembly(&checkpoint, &publications, false);
+            assert_eq!(serde_json::to_value(&checkpoint).unwrap(), before);
+            checkpoint.enrichment_pending.clear();
+            trace_source_closure(&checkpoint, &publications);
+        }).await;
+        let source = &trace["sources"]["purchase"];
+        assert_eq!(source["reasons"]["SOURCE_MANIFEST_INCOMPLETE"], 2);
+        assert_eq!(source["reasons"]["SOURCE_TERMINAL_UNPROVEN"], 1);
+        assert_eq!(source["lastClosure"], json!({
+            "scope":"latestObservedSourceClosure", "terminalSeen":false,
+            "pendingRequests":1,"unresolvedRows":3,"enrichmentPending":0,
+            "incompleteProducts":2,"membershipUnbound":true,"headStable":false
+        }));
+        assert!(source.get("state").is_none());
+        let text = serde_json::to_string(&trace).unwrap();
+        for marker in ["AUTHORED_", "900001", "900002", "900003", "900004"] {
+            assert!(!text.contains(marker));
+        }
+    }
     #[test]
     fn verification_prefix_drains_details_without_certifying_source_end() {
         let mut checkpoint = Checkpoint::fresh("authored-account", "purchase", "forced").unwrap();

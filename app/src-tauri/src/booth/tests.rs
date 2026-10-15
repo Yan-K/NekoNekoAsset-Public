@@ -1,6 +1,40 @@
 use super::*;
 use std::path::PathBuf;
 
+#[tokio::test]
+async fn completed_incomplete_attempt_retains_execution_and_source_diagnostics_in_database() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    let mut job = json!({"id":"authored-capture-lifecycle","type":"boothSync","accountId":A,
+        "state":"queued","progress":{"stage":"collecting","pages":0}});
+    crate::support::begin_attempt(&mut job);
+    catalogue.put("job", "authored-capture-lifecycle", job.clone()).unwrap();
+    let (_, trace) = crate::support_trace::capture(async {
+        crate::support_trace::source_start("purchase");
+        crate::support_trace::source_reason("purchase", "SOURCE_HEAD_CHANGED", 1);
+        crate::support_trace::source_closure("purchase", true, 0, 1, 0, 0, false, false);
+        crate::support_trace::source_done("purchase", Some(false), None);
+        let mut durable = job.clone();
+        durable["progress"] = json!({"stage":"finalizing","pages":9,"detailsCompleted":4});
+        catalogue.put("job", "authored-capture-lifecycle", durable).unwrap();
+    }).await;
+    job["supportDiagnostics"] = trace;
+    crate::support::end_attempt(&mut job);
+    fixture.service.finish_job(&job, Some("SYNC_INCOMPLETE")).unwrap();
+    let stored = catalogue.get("job", "authored-capture-lifecycle").unwrap().unwrap();
+    assert_eq!(stored["state"], "needsAction");
+    assert_eq!(stored["progress"]["pages"], 9);
+    let report: Value = serde_json::from_str(&crate::support::report(&stored, &[], &[])).unwrap();
+    assert_eq!(report["captureAvailable"], true);
+    assert_eq!(report["capture"]["attemptState"], "finished");
+    assert_eq!(report["capture"]["executionAppVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["supportDiagnostics"]["sources"]["purchase"]["reasons"]["SOURCE_HEAD_CHANGED"], 1);
+    assert_eq!(report["supportDiagnostics"]["sources"]["purchase"]["lastClosure"]["headStable"], false);
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[test]
 fn auth_required_expires_sync_account_without_erasing_identity_or_assets() {
     let fixture = Fixture::new();

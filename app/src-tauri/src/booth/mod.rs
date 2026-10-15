@@ -543,7 +543,8 @@ impl BoothService {
             .as_str()
             .and_then(|account| self.known_account(account).ok())
             .and_then(|account| account["name"].as_str().map(str::to_owned));
-        let job = json!({"id":id,"type":kind,"store":"BOOTH","accountId":args["accountId"],"accountName":account_name,"args":args,"state":"queued","progress":{"stage":"collecting","pages":0,"products":0},"createdAt":now(),"updatedAt":now(),"originDeviceId":self.inner.catalogue.device_id()});
+        let mut job = json!({"id":id,"type":kind,"store":"BOOTH","accountId":args["accountId"],"accountName":account_name,"args":args,"state":"queued","progress":{"stage":"collecting","pages":0,"products":0},"createdAt":now(),"updatedAt":now(),"originDeviceId":self.inner.catalogue.device_id()});
+        crate::support::reset_attempt(&mut job);
         self.inner.catalogue.put("job", &id, job.clone())?;
         Ok(job)
     }
@@ -634,11 +635,13 @@ impl BoothService {
             // Accounts of this store share one execution queue. Other providers
             // own independent gates and continue concurrently.
             let _execution = service.inner.execution.lock().await;
+            crate::support::begin_attempt(&mut job);
             let (result, diagnostics) = crate::support_trace::capture(async {
                 crate::support_trace::job_stage(&job);
                 service.execute(&app, &mut job).await
             }).await;
             job["supportDiagnostics"] = diagnostics;
+            crate::support::end_attempt(&mut job);
             let mut error_code = result.as_ref().err().map(code);
             // Complete login window handling before exposing the terminal job or
             // releasing this account. Verified credentials remain device-local.
@@ -704,6 +707,9 @@ impl BoothService {
             let mut terminal = current.clone();
             if let Some(diagnostics) = job.get("supportDiagnostics") {
                 terminal["supportDiagnostics"] = diagnostics.clone();
+            }
+            if let Some(capture) = job.get("supportCapture") {
+                terminal["supportCapture"] = capture.clone();
             }
             terminal["supportLastStage"] = json!(crate::support::operation_stage(terminal["progress"]["stage"].as_str().unwrap_or("")));
             let error = if current["state"] == "cancelled" {

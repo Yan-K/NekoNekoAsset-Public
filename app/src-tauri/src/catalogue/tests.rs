@@ -19,8 +19,8 @@ fn job_diagnostics_is_read_only_private_and_does_not_mix_later_account_snapshots
     let value:Value = serde_json::from_str(text).unwrap();
     assert_eq!(value["captureAvailable"], true);
     assert_eq!(value["supportDiagnostics"]["http"]["receipt"]["lastStatus"],502);
-    assert_eq!(value["sourceCoverage"],json!({}));
-    assert_eq!(value["checkpoints"],json!({}));
+    assert!(value.get("sourceCoverage").is_none());
+    assert!(value.get("checkpoints").is_none());
     for secret in ["PRIVATE", "999", "998", "https://", "accountId", "cookie"] { assert!(!text.contains(secret), "{secret}"); }
     assert_eq!(c.change_domains().unwrap(),before);
     assert_eq!(c.get("job", "PRIVATE_JOB").unwrap(),Some(job));

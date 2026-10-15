@@ -65,6 +65,47 @@ pub(crate) fn source_done(value: &str, complete: Option<bool>, error: Option<&st
         });
     }
 }
+/// Counts checked journal/assembly observations, including replayed checkpoint
+/// pages. These are reasons observed this attempt, never unique products/orders.
+pub(crate) fn source_reason(value: &str, code: &str, count: u64) {
+    if count == 0 { return; }
+    if let Some(key) = source(value) {
+        let code = crate::support::safe_code(code);
+        update(|trace| {
+            let row = &mut trace["sources"][key];
+            if !row["reasons"].is_object() { row["reasons"] = json!({}); }
+            if row["reasons"].get(code).is_some() || row["reasons"].as_object().unwrap().len() < 16 {
+                increment(&mut row["reasons"], code, count);
+            } else {
+                increment(row, "omittedReasonCount", count);
+            }
+        });
+    }
+}
+/// This snapshot is the latest observed source closure. Other account scans
+/// retain their cumulative reasons/results; a later closure cannot clear them.
+pub(crate) fn source_closure(value: &str, terminal: bool, pending: u64, unresolved: u64,
+    enrichment_pending: u64, incomplete_products: u64, unbound: bool, head_stable: bool) {
+    if let Some(key) = source(value) {
+        update(|trace| trace["sources"][key]["lastClosure"] = json!({
+            "scope":"latestObservedSourceClosure", "terminalSeen":terminal,
+            "pendingRequests":pending, "unresolvedRows":unresolved,
+            "enrichmentPending":enrichment_pending,"incompleteProducts":incomplete_products,
+            "membershipUnbound":unbound,"headStable":head_stable
+        }));
+    }
+}
+/// Count only a closed language group, including parser calls which fail before
+/// producing a Page. Locale tags and page contents never leave the parser.
+pub(crate) fn parser_language(value: &str, language: &str) {
+    if let Some(key) = source(value) {
+        update(|trace| {
+            let row = &mut trace["sources"][key];
+            increment(row, "parserCalls", 1);
+            increment(row, match language { "ja"=>"htmlJa", "en"=>"htmlEn", "other"=>"htmlOther", _=>"htmlUnknown" }, 1);
+        });
+    }
+}
 pub(crate) fn page(value: &str, detail: bool, rows: u64, unresolved: u64, terminal: bool) {
     if let Some(key) = source(value) {
         update(|trace| {
@@ -125,9 +166,12 @@ pub(crate) fn receipt(fields: &Value, rows: u64, paid: u64, dated: u64, rejected
         let facts=&mut trace["financial"];
         increment(facts,"receiptPages",1); increment(facts,"rows",rows);
         increment(facts,"rowsWithPaidProof",paid); increment(facts,"rowsWithDateProof",dated);
+        increment(facts,"dateProofUnavailableRows",rows.saturating_sub(dated));
         increment(facts,"proofRejected",u64::from(rejected));
         for key in ["digitalBoundItems","uniqueMetadataItems","unitPriceItems","explicitQuantityItems",
-            "omittedQuantityItems","explicitBoostItems","productLineProofItems","ambiguousItems"] {
+            "omittedQuantityItems","explicitBoostItems","productLineProofItems","ambiguousItems",
+            "digitalControlBindingUnprovenItems","metadataShapeUnrecognizedItems","unitPriceUnrecognizedItems",
+            "quantityUnrecognizedItems","boostUnrecognizedItems"] {
             if let Some(value)=fields[key].as_u64() {increment(facts,key,value);}
         }
         increment(facts,match language {"ja"=>"htmlJa","en"=>"htmlEn","other"=>"htmlOther",_=>"htmlUnknown"},1);
