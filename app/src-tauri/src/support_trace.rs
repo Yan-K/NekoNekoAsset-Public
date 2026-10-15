@@ -32,6 +32,17 @@ fn source(value: &str) -> Option<&'static str> {
 fn increment(value: &mut Value, key: &'static str, amount: u64) {
     value[key] = json!(value[key].as_u64().unwrap_or(0).saturating_add(amount));
 }
+fn language_counter(language: &str) -> &'static str {
+    match language {
+        "ja" => "htmlJa",
+        "en" => "htmlEn",
+        "ko" => "htmlKo",
+        "zh-cn" => "htmlZhCn",
+        "zh-tw" => "htmlZhTw",
+        "other" => "htmlOther",
+        _ => "htmlUnknown",
+    }
+}
 pub(crate) fn stage(value: &str) {
     let value = crate::support::operation_stage(value);
     if value != "unknown" {
@@ -102,7 +113,7 @@ pub(crate) fn parser_language(value: &str, language: &str) {
         update(|trace| {
             let row = &mut trace["sources"][key];
             increment(row, "parserCalls", 1);
-            increment(row, match language { "ja"=>"htmlJa", "en"=>"htmlEn", "other"=>"htmlOther", _=>"htmlUnknown" }, 1);
+            increment(row, language_counter(language), 1);
         });
     }
 }
@@ -174,13 +185,47 @@ pub(crate) fn receipt(fields: &Value, rows: u64, paid: u64, dated: u64, rejected
             "quantityUnrecognizedItems","boostUnrecognizedItems"] {
             if let Some(value)=fields[key].as_u64() {increment(facts,key,value);}
         }
-        increment(facts,match language {"ja"=>"htmlJa","en"=>"htmlEn","other"=>"htmlOther",_=>"htmlUnknown"},1);
+        increment(facts, language_counter(language), 1);
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn booth_five_languages_keep_distinct_closed_counters_without_raw_locale_values() {
+        let languages = [
+            ("ja", "htmlJa"), ("en", "htmlEn"), ("ko", "htmlKo"),
+            ("zh-cn", "htmlZhCn"), ("zh-tw", "htmlZhTw"),
+            ("other", "htmlOther"), ("unknown", "htmlUnknown"),
+        ];
+        let ((), facts) = capture(async {
+            for (language, _) in languages {
+                parser_language("purchase", language);
+                receipt(&json!({}), 1, 0, 0, false, language);
+            }
+            // Only the parser classifies raw locale tags. The recorder never
+            // interprets or retains caller-supplied tags or private strings.
+            for invalid in ["zh-Hant-PRIVATE_LANGUAGE", "ko-PRIVATE_COOKIE", "EN", "htmlZhTw", ""] {
+                parser_language("purchase", invalid);
+                receipt(&json!({}), 0, 0, 0, false, invalid);
+            }
+        }).await;
+        let source = &facts["sources"]["purchase"];
+        let financial = &facts["financial"];
+        assert_eq!(source["parserCalls"], 12);
+        assert_eq!(financial["receiptPages"], 12);
+        for (_, key) in languages {
+            let expected = if key == "htmlUnknown" { 6 } else { 1 };
+            assert_eq!(source[key], expected, "source {key}");
+            assert_eq!(financial[key], expected, "financial {key}");
+        }
+        assert_eq!(source.as_object().unwrap().len(), 8);
+        let text = facts.to_string();
+        for forbidden in ["PRIVATE", "zh-Hant", "ko-PRIVATE", "\"zh-cn\"", "\"zh-tw\"", "\"EN\""] {
+            assert!(!text.contains(forbidden), "{forbidden}");
+        }
+    }
     #[tokio::test]
     async fn attempts_are_isolated_and_do_not_retain_url_or_unknown_strings() {
         let ((), facts)=capture(async {

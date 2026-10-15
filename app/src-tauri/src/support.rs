@@ -39,7 +39,7 @@ const FINANCIAL_COUNTS: &[&str] = &[
     "receiptPages", "digitalBoundItems", "uniqueMetadataItems", "unitPriceItems",
     "explicitQuantityItems", "omittedQuantityItems", "explicitBoostItems",
     "productLineProofItems", "ambiguousItems", "rows", "rowsWithPaidProof",
-    "rowsWithDateProof", "proofRejected", "htmlJa", "htmlEn", "htmlOther", "htmlUnknown",
+    "rowsWithDateProof", "proofRejected", "htmlJa", "htmlEn", "htmlKo", "htmlZhCn", "htmlZhTw", "htmlOther", "htmlUnknown",
     "digitalControlBindingUnprovenItems", "metadataShapeUnrecognizedItems", "unitPriceUnrecognizedItems",
     "quantityUnrecognizedItems", "boostUnrecognizedItems", "dateProofUnavailableRows",
 ];
@@ -376,7 +376,7 @@ fn capture_summary(job: &Value, available: bool) -> Value {
     let execution_version = if execution_version == env!("CARGO_PKG_VERSION") {
         env!("CARGO_PKG_VERSION")
     } else {
-        closed!(execution_version, "unknown"; "0.2.0", "0.2.1", "0.2.2", "0.2.3")
+        closed!(execution_version, "unknown"; "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4")
     };
     let status = if available { "available" }
         else if job["supportDiagnostics"].is_object() { "unsupportedCapture" }
@@ -404,7 +404,7 @@ fn trace(input: &Value) -> Option<Value> {
         if !row.is_object() { continue; }
         let mut projected = counts(row, &["pages", "details", "rows", "unresolved",
             "scansStarted", "scansComplete", "scansIncomplete", "scansFailed",
-            "parserCalls", "htmlJa", "htmlEn", "htmlOther", "htmlUnknown"]);
+            "parserCalls", "htmlJa", "htmlEn", "htmlKo", "htmlZhCn", "htmlZhTw", "htmlOther", "htmlUnknown"]);
         if row.get("parserCalls").is_some() {
             projected.insert("htmlLanguageScope".into(), json!("parserCallsThisAttempt"));
         }
@@ -521,6 +521,22 @@ mod tests {
     }
 
     #[test]
+    fn prior_public_capture_keeps_its_execution_version_after_upgrade() {
+        let mut job = json!({"type":"boothSync","state":"completed",
+            "supportCapture":{"version":1,"state":"finished","executionAppVersion":"0.2.4"},
+            "supportDiagnostics":{"version":1,"lastStage":"publishing"}});
+        let value = parsed(&job, &[], &[]);
+        assert_eq!(value["app"]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["app"]["versionScope"], "reportGeneration");
+        assert_eq!(value["capture"]["executionAppVersion"], "0.2.4");
+        assert_eq!(value["capture"]["attemptState"], "finished");
+        assert_eq!(value["capture"]["status"], "available");
+        job["supportCapture"]["executionAppVersion"] = json!("0.2.4-PRIVATE_SESSION_VERSION");
+        assert_eq!(parsed(&job, &[], &[])["capture"]["executionAppVersion"], "unknown");
+        assert!(!report(&job, &[], &[]).contains("PRIVATE"));
+    }
+
+    #[test]
     fn source_reason_closure_and_language_projection_never_echo_dynamic_values() {
         let job = json!({"type":"boothSync","supportDiagnostics":{"version":1,"sources":{"purchase":{
             "reasons":{"SOURCE_HEAD_CHANGED":1,"PRIVATE_REASON":2,"SOURCE_MANIFEST_INCOMPLETE":"PRIVATE_COUNT"},
@@ -540,6 +556,46 @@ mod tests {
         assert_eq!(source["lastClosure"]["incompleteProducts"], 1);
         assert_eq!(source["htmlLanguageScope"], "parserCallsThisAttempt");
         assert_eq!(source["reasonScope"], "checkedJournalAndAssemblyObservationsThisAttempt");
+    }
+
+    #[test]
+    fn five_language_projection_retains_only_fixed_bounded_numeric_counters() {
+        let secret = "PRIVATE_CUSTOM_LOCALE_COOKIE_123456789012345678";
+        let keys = ["htmlJa", "htmlEn", "htmlKo", "htmlZhCn", "htmlZhTw", "htmlOther", "htmlUnknown"];
+        let mut row = json!({"parserCalls":28,"htmlLanguage":secret,"rawLocale":secret,(secret):9});
+        for (index, key) in keys.iter().enumerate() {
+            row[*key] = json!(index + 1);
+        }
+        let mut job = json!({"type":"boothSync","supportDiagnostics":{"version":1,
+            "sources":{"purchase":row.clone()},"financial":row}});
+        let value = parsed(&job, &[], &[]);
+        let source = &value["supportDiagnostics"]["sources"]["purchase"];
+        let financial = &value["supportDiagnostics"]["financial"];
+        assert_eq!(source["parserCalls"], 28);
+        assert_eq!(source["htmlLanguageScope"], "parserCallsThisAttempt");
+        assert_eq!(financial["scope"], "parserCallsThisAttempt");
+        assert_eq!(source.as_object().unwrap().len(), 9);
+        assert_eq!(financial.as_object().unwrap().len(), 8);
+        for (index, key) in keys.iter().enumerate() {
+            assert_eq!(source[*key], index + 1, "source {key}");
+            assert_eq!(financial[*key], index + 1, "financial {key}");
+        }
+        assert!(!report(&job, &[], &[]).contains(secret));
+        for invalid in [json!(secret), json!("1"), json!(-1), json!(1.5), json!(true),
+            json!({"locale":secret}), json!([1]), json!(MAX_COUNT + 1), json!(123456789012345678u64)] {
+            for key in keys {
+                job["supportDiagnostics"]["sources"]["purchase"][key] = invalid.clone();
+                job["supportDiagnostics"]["financial"][key] = invalid.clone();
+            }
+            let value = parsed(&job, &[], &[]);
+            for key in keys {
+                assert!(value["supportDiagnostics"]["sources"]["purchase"][key].is_null(), "source {key}");
+                assert!(value["supportDiagnostics"]["financial"][key].is_null(), "financial {key}");
+            }
+            let text = report(&job, &[], &[]);
+            assert!(!text.contains(secret));
+            assert!(!text.contains("123456789012345678"));
+        }
     }
 
     #[test]
@@ -742,7 +798,7 @@ mod tests {
             row["lastClosure"] = json!({"terminalSeen":true,"pendingRequests":MAX_COUNT,"unresolvedRows":MAX_COUNT,
                 "enrichmentPending":MAX_COUNT,"incompleteProducts":MAX_COUNT,"membershipUnbound":true,"headStable":false});
             row["parserCalls"] = json!(MAX_COUNT);
-            for language in ["htmlJa", "htmlEn", "htmlOther", "htmlUnknown"] { row[language] = json!(MAX_COUNT); }
+            for language in ["htmlJa", "htmlEn", "htmlKo", "htmlZhCn", "htmlZhTw", "htmlOther", "htmlUnknown"] { row[language] = json!(MAX_COUNT); }
             capture["sources"][*source] = row;
         }
         for scope in HTTP_SCOPES {

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.5 Beta - 2026-10-16
+
+### Fixed
+
+- BOOTH receipt parsing recognizes JPY amounts and the current Order Number and Created At summary labels, restoring proven paid prices and acquisition dates on English, Korean, Simplified Chinese and Traditional Chinese pages. Japanese receipt parsing retains the same order, product and file binding.
+- Copied diagnostics preserve the original execution version of existing 0.2.4 jobs after upgrading.
+
+### Added
+
+- Copied BOOTH diagnostics distinguish Japanese, English, Korean, Simplified Chinese and Traditional Chinese page-language counters, without including private page contents or raw locale strings.
+
+### Release notes
+
+- App and Unity Bridge share version 0.2.5 Beta. The catalogue database format, device profiles and library paths are retained.
+- This patch fixes the confirmed receipt-language issue. Unresolved download controls or unproven source closure can still require attention during synchronization.
+
 ## 0.2.4 Beta - 2026-10-15
 
 ### Added

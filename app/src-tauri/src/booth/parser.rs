@@ -17,9 +17,16 @@ fn html_language(doc: &Html) -> &'static str {
         .and_then(|node| node.value().attr("lang"))
         .filter(|value| !value.trim().is_empty())
         .map_or("unknown", |value| {
+            let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
+            match normalized.as_str() {
+                "zh-cn" | "zh-hans" | "zh-hans-cn" => return "zh-cn",
+                "zh-tw" | "zh-hant" | "zh-hant-tw" => return "zh-tw",
+                _ => {}
+            }
             match value.trim().split(['-', '_']).next().unwrap_or("") {
                 value if value.eq_ignore_ascii_case("ja") => "ja",
                 value if value.eq_ignore_ascii_case("en") => "en",
+                value if value.eq_ignore_ascii_case("ko") => "ko",
                 _ => "other",
             }
         })
@@ -497,8 +504,7 @@ fn noninteractive(node: ElementRef<'_>) -> bool {
         })
 }
 fn currency_jpy(value: &str) -> Option<f64> {
-    value
-        .contains(['¥', '￥', '円'])
+    (value.contains(['¥', '￥', '円']) || value.trim_end().ends_with("JPY"))
         .then(|| super::metadata::parse_jpy_price(&serde_json::json!(value)))
         .flatten()
 }
@@ -606,13 +612,13 @@ fn template_literal(value: &str) -> &str {
 fn order_number_label(value: &str) -> bool {
     matches!(
         template_literal(value),
-        "注文番号" | "ご注文番号" | "注文ID" | "Order number" | "Order ID"
+        "注文番号" | "ご注文番号" | "注文ID" | "Order number" | "Order Number" | "Order ID"
     )
 }
 fn ordered_date_label(value: &str) -> bool {
     matches!(
         template_literal(value),
-        "注文日時" | "ご注文日時" | "注文日" | "ご注文日" | "Ordered at" | "Order date"
+        "注文日時" | "ご注文日時" | "注文日" | "ご注文日" | "Ordered at" | "Order date" | "Created At"
     )
 }
 fn template_label_value<'a>(
@@ -2939,6 +2945,10 @@ mod tests {
         let cases = [
             ("<html lang='ja-JP'><head><meta name='js_const_user_signed_in' content='false'></head><body>PRIVATE_AUTH</body></html>", "AUTH_REQUIRED"),
             ("<html lang='EN_us'><body><main><h1>Library</h1><form id='challenge-form'></form></main></body></html>", "AUTH_CHALLENGE"),
+            ("<html lang='ko-KR'><body><main><h1>PRIVATE_HEADING</h1></main></body></html>", "SOURCE_MARKER_UNKNOWN"),
+            ("<html lang='zh-Hans'><body><main><h1>PRIVATE_HEADING</h1></main></body></html>", "SOURCE_MARKER_UNKNOWN"),
+            ("<html lang='ZH_tw'><body><main><h1>PRIVATE_HEADING</h1></main></body></html>", "SOURCE_MARKER_UNKNOWN"),
+            ("<html lang='zh-Hant'><body><main><h1>PRIVATE_HEADING</h1></main></body></html>", "SOURCE_MARKER_UNKNOWN"),
             ("<html lang='zh-Hant-PRIVATE_LANGUAGE'><body><main><h1>PRIVATE_HEADING</h1></main></body></html>", "SOURCE_MARKER_UNKNOWN"),
             ("<main><h1>Library</h1></main>", "NO_RECOGNIZED_ROWS"),
             ("<html lang='  '><body><main><h1>Library</h1></main></body></html>", "NO_RECOGNIZED_ROWS"),
@@ -2951,14 +2961,15 @@ mod tests {
         }).await;
         let counts = &trace["sources"]["library"];
         for (key, expected) in [
-            ("parserCalls", 5), ("htmlJa", 1), ("htmlEn", 1),
+            ("parserCalls", 9), ("htmlJa", 1), ("htmlEn", 1),
+            ("htmlKo", 1), ("htmlZhCn", 1), ("htmlZhTw", 2),
             ("htmlOther", 1), ("htmlUnknown", 2),
         ] {
             assert_eq!(counts[key], expected, "{key}");
         }
-        assert_eq!(counts.as_object().unwrap().len(), 5);
+        assert_eq!(counts.as_object().unwrap().len(), 8);
         assert!(trace["financial"].as_object().unwrap().is_empty());
-        for private in ["PRIVATE", "ja-JP", "EN_us", "zh-Hant", "Library", "AUTH_REQUIRED"] {
+        for private in ["PRIVATE", "ja-JP", "EN_us", "ko-KR", "zh-Hans", "ZH_tw", "zh-Hant", "Library", "AUTH_REQUIRED"] {
             assert!(!trace.to_string().contains(private), "{private}");
         }
     }
@@ -2967,7 +2978,7 @@ mod tests {
         let item = charge_item("900001", "700001", "¥ 137", None, "0");
         let known = charge_receipt(&item, "¥ 137", "");
         let expected = serde_json::to_value(parse(&known, "purchase", "/orders/910001").unwrap()).unwrap();
-        for language in ["ja-JP", "en-US", "zh-Hant-PRIVATE_LANGUAGE"] {
+        for language in ["ja-JP", "en-US", "ko-KR", "zh-Hans", "zh-Hant", "zh-Hant-PRIVATE_LANGUAGE"] {
             let localized = format!("<html lang='{language}'><body>{known}</body></html>");
             assert_eq!(serde_json::to_value(parse(&localized, "purchase", "/orders/910001").unwrap()).unwrap(), expected);
         }
@@ -2982,6 +2993,9 @@ mod tests {
             format!("<html lang='zh-Hant-PRIVATE_LANGUAGE'><body><main>{item}</main></body></html>"),
             known.clone(),
             format!("<html lang='ja-JP'><body>{known}</body></html>"),
+            format!("<html lang='ko-KR'><body>{known}</body></html>"),
+            format!("<html lang='zh-Hans'><body>{known}</body></html>"),
+            format!("<html lang='zh-Hant'><body>{known}</body></html>"),
         ];
         let (pages, trace) = crate::support_trace::capture(async {
             let pages = cases
@@ -3002,17 +3016,17 @@ mod tests {
         // The repeated receipt is intentionally another parser call, not a new
         // unique receipt or transaction. Missing price and date stay separate.
         for (key, expected) in [
-            ("receiptPages", 5),
-            ("rows", 5),
-            ("rowsWithPaidProof", 4),
-            ("rowsWithDateProof", 4),
+            ("receiptPages", 8),
+            ("rows", 8),
+            ("rowsWithPaidProof", 7),
+            ("rowsWithDateProof", 7),
             ("proofRejected", 0),
-            ("digitalBoundItems", 5),
-            ("uniqueMetadataItems", 5),
-            ("unitPriceItems", 4),
-            ("omittedQuantityItems", 5),
-            ("explicitBoostItems", 5),
-            ("productLineProofItems", 4),
+            ("digitalBoundItems", 8),
+            ("uniqueMetadataItems", 8),
+            ("unitPriceItems", 7),
+            ("omittedQuantityItems", 8),
+            ("explicitBoostItems", 8),
+            ("productLineProofItems", 7),
             ("ambiguousItems", 1),
             ("digitalControlBindingUnprovenItems", 0),
             ("metadataShapeUnrecognizedItems", 0),
@@ -3022,6 +3036,9 @@ mod tests {
             ("dateProofUnavailableRows", 1),
             ("htmlJa", 2),
             ("htmlEn", 1),
+            ("htmlKo", 1),
+            ("htmlZhCn", 1),
+            ("htmlZhTw", 1),
             ("htmlOther", 1),
             ("htmlUnknown", 1),
         ] {
@@ -3690,6 +3707,79 @@ mod tests {
                 .unwrap(),
                 counts
             );
+        }
+    }
+    #[test]
+    fn five_locale_receipts_bind_english_summary_without_changing_acquisition_identity() {
+        let japanese = charge_receipt(
+            &charge_item("900001", "700001", "¥ 137", None, "¥ 30"), "¥ 999999", "",
+        ).replace("2026/10/10 09:30", "2026/10/10 09:30:12");
+        let baseline = parse(&japanese, "purchase", "/orders/910001").unwrap();
+        let international = japanese
+            .replace("¥ 137", "137 JPY")
+            .replace("¥ 30", "30 JPY")
+            .replace("¥ 999999", "999999 JPY")
+            .replace("注文番号", "Order Number")
+            .replace("注文日時", "Created At");
+        for (language, receipt) in [
+            ("ja", &japanese), ("en", &international), ("ko", &international),
+            ("zh-CN", &international), ("zh-TW", &international),
+        ] {
+            let html = format!("<html lang='{language}'><body>{receipt}</body></html>");
+            let page = parse(&html, "purchase", "/orders/910001").unwrap();
+            assert_bound_product_price(&page, 167);
+            assert_eq!(page.rows[0].acquired_date_text.as_deref(), Some("2026/10/10 09:30:12"));
+            assert_eq!(serde_json::to_value(page).unwrap(), serde_json::to_value(&baseline).unwrap());
+        }
+        for receipt in [
+            international.replace("<span>910001</span>", "<span>910002</span>"),
+            international.replace("Created At", "PRIVATE_UNKNOWN_DATE_LABEL"),
+            international.replace("<span>Created At</span>", "<span>Created At</span><span>Created At</span>"),
+            international.replace("2026/10/10 09:30", "2026/13/10 09:30"),
+            international.replace("</main>", "<div class='sheet'><div><span>Order Number</span><span>910001</span></div><div><span>Created At</span><span>2026/10/11 09:30</span></div></div></main>"),
+        ] {
+            let page = parse(&receipt, "purchase", "/orders/910001").unwrap();
+            assert_bound_product_price(&page, 167);
+            assert_eq!(page.rows[0].acquired_date_text, None);
+            assert_eq!(page.rows[0].source_record_id, baseline.rows[0].source_record_id);
+            assert_eq!(page.rows[0].product_id, baseline.rows[0].product_id);
+            assert_eq!(serde_json::to_value(&page.rows[0].files).unwrap(), serde_json::to_value(&baseline.rows[0].files).unwrap());
+        }
+    }
+    #[test]
+    fn receipt_jpy_code_preserves_bound_totals_and_rejects_other_amount_spellings() {
+        for (quantity, amount) in [(None, 167), (Some("Quantity: 2"), 304)] {
+            let japanese = charge_receipt(
+                &charge_item("900001", "700001", "¥ 137", quantity, "¥ 30"),
+                "¥ 999999",
+                "",
+            );
+            let international = charge_receipt(
+                &charge_item("900001", "700001", "137 JPY", quantity, "30 JPY"),
+                "999999 JPY",
+                "",
+            );
+            let expected = parse(&japanese, "purchase", "/orders/910001").unwrap();
+            let parsed = parse(&international, "purchase", "/orders/910001").unwrap();
+            assert_bound_product_price(&parsed, amount);
+            assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::to_value(expected).unwrap());
+        }
+        for (unit, boost) in [
+            ("137 USD", "30 JPY"),
+            ("137 JPY", "30 USD"),
+            ("¥ 137 JPY", "30 JPY"),
+            ("137 JPY", ""),
+            ("137.0 JPY", "30 JPY"),
+            ("137 JPY ~ 999 JPY", "30 JPY"),
+        ] {
+            let html = charge_receipt(
+                &charge_item("900001", "700001", unit, None, boost), "999999 JPY", "",
+            );
+            let page = parse(&html, "purchase", "/orders/910001").unwrap();
+            assert_eq!(page.rows.len(), 1);
+            assert_eq!(page.rows[0].product_line_total_jpy, None);
+            assert_eq!(page.rows[0].acquired_date_text.as_deref(), Some("2026/10/10 09:30"));
+            assert_eq!(page.rows[0].files.len(), 1);
         }
     }
     #[test]

@@ -18,6 +18,7 @@ fn jpy_amount(text: &str) -> Option<u64> {
     let digits = text
         .strip_prefix('¥')
         .or_else(|| text.strip_suffix('円'))
+        .or_else(|| text.strip_suffix("JPY"))
         .unwrap_or(text)
         .trim();
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit() || c == ',') {
@@ -681,6 +682,8 @@ https://jingo1016.booth.pm/items/5058077</p></section>
             (json!("¥ 1,500"), 1500.0),
             (json!("￥１，５００"), 1500.0),
             (json!("  1,500円  "), 1500.0),
+            (json!("1,500 JPY"), 1500.0),
+            (json!("  ０　ＪＰＹ  "), 0.0),
             (json!("1500"), 1500.0),
             (json!("¥ 0"), 0.0),
             (json!(MAX_SAFE_JPY), MAX_SAFE_JPY as f64),
@@ -702,6 +705,18 @@ https://jingo1016.booth.pm/items/5058077</p></section>
             json!("1e3"),
             json!("$ 100"),
             json!("USD 100"),
+            json!("100 USD"),
+            json!("JPY 100"),
+            json!("100 jpy"),
+            json!("¥ 100 JPY"),
+            json!("100 円 JPY"),
+            json!("1,50 JPY"),
+            json!("01,500 JPY"),
+            json!("100.0 JPY"),
+            json!("-100 JPY"),
+            json!("100 JPY shipping"),
+            json!("100 JPY ~ 200 JPY"),
+            json!("9007199254740992 JPY"),
             json!("¥ 1,50"),
             json!("¥ 1,500,"),
             json!("¥ 01,500"),
