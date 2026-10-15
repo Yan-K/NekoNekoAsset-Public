@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.4 Beta - 2026-10-15
+
+### Added
+
+- Copied BOOTH diagnostics distinguish details that were never recorded, an attempt that has not started and missing or unsupported capture data. The report identifies the App version that executed a newly captured attempt separately from the version copying the report.
+- BOOTH reports include the latest observed source-closure counts, page-language groups even when parsing fails early, and separate reasons why digital binding, receipt layout, unit price, quantity or BOOST evidence was not recognized. Missing date proof is counted separately. Reports retain only fixed statuses and operational counts, without private page contents or locale strings.
+
+### Fixed
+
+- Active-task diagnostics no longer present a stale terminal error as the current failure.
+
+### Release notes
+
+- App and Unity Bridge share version 0.2.4 Beta. The existing catalogue database format and library paths are retained.
+- BOOTH paid-price and acquisition-date acceptance rules are unchanged. This update improves diagnosis; it does not expand supported website languages or claim to resolve the reported missing-price/date cause.
+
 ## 0.2.3 Beta - 2026-10-15
 
 ### Added
