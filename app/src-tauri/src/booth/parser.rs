@@ -2755,9 +2755,49 @@ fn parse_internal(
     }
     if source == "purchase" && is_detail {
         if let Some(receipt_id) = url.path().strip_prefix("/orders/") {
-            if let Ok(proof) = product_line_proof_document(&doc, &page.rows, receipt_id) {
-                apply_product_line_charges(&mut page.rows, proof, receipt_id);
-            }
+            let (fields, rejected) =
+                match product_line_proof_document(&doc, &page.rows, receipt_id) {
+                    Ok(proof) => {
+                        let fields = serde_json::to_value(&proof.diagnostics).unwrap_or(Value::Null);
+                        apply_product_line_charges(&mut page.rows, proof, receipt_id);
+                        (fields, false)
+                    }
+                    Err(_) => (Value::Null, true),
+                };
+            let (rows, paid_rows, dated_rows) = page
+                .rows
+                .iter()
+                .filter(|row| row.order_id.as_deref() == Some(receipt_id))
+                .fold((0u64, 0u64, 0u64), |(rows, paid, dated), row| {
+                    (
+                        rows + 1,
+                        paid + u64::from(row.product_line_total_jpy.is_some()),
+                        dated
+                            + u64::from(
+                                row.acquired_date_text
+                                    .as_ref()
+                                    .is_some_and(|value| !value.trim().is_empty()),
+                            ),
+                    )
+                });
+            let language = doc
+                .select(&sel("html"))
+                .next()
+                .and_then(|node| node.value().attr("lang"))
+                .filter(|value| !value.trim().is_empty())
+                .map_or("unknown", |value| {
+                    match value.trim().split(['-', '_']).next().unwrap_or("") {
+                        value if value.eq_ignore_ascii_case("ja") => "ja",
+                        value if value.eq_ignore_ascii_case("en") => "en",
+                        _ => "other",
+                    }
+                });
+            // This counts parser calls in the current job attempt, not unique
+            // receipts. Only fixed counters/booleans and a closed language code
+            // leave the parser; receipt identities and source values stay here.
+            crate::support_trace::receipt(
+                &fields, rows, paid_rows, dated_rows, rejected, language,
+            );
         }
     }
     page.details.sort();
@@ -2873,6 +2913,69 @@ mod tests {
                 (row.product_id.as_deref() == Some("900001")).then_some(amount)
             );
         }
+    }
+    #[tokio::test]
+    async fn receipt_trace_counts_only_current_parser_calls_without_source_values() {
+        let item = charge_item("900001", "700001", "¥ 137", None, "0");
+        let known = charge_receipt(&item, "¥ 137", "");
+        let unknown_price = charge_receipt(
+            &charge_item("900001", "700001", "PRIVATE_INVALID_PRICE", None, "0"),
+            "¥ 137",
+            "",
+        );
+        let cases = [
+            format!("<html lang='ja-JP'><body>{known}</body></html>"),
+            format!("<html lang='en-US'><body>{unknown_price}</body></html>"),
+            format!("<html lang='zh-Hant-PRIVATE_LANGUAGE'><body><main>{item}</main></body></html>"),
+            known.clone(),
+            format!("<html lang='ja-JP'><body>{known}</body></html>"),
+        ];
+        let (pages, trace) = crate::support_trace::capture(async {
+            let pages = cases
+                .iter()
+                .map(|html| parse(html, "purchase", "/orders/910001").unwrap())
+                .collect::<Vec<_>>();
+            // A different source must not enter the purchase denominators.
+            parse(HTML, "library", "/library?page=1").unwrap();
+            pages
+        })
+        .await;
+        for (index, page) in pages.iter().enumerate() {
+            assert_eq!(page.rows.len(), 1);
+            assert_eq!(page.rows[0].product_line_total_jpy, (index != 1).then_some(137));
+            assert_eq!(page.rows[0].acquired_date_text.is_some(), index != 2);
+        }
+        let facts = &trace["financial"];
+        // The repeated receipt is intentionally another parser call, not a new
+        // unique receipt or transaction. Missing price and date stay separate.
+        for (key, expected) in [
+            ("receiptPages", 5),
+            ("rows", 5),
+            ("rowsWithPaidProof", 4),
+            ("rowsWithDateProof", 4),
+            ("proofRejected", 0),
+            ("digitalBoundItems", 5),
+            ("uniqueMetadataItems", 5),
+            ("unitPriceItems", 4),
+            ("omittedQuantityItems", 5),
+            ("explicitBoostItems", 5),
+            ("productLineProofItems", 4),
+            ("ambiguousItems", 1),
+            ("htmlJa", 2),
+            ("htmlEn", 1),
+            ("htmlOther", 1),
+            ("htmlUnknown", 1),
+        ] {
+            assert_eq!(facts[key], expected, "{key}");
+        }
+        let serialized = trace.to_string();
+        for private in [
+            "PRIVATE", "900001", "700001", "910001", "https://", "booth.pm",
+            "Authored", "2026/10/10", "¥", "137", "authored-700001.zip",
+        ] {
+            assert!(!serialized.contains(private), "source value {private}");
+        }
+        assert!(crate::support_trace::snapshot().is_none());
     }
     #[test]
     fn contact_diagnostic_has_fixed_eight_counts_and_closed_context_gates() {

@@ -36,7 +36,7 @@ const isActive=(job:NativeJob)=>['queued','running'].includes(job.state);
 export const isStoreJob=(type:string)=>/^(booth|gumroad|jinxxy)/.test(type.toLowerCase());
 export const isStoreSyncJob=(type:string)=>/^(booth|gumroad|jinxxy).*(sync|update)/i.test(type);
 export function needsStoreSignIn(job:NativeJob|undefined,account:Pick<Account,'status'|'authenticatedAt'>|undefined):boolean {
- if(!job||!isStoreJob(job.type)||job.errorCode!=='AUTH_REQUIRED')return false;
+ if(!job||!isStoreJob(job.type)||!['AUTH_REQUIRED','AUTH_CHALLENGE','AUTH_TIMEOUT'].includes(job.errorCode??''))return false;
  const authenticated=Date.parse(account?.authenticatedAt??''),failedAt=Date.parse(job.completedAt??job.updatedAt??job.createdAt??'');
  return account?.status!=='connected'||!Number.isFinite(authenticated)||!Number.isFinite(failedAt)||authenticated<=failedAt;
 }

@@ -1119,7 +1119,7 @@ impl BoothService {
                 let url =
                     url::Url::parse(route).map_err(|_| anyhow::anyhow!("INVALID_FREE_ITEM_ID"))?;
                 let (status, body) = self.inner.http.get(client, url).await?;
-                return if matches!(status.as_u16(), 404 | 410) {
+                let page = if matches!(status.as_u16(), 404 | 410) {
                     free_item::Evidence::unknown(id, "PUBLIC_METADATA_UNAVAILABLE", true).page()
                 } else if status.is_success() {
                     let evidence = free_item::parse(&body, id)?;
@@ -1133,7 +1133,9 @@ impl BoothService {
                     evidence.page()
                 } else {
                     bail!("SOURCE_HTTP_FAILED")
-                };
+                }?;
+                crate::support_trace::page(source, page.is_detail, page.rows.len() as u64, page.unresolved as u64, page.terminal);
+                return Ok(page);
             }
         }
         let (status, body) = self
@@ -1159,9 +1161,31 @@ impl BoothService {
                     .map_err(|_| anyhow::anyhow!("FREE_ITEM_INVALID"))?
             ));
         }
+        crate::support_trace::page(source, page.is_detail, page.rows.len() as u64, page.unresolved as u64, page.terminal);
         Ok(page)
     }
     async fn scan_source(
+        &self,
+        app: &AppHandle,
+        job: &mut Value,
+        account: &str,
+        source: &str,
+        mode: &str,
+        client: &reqwest::Client,
+        selected: Option<&BTreeSet<String>>,
+        public: &reqwest::Client,
+        enriched: &mut BTreeMap<String, Value>,
+        publications: &mut Publications,
+        prefetch: Option<&PublicPrefetch>,
+    ) -> Result<bool> {
+        crate::support_trace::source_start(source);
+        let result = self.scan_source_inner(app, job, account, source, mode, client, selected,
+            public, enriched, publications, prefetch).await;
+        let error = result.as_ref().err().map(super::code);
+        crate::support_trace::source_done(source, result.as_ref().ok().copied(), error.as_deref());
+        result
+    }
+    async fn scan_source_inner(
         &self,
         app: &AppHandle,
         job: &mut Value,

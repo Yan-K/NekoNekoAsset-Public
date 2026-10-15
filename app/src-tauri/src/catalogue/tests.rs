@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn job_diagnostics_is_read_only_private_and_does_not_mix_later_account_snapshots() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    let job = json!({"id":"PRIVATE_JOB","accountId":"PRIVATE_ACCOUNT","accountName":"PRIVATE_NAME",
+        "type":"boothSync","state":"failed","errorCode":"SOURCE_HTTP_FAILED",
+        "args":{"note":"PRIVATE_INPUT","url":"https://example.invalid/PRIVATE_ROUTE"},
+        "progress":{"stage":"failed","pages":2},"supportDiagnostics":{"version":1,"lastStage":"collecting",
+            "sources":{"purchase":{"state":"failed","errorCode":"SOURCE_HTTP_FAILED"}},
+            "http":{"receipt":{"requests":1,"lastStatus":502}},"financial":{"receiptPages":1,"rowsWithPaidProof":0}}});
+    c.put("job", "PRIVATE_JOB", job.clone()).unwrap();
+    c.put("source_coverage", "PRIVATE_ACCOUNT:purchase", json!({"id":"PRIVATE_ACCOUNT:purchase","accountId":"PRIVATE_ACCOUNT","source":"purchase","pages":999,"status":"complete"})).unwrap();
+    c.put("checkpoint", "PRIVATE_CHECKPOINT", json!({"id":"PRIVATE_CHECKPOINT","accountId":"PRIVATE_ACCOUNT","source":"purchase","pages":998,"routes":["PRIVATE_ROUTE"]})).unwrap();
+    let before = c.change_domains().unwrap();
+    let report = c.command("job_diagnostics", json!({"jobId":"PRIVATE_JOB"})).unwrap();
+    let text = report.as_str().unwrap();
+    let value:Value = serde_json::from_str(text).unwrap();
+    assert_eq!(value["captureAvailable"], true);
+    assert_eq!(value["supportDiagnostics"]["http"]["receipt"]["lastStatus"],502);
+    assert_eq!(value["sourceCoverage"],json!({}));
+    assert_eq!(value["checkpoints"],json!({}));
+    for secret in ["PRIVATE", "999", "998", "https://", "accountId", "cookie"] { assert!(!text.contains(secret), "{secret}"); }
+    assert_eq!(c.change_domains().unwrap(),before);
+    assert_eq!(c.get("job", "PRIVATE_JOB").unwrap(),Some(job));
+    assert_eq!(c.command("job_diagnostics",json!({"jobId":"MISSING_PRIVATE_ID"})).unwrap_err().to_string(),"JOB_UNAVAILABLE");
+}
+
+#[test]
 fn restore_waits_for_live_and_queued_catalogue_work() {
     let fixture = Fixture::new();
     let c = fixture.open();

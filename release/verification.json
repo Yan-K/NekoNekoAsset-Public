@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "version": "0.2.2",
-  "sourceSha256": "0a115ff09ca459f97ec4ad2aebed818d726387597e5f1aaf15270fd53c4fa690",
-  "verifiedAt": "2026-10-14T04:52:10.668416Z",
+  "version": "0.2.3",
+  "sourceSha256": "8d52964a114c41785835c548be4b7b000ea6853b2572014464fb4723e9644511",
+  "verifiedAt": "2026-10-15T02:58:23.157101Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -29,38 +29,38 @@
   },
   "aggregateEvidence": {
     "products": 172,
-    "attachedFiles": 1205,
+    "attachedFiles": 1206,
     "decodedThumbnails": 164,
     "firstPublicationObservedBounds": {
-      "booth": {
-        "lowerSeconds": 0,
-        "upperSeconds": 34.435
-      },
       "jinxxy": {
-        "lowerSeconds": 0,
-        "upperSeconds": 34.435
+        "lowerSeconds": 6.257,
+        "upperSeconds": 11.394
+      },
+      "booth": {
+        "lowerSeconds": 16.543,
+        "upperSeconds": 22.147
       },
       "gumroad": {
-        "lowerSeconds": 49.911,
-        "upperSeconds": 55.077
+        "lowerSeconds": 53.147,
+        "upperSeconds": 58.343
       }
     },
     "storeElapsedSeconds": {
-      "booth": 201.739,
-      "gumroad": 192.2,
-      "jinxxy": 10.444
+      "gumroad": 190.964,
+      "booth": 207.95,
+      "jinxxy": 12.279
     },
     "storeRequestCounts": {
-      "booth": 137,
       "gumroad": 211,
+      "booth": 137,
       "jinxxy": null
     },
     "authoredUnityFiles": 2,
-    "authoredUnityBytes": 1048920,
+    "authoredUnityBytes": 1048919,
     "unityFullRestartReceiptMatched": true,
     "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "8fb5042ee736e9839962fa0da3170969507a79417d53c677fa1d5d13d893a7d3",
-    "frozenPublicBuildInputs": 375,
+    "verifierExecutableSha256": "447b089b0890c22fd198c5144e20cc588f245a6718735f6210c52e3fa0098d1d",
+    "frozenPublicBuildInputs": 378,
     "actualNativeStoreAppVersionVerified": true,
     "metadataNormalSetupRestartVerified": true,
     "metadataAppClosedNormally": true,

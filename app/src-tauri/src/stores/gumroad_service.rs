@@ -587,6 +587,7 @@ impl GumroadService {
                         )
                         .await?;
                     }
+                    crate::support::reset_attempt(&mut job);
                     job["state"] = json!("queued");
                     job["errorCode"] = Value::Null;
                     job["completedAt"] = Value::Null;
@@ -741,6 +742,7 @@ impl GumroadService {
                 error
             };
             let mut terminal = job.clone();
+            terminal["supportLastStage"] = json!(crate::support::operation_stage(job["progress"]["stage"].as_str().unwrap_or("")));
             terminal["state"] = json!(match error {
                 None => "completed",
                 Some("CANCELLED") => "cancelled",

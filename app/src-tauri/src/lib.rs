@@ -15,6 +15,8 @@ mod profile;
 mod setup_tests;
 mod storage;
 mod stores;
+mod support;
+mod support_trace;
 mod taxonomy;
 mod unity;
 mod updates;
@@ -424,6 +426,7 @@ async fn catalogue_action(
         action.as_str(),
         "bootstrap"
             | "avatar_options"
+            | "job_diagnostics"
             | "query"
             | "conflicts"
             | "product_details"

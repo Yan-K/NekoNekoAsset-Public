@@ -2924,6 +2924,14 @@ impl Catalogue {
                 let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
                 Ok(json!({"avatarOptions":avatars::option_snapshot(&conn)?}))
             }
+            "job_diagnostics" => {
+                let conn = self.inner.lock().map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                let job = raw(&conn, "job", text(&args, "jobId"))?
+                    .context("JOB_UNAVAILABLE")?;
+                // A later account checkpoint can belong to a different attempt.
+                // Export only facts retained by this job; never recollect sources.
+                Ok(json!(crate::support::report(&job, &[], &[])))
+            }
             "product_details" => {
                 let conn = self
                     .inner

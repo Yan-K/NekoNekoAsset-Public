@@ -1466,6 +1466,7 @@ impl JinxxyService {
             let state = if cancelled { "cancelled" } else { state };
             let error = if cancelled { Some("CANCELLED") } else { error };
             let mut terminal = job.clone();
+            terminal["supportLastStage"] = json!(crate::support::operation_stage(job["progress"]["stage"].as_str().unwrap_or("")));
             let now = Utc::now().to_rfc3339();
             terminal["state"] = json!(state);
             terminal["errorCode"] = json!(error);
@@ -1820,6 +1821,7 @@ impl JinxxyService {
                         )
                         .await?;
                     }
+                    crate::support::reset_attempt(&mut job);
                     job["cancelRequested"] = json!(false);
                     job["originDeviceId"] = json!(self.inner.catalogue.device_id());
                     self.save_job(app, &mut job, "queued", None)?;

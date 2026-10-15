@@ -122,20 +122,27 @@ impl MetadataHttp {
             .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))?;
         for attempt in 0..3 {
             self.wait_start().await;
+            crate::support_trace::request(&url, attempt);
             let response = match client.get(url.clone()).send().await {
                 Ok(r) => r,
                 Err(error) => {
                     let code = transport_code(&error);
+                    crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { code });
+                    if code == "UNSAFE_REDIRECT" { crate::support_trace::redirect_rejected(&url); }
                     if code == "NETWORK_UNAVAILABLE" && attempt < 2 {
-                        self.defer(Duration::from_secs(2u64.pow(attempt + 1))).await;
+                        let wait = Duration::from_secs(2u64.pow(attempt + 1));
+                        crate::support_trace::backoff(&url, wait);
+                        self.defer(wait).await;
                         continue;
                     }
                     bail!("{}", code);
                 }
             };
+            crate::support_trace::response(&url, response.status().as_u16());
             if !safety::secure(response.url())
                 || !response.url().host_str().is_some_and(safety::booth_host)
             {
+                crate::support_trace::redirect_rejected(&url);
                 bail!("UNSAFE_REDIRECT");
             }
             if response.url().path().contains("sign_in") || response.url().path().contains("login")
@@ -149,7 +156,10 @@ impl MetadataHttp {
             if status == StatusCode::FORBIDDEN {
                 bail!("PERMISSION_DENIED");
             }
-            validate_source_response(&url, response.url())?;
+            if let Err(error) = validate_source_response(&url, response.url()) {
+                crate::support_trace::redirect_rejected(&url);
+                return Err(error);
+            }
             if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE
             {
                 let wait = retry_after(
@@ -162,12 +172,15 @@ impl MetadataHttp {
                 if attempt == 2 || wait > Duration::from_secs(120) {
                     bail!("RATE_LIMITED");
                 }
-                self.defer(wait.max(Duration::from_secs(2u64.pow(attempt + 1))))
-                    .await;
+                let wait = wait.max(Duration::from_secs(2u64.pow(attempt + 1)));
+                crate::support_trace::backoff(&url, wait);
+                self.defer(wait).await;
                 continue;
             }
             if status.is_server_error() && attempt < 2 {
-                self.defer(Duration::from_secs(2u64.pow(attempt + 1))).await;
+                let wait = Duration::from_secs(2u64.pow(attempt + 1));
+                crate::support_trace::backoff(&url, wait);
+                self.defer(wait).await;
                 continue;
             }
             if response
@@ -181,7 +194,10 @@ impl MetadataHttp {
             while let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|_| anyhow::anyhow!("NETWORK_UNAVAILABLE"))?
+                .map_err(|error| {
+                    crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { "NETWORK_UNAVAILABLE" });
+                    anyhow::anyhow!("NETWORK_UNAVAILABLE")
+                })?
             {
                 if body.len() + chunk.len() > 8 * 1024 * 1024 {
                     bail!("METADATA_TOO_LARGE");

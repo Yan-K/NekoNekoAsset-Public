@@ -1,5 +1,32 @@
 import type {Locale} from './model';
 const labels:Record<string,string[]>={
+ SYNC_INCOMPLETE:['Some source information is still unconfirmed; retry sync','取得元の情報を確認しきれていません。同期を再試行してください','일부 소스 정보를 확인하지 못했습니다. 동기화를 다시 시도하세요','部分来源信息尚未确认，请重试同步','部分來源資訊尚未確認，請重試同步'],
+ NO_RECOGNIZED_ROWS:['Could not read the store list; retry or copy diagnostics','ストアの一覧を読み取れません。再試行するか診断情報をコピーしてください','스토어 목록을 읽을 수 없습니다. 다시 시도하거나 진단 정보를 복사하세요','无法读取商店列表，请重试或复制诊断信息','無法讀取商店清單，請重試或複製診斷資訊'],
+ SOURCE_MARKER_UNKNOWN:['The store list format was not recognized; copy diagnostics if retry fails','ストアの一覧形式を認識できません。再試行しても失敗する場合は診断情報をコピーしてください','스토어 목록 형식을 인식하지 못했습니다. 재시도 후에도 실패하면 진단 정보를 복사하세요','无法识别商店列表格式，重试仍失败时请复制诊断信息','無法辨識商店清單格式，重試仍失敗時請複製診斷資訊'],
+ SOURCE_HTTP_FAILED:['The store request failed; retry later','ストアへのリクエストに失敗しました。後で再試行してください','스토어 요청에 실패했습니다. 나중에 다시 시도하세요','商店请求失败，请稍后重试','商店請求失敗，請稍後重試'],
+ RESPONSE_ROUTE_CHANGED:['The store opened an unexpected page; retry or sign in again','ストアが想定外のページを開きました。再試行するか再ログインしてください','스토어가 예상하지 못한 페이지를 열었습니다. 다시 시도하거나 다시 로그인하세요','商店打开了非预期页面，请重试或重新登录','商店開啟了非預期頁面，請重試或重新登入'],
+ BOOTH_OPERATION_FAILED:['BOOTH action failed; retry or copy diagnostics','BOOTHの操作に失敗しました。再試行するか診断情報をコピーしてください','BOOTH 작업에 실패했습니다. 다시 시도하거나 진단 정보를 복사하세요','BOOTH 操作失败，请重试或复制诊断信息','BOOTH 操作失敗，請重試或複製診斷資訊'],
+ NETWORK_TIMEOUT:['Connection timed out; retry','接続がタイムアウトしました。再試行してください','연결 시간이 초과되었습니다. 다시 시도하세요','连接超时，请重试','連線逾時，請重試'],
+ NETWORK_UNAVAILABLE:['Connection failed; check the network and retry','接続できません。ネットワークを確認して再試行してください','연결에 실패했습니다. 네트워크를 확인하고 다시 시도하세요','连接失败，请检查网络后重试','連線失敗，請檢查網路後重試'],
+ CHECKPOINT_INVALID:['Saved sync progress could not be resumed; copy diagnostics if retry fails','保存した同期処理を再開できません。再試行しても失敗する場合は診断情報をコピーしてください','저장된 동기화를 재개할 수 없습니다. 재시도 후에도 실패하면 진단 정보를 복사하세요','无法恢复已保存的同步进度，重试仍失败时请复制诊断信息','無法恢復已儲存的同步進度，重試仍失敗時請複製診斷資訊'],
+ AUTH_CHALLENGE:['The store requires a sign-in check; sign in again','ストアでログインの確認が必要です。再ログインしてください','스토어에서 로그인 확인이 필요합니다. 다시 로그인하세요','商店需要验证登录，请重新登录','商店需要驗證登入，請重新登入'],
+ AUTH_TIMEOUT:['Sign-in timed out; sign in again','ログインがタイムアウトしました。再ログインしてください','로그인 시간이 초과되었습니다. 다시 로그인하세요','登录超时，请重新登录','登入逾時，請重新登入'],
+ COLLECTOR_UNSUPPORTED:['The store page format is unsupported; copy diagnostics','ストアのページ形式に対応できません。診断情報をコピーしてください','지원하지 않는 스토어 페이지 형식입니다. 진단 정보를 복사하세요','暂不支持此商店页面格式，请复制诊断信息','暫不支援此商店頁面格式，請複製診斷資訊'],
+ PUBLIC_METADATA_FAILED:['Could not load public product information; retry later','公開の商品情報を取得できません。後で再試行してください','공개 상품 정보를 불러올 수 없습니다. 나중에 다시 시도하세요','无法加载公开商品信息，请稍后重试','無法載入公開商品資訊，請稍後重試'],
+ PUBLIC_METADATA_INVALID:['Could not read public product information; copy diagnostics','公開の商品情報を読み取れません。診断情報をコピーしてください','공개 상품 정보를 읽을 수 없습니다. 진단 정보를 복사하세요','无法读取公开商品信息，请复制诊断信息','無法讀取公開商品資訊，請複製診斷資訊'],
+ PUBLIC_METADATA_UNAVAILABLE:['The public product page is unavailable','公開の商品ページを利用できません','공개 상품 페이지를 사용할 수 없습니다','公开商品页面不可用','公開商品頁面無法使用'],
+ RECEIPT_REQUEST_FAILED:['Could not load order details; retry','注文の明細を取得できません。再試行してください','주문 상세를 불러올 수 없습니다. 다시 시도하세요','无法加载订单明细，请重试','無法載入訂單明細，請重試'],
+ RECEIPT_PARSE_FAILED:['Could not read order details; copy diagnostics','注文の明細を読み取れません。診断情報をコピーしてください','주문 상세를 읽을 수 없습니다. 진단 정보를 복사하세요','无法读取订单明细，请复制诊断信息','無法讀取訂單明細，請複製診斷資訊'],
+ RECEIPT_BODY_LIMIT:['Order details exceeded the size limit; copy diagnostics','注文の明細がサイズ上限を超えました。診断情報をコピーしてください','주문 상세가 크기 제한을 초과했습니다. 진단 정보를 복사하세요','订单明细超出大小限制，请复制诊断信息','訂單明細超出大小限制，請複製診斷資訊'],
+ PRIVATE_UNKNOWN_QUANTITY:['Order quantity could not be confirmed; copy diagnostics','注文数を確認できません。診断情報をコピーしてください','주문 수량을 확인할 수 없습니다. 진단 정보를 복사하세요','无法确认订单数量，请复制诊断信息','無法確認訂單數量，請複製診斷資訊'],
+ PRIVATE_UNKNOWN_STATUS:['Order payment status could not be confirmed; copy diagnostics','注文の支払い状況を確認できません。診断情報をコピーしてください','주문 결제 상태를 확인할 수 없습니다. 진단 정보를 복사하세요','无法确认订单付款状态，请复制诊断信息','無法確認訂單付款狀態，請複製診斷資訊'],
+ BOOTH_BINDING_UNAVAILABLE:['Could not match the store file to its purchase; retry sync','ストアのファイルを購入履歴と照合できません。同期を再試行してください','스토어 파일과 구매 내역을 연결할 수 없습니다. 동기화를 다시 시도하세요','无法将商店文件与购买记录对应，请重试同步','無法將商店檔案與購買紀錄對應，請重試同步'],
+ ENTITLEMENT_INVALID:['Store download access could not be confirmed; retry sync','ストアのダウンロード権限を確認できません。同期を再試行してください','스토어 다운로드 권한을 확인할 수 없습니다. 동기화를 다시 시도하세요','无法确认商店下载权限，请重试同步','無法確認商店下載權限，請重試同步'],
+ PUBLICATION_OR_FILES_FAILED:['Could not save all product or file information; retry sync','商品情報またはファイル情報を保存しきれません。同期を再試行してください','일부 상품 또는 파일 정보를 저장하지 못했습니다. 동기화를 다시 시도하세요','未能保存全部商品或文件信息，请重试同步','未能儲存全部商品或檔案資訊，請重試同步'],
+ SOURCE_TRAVERSAL_LIMIT:['The store list exceeded a sync limit; copy diagnostics','ストアの一覧が同期の上限を超えました。診断情報をコピーしてください','스토어 목록이 동기화 제한을 초과했습니다. 진단 정보를 복사하세요','商店列表超出同步限制，请复制诊断信息','商店清單超出同步限制，請複製診斷資訊'],
+ BOOTH_ALREADY_RUNNING:['BOOTH is already syncing; wait for it to finish','BOOTHは同期中です。完了するまでお待ちください','BOOTH 동기화가 진행 중입니다. 완료될 때까지 기다리세요','BOOTH 正在同步，请等待完成','BOOTH 正在同步，請等待完成'],
+ ACCOUNT_UNAVAILABLE:['This account is unavailable; check Accounts in Settings','アカウントを利用できません。設定のアカウントを確認してください','이 계정을 사용할 수 없습니다. 설정의 계정을 확인하세요','此账户不可用，请检查设置中的账户','此帳號無法使用，請檢查設定中的帳號'],
+ FREE_OFFER_UNAVAILABLE:['This free download is no longer available','この無料ダウンロードは提供を終了しています','이 무료 다운로드는 더 이상 제공되지 않습니다','此免费下载已停止提供','此免費下載已停止提供'],
  'catalogue.invalid_avatar_selection':['Selected avatar is no longer available','選択したアバターは利用できなくなりました','선택한 아바타를 더 이상 사용할 수 없습니다','所选素体已不可用','選取的素體已無法使用'],
  'catalogue.invalid_avatar_delta':['Avatar selection could not be saved','アバターの選択を保存できませんでした','아바타 선택을 저장할 수 없습니다','无法保存素体选择','無法儲存素體選擇'],
  'catalogue.hide_store_only':['Only store products can be hidden','非表示にできるのはストア商品のみです','스토어 상품만 숨길 수 있습니다','仅可隐藏商店商品','僅可隱藏商店產品'],
@@ -35,14 +62,17 @@ const labels:Record<string,string[]>={
  rate:['Source is busy; retry later','取得元が混雑しています。後で再試行してください','소스 사용 중 · 나중에 재시도','来源繁忙，请稍后重试','來源忙碌，請稍後重試'],
 };
 export function nativeErrorText(locale:Locale,code:string):string|undefined {
- let key=labels[code]?code:'';const lower=code.toLowerCase();
+ const lower=code.toLowerCase();
  const nativeCode=lower.split('.').at(-1)??lower;
+ const upper=nativeCode.toUpperCase();
+ const aliases:Record<string,string>={SOURCE_UNSUPPORTED:'COLLECTOR_UNSUPPORTED',RECEIPT_BODY_FAILED:'RECEIPT_REQUEST_FAILED',RECEIPT_AUTH_FAILED:'auth',RECEIPT_AUTHORIZATION_REQUIRED:'auth',PROTECTED_SESSION_UNAVAILABLE:'auth',DIGITAL_DETAIL_ROLE_UNKNOWN:'RECEIPT_PARSE_FAILED',GUMROAD_PUBLIC_METADATA_UNAVAILABLE:'PUBLIC_METADATA_UNAVAILABLE',FILE_INCOMPLETE:'manifest_incomplete',DOWNLOAD_LINK_UNAVAILABLE:'download_resolver_failed',DOWNLOAD_RESOLVER_FAILED:'download_resolver_failed'};
+ let key=labels[code]?code:labels[upper]?upper:aliases[upper]??'';
  if(!key&&['store_identity_changed','store_identity_mismatch','account_identity_mismatch'].includes(nativeCode))key='auth';
  if(!key&&/^(jinxxy|gumroad)_(source_unsupported|scope_changed|pagination_unproven)$/.test(nativeCode))key='operationFailed';
  if(!key&&/^(file_unavailable|downloads?_unavailable)$/.test(nativeCode))key='missing';
  if(!key&&['collector_unsupported','unsupported_image'].includes(nativeCode))key='validation';
  if(!key&&['unsafe_download_url','unsafe_redirect','redirect_limit'].includes(nativeCode))key='operationFailed';
- if(!key&&/auth|login|session|expired/.test(lower))key='auth';
+ if(!key&&/(?:^|[._])(?:auth|login|session)(?:[._]|$)|(?:^|[._])expired(?:[._]|$)/.test(lower))key='auth';
  if(!key&&/offline|root_unavailable|root_offline/.test(lower))key='offline';
  if(!key&&/low_space|disk_full|insufficient_space/.test(lower))key='space';
  if(!key&&/file_missing|file_not_usable|original_unavailable|manifest_incomplete|integrity/.test(lower))key='missing';

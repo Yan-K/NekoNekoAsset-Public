@@ -511,6 +511,7 @@ impl BoothService {
                     self.known_account(account)?;
                     auth::window(app, &self.inner.catalogue.device_dir(), account, true).await?;
                 }
+                crate::support::reset_attempt(&mut job);
                 job["state"] = json!("queued");
                 job["errorCode"] = Value::Null;
                 job["completedAt"] = Value::Null;
@@ -633,7 +634,11 @@ impl BoothService {
             // Accounts of this store share one execution queue. Other providers
             // own independent gates and continue concurrently.
             let _execution = service.inner.execution.lock().await;
-            let result = service.execute(&app, &mut job).await;
+            let (result, diagnostics) = crate::support_trace::capture(async {
+                crate::support_trace::job_stage(&job);
+                service.execute(&app, &mut job).await
+            }).await;
+            job["supportDiagnostics"] = diagnostics;
             let mut error_code = result.as_ref().err().map(code);
             // Complete login window handling before exposing the terminal job or
             // releasing this account. Verified credentials remain device-local.
@@ -697,6 +702,10 @@ impl BoothService {
             // Source scanners report through local job copies. Keep the latest
             // durable counters when cancellation/failure ends the parent task.
             let mut terminal = current.clone();
+            if let Some(diagnostics) = job.get("supportDiagnostics") {
+                terminal["supportDiagnostics"] = diagnostics.clone();
+            }
+            terminal["supportLastStage"] = json!(crate::support::operation_stage(terminal["progress"]["stage"].as_str().unwrap_or("")));
             let error = if current["state"] == "cancelled" {
                 Some("CANCELLED")
             } else {
@@ -784,6 +793,10 @@ impl BoothService {
             .is_some_and(|j| j["state"] == "cancelled"))
     }
     fn progress(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
+        crate::support_trace::job_stage(job);
+        if let Some(diagnostics) = crate::support_trace::snapshot() {
+            job["supportDiagnostics"] = diagnostics;
+        }
         job["state"] = json!("running");
         job["updatedAt"] = json!(now());
         let mut committed = false;

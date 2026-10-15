@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.3 Beta - 2026-10-15
+
+### Added
+
+- Activity can manually copy a local diagnostic report for failed tasks, tasks needing attention and completed store synchronizations. Reports provide known failure reasons, the last operation stage and operational counts, without credentials, account/order/product details, URLs or local paths.
+- BOOTH diagnostics include source traversal, parsed pages/details, HTTP status, retry, timeout and backoff counts, plus receipt price/date proof counters. Older jobs clearly indicate when attempt details were not captured.
+
+### Fixed
+
+- Diagnostic counts remain separate between retry attempts and accumulate across accounts during selected BOOTH updates. Login diagnostics retain the actual check stage, and older jobs do not borrow facts from a newer account synchronization.
+
+### Release notes
+
+- App and Unity Bridge share version 0.2.3 Beta. The existing catalogue database format and library paths are retained.
+- BOOTH paid-price and acquisition-date parsing is unchanged in this release.
+
 ## 0.2.2 Beta - 2026-10-14
 
 ### Added

@@ -1,6 +1,7 @@
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {isTauri} from '@tauri-apps/api/core';
 import type {Account,AssetFile,Locale,Product} from './model';
-import {errorCode,invokeAction,progressPercent,type NativeJob} from './backend';
+import {errorCode,invokeAction,nativeFileAction,progressPercent,type NativeJob} from './backend';
 import {isStoreJob,isStoreSyncJob,needsStoreSignIn,syncProgressLabel} from './Workflows';
 import {nativeErrorText} from './error-i18n';
 import {nativeWorkflowText} from './native-workflow-i18n';
@@ -8,6 +9,7 @@ import {uxText} from './ux-i18n';
 import {t} from './i18n';
 import {shellText} from './shell-i18n';
 import {unityText,unityError,unityProgressLabel} from './unity-i18n';
+import {supportText} from './support-i18n';
 import './ActivityHistory.css';
 
 export interface ActivityHistoryProps {
@@ -16,16 +18,28 @@ export interface ActivityHistoryProps {
 }
 type ActivityJob=NativeJob&{store?:string;fileIds?:string[];selectedFileIds?:string[];failures?:Record<string,unknown>};
 type Detail={stamp:string;product?:Product};
+type CopyState={stamp:string;status:'copying'|'copied'|'copyFailed'};
 const active=(job:NativeJob)=>['queued','running'].includes(job.state);
 const failed=(job:NativeJob)=>['failed','needsAction'].includes(job.state);
+const diagnosable=(job:NativeJob)=>failed(job)||job.state==='completed'&&isStoreSyncJob(job.type);
 const terminal=(job:NativeJob)=>['completed','failed','needsAction','cancelled'].includes(job.state);
 const productIds=(job:NativeJob)=>[...new Set([job.productId,...(job.productIds??[])].filter((id):id is string=>typeof id==='string'&&!!id))];
 const jobTime=(job:NativeJob)=>Date.parse(job.createdAt??job.updatedAt??'')||0;
 const basename=(value:string)=>value.replaceAll('\\','/').split('/').at(-1)?.slice(0,512)||'';
+const jobStamp=(job:NativeJob)=>[job.id,job.state,job.updatedAt,job.completedAt,job.errorCode].join('\0');
 
 export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled,onClear,onCancel,onRetry,onSignIn,onOpenStorage,onUnityResults,onUnityRetry}:ActivityHistoryProps){
  const [limit,setLimit]=useState(200),[details,setDetails]=useState<Record<string,Detail>>({});
  const [clearing,setClearing]=useState(false),[clearError,setClearError]=useState('');
+ const [copyStates,setCopyStates]=useState<Record<string,CopyState>>({});
+ const copying=useRef(new Set<string>()),currentJobs=useRef(jobs),mounted=useRef(true);currentJobs.current=jobs;
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+ useEffect(()=>{
+  setCopyStates(current=>{
+   const kept=Object.fromEntries(Object.entries(current).filter(([id,state])=>jobs.some(job=>job.id===id&&diagnosable(job)&&jobStamp(job)===state.stamp)));
+   return Object.keys(kept).length===Object.keys(current).length?current:kept;
+  });
+ },[jobs]);
  const rows=useMemo(()=>[...jobs].sort((a,b)=>jobTime(b)-jobTime(a)||b.id.localeCompare(a.id)).slice(0,limit) as ActivityJob[],[jobs,limit]);
  const knownProducts=useMemo(()=>new Map(products.map(product=>[product.id,product])),[products]);
  const knownAccounts=useMemo(()=>new Map(accounts.map(account=>[account.id,account])),[accounts]);
@@ -93,6 +107,31 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
   setClearing(true);setClearError('');
   try{await onClear();}catch(error){setClearError(reason(error));}finally{setClearing(false);}
  }
+ async function copyDiagnostics(job:NativeJob,button:HTMLButtonElement){
+  if(copying.current.has(job.id))return;
+  const focused=document.activeElement===button;
+  const stamp=jobStamp(job),current=()=>mounted.current&&currentJobs.current.some(value=>value.id===job.id&&diagnosable(value)&&jobStamp(value)===stamp);
+  copying.current.add(job.id);setCopyStates(values=>({...values,[job.id]:{stamp,status:'copying'}}));
+  try{
+   // The server owns the allowlist. Never build a report from rendered job data.
+   const text=await invokeAction<string>('catalogue','job_diagnostics',{jobId:job.id});
+   if(!current())return;
+   if(typeof text!=='string'||!text.trim()||new TextEncoder().encode(text).byteLength>16*1024)throw new Error('operationFailed');
+   if(isTauri()){
+    const result=await nativeFileAction<{copied:boolean}>('copy_text',{text});
+    if(result.copied!==true)throw new Error('clipboard_unavailable');
+   }else await navigator.clipboard.writeText(text);
+   if(current())setCopyStates(values=>({...values,[job.id]:{stamp,status:'copied'}}));
+  }catch{if(current())setCopyStates(values=>({...values,[job.id]:{stamp,status:'copyFailed'}}));}
+  finally{
+   copying.current.delete(job.id);
+   if(mounted.current)setCopyStates(values=>{
+    if(current())return {...values};
+    const next={...values};if(next[job.id]?.stamp===stamp)delete next[job.id];return next;
+   });
+   if(focused)requestAnimationFrame(()=>{if(current()&&button.isConnected&&!button.disabled&&document.activeElement===document.body)button.focus({preventScroll:true});});
+  }
+ }
  return <section className="activity-page activity-history">
   <header className="toolbar"><h1>{t(locale,'activity')}</h1><button type="button" disabled={clearing||!jobs.some(terminal)} onClick={()=>void clear()}>{uxText(locale,'clearHistory')}</button></header>
   {clearError&&<p className="activity-history-error" role="alert">{clearError}</p>}
@@ -105,6 +144,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
     const canRetry=job.type.startsWith('ai:')||isStoreJob(job.type)||job.type==='download'||job.type==='storage:import_local'||job.type==='storage:delete_local_products';
     const accountRemoved=isStoreJob(job.type)&&!!job.accountId&&!account;
     const accountBusy=isStoreJob(job.type)&&!!job.accountId&&jobs.some(other=>other.accountId===job.accountId&&active(other));const signInRequired=needsStoreSignIn(job,account);
+    const copy=copyStates[job.id],copyStatus=copy?.stamp===jobStamp(job)?copy.status:undefined;
     return <article className="activity-row" key={job.id}>
      <div className="activity-info">
       <strong title={identity||jobLabel(job)}>{identity||jobLabel(job)}</strong>
@@ -116,7 +156,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
       {job.errorCode&&<small className="activity-history-reason">{job.type==='unity:import'?unityError(locale,job.errorCode):reason(job.errorCode)}</small>}
       {errors.length>0&&<div className="activity-history-failures">{errors.slice(0,3).map(item=><div key={item.key}><span>{item.name}</span><small>{item.reason}</small></div>)}{errors.length>3&&<details><summary>{t(locale,'more')} · {(errors.length-3).toLocaleString(locale)}</summary>{errors.slice(3).map(item=><div key={item.key}><span>{item.name}</span><small>{item.reason}</small></div>)}</details>}</div>}
      </div>
-     <div className={job.type==='unity:import'?'activity-history-actions unity-job-actions':'activity-history-actions'}>{job.type==='unity:import'?<><button type="button" onClick={()=>onUnityResults(job)}>{unityText(locale,'results')}</button>{active(job)&&!job.writesStarted&&<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>}{['failed','interrupted','cancelled'].includes(job.stage??'')&&<button type="button" onClick={()=>onUnityRetry(job)}>{unityText(locale,'retry')}</button>}</>:active(job)?job.type==='storage:delete_local_products'?null:<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>:job.state!=='completed'&&(canRetry?<button type="button" disabled={accountRemoved||accountBusy||job.type.startsWith('ai:')&&!aiEnabled} onClick={()=>signInRequired?onSignIn(job):onRetry(job)}>{t(locale,signInRequired?'signIn':'retry')}</button>:<button type="button" onClick={onOpenStorage}>{t(locale,'storage')}</button>)}</div>
+     <div className={job.type==='unity:import'?'activity-history-actions unity-job-actions':'activity-history-actions'}>{job.type==='unity:import'?<><button type="button" onClick={()=>onUnityResults(job)}>{unityText(locale,'results')}</button>{active(job)&&!job.writesStarted&&<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>}{['failed','interrupted','cancelled'].includes(job.stage??'')&&<button type="button" onClick={()=>onUnityRetry(job)}>{unityText(locale,'retry')}</button>}</>:active(job)?job.type==='storage:delete_local_products'?null:<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>:job.state!=='completed'&&(canRetry?<button type="button" disabled={accountRemoved||accountBusy||job.type.startsWith('ai:')&&!aiEnabled} onClick={()=>signInRequired?onSignIn(job):onRetry(job)}>{t(locale,signInRequired?'signIn':'retry')}</button>:<button type="button" onClick={onOpenStorage}>{t(locale,'storage')}</button>)}{diagnosable(job)&&<><button type="button" disabled={copying.current.has(job.id)} aria-busy={copying.current.has(job.id)} onClick={event=>void copyDiagnostics(job,event.currentTarget)}>{supportText(locale,'copyDiagnostics')}</button><small className="activity-history-copy-state" role="status" aria-live="polite" aria-atomic="true">{copyStatus?supportText(locale,copyStatus):''}</small></>}</div>
     </article>;
    })}
    {jobs.length>limit&&<button className="activity-history-more" type="button" onClick={()=>setLimit(value=>value+200)}>{t(locale,'more')} · {(jobs.length-limit).toLocaleString(locale)}</button>}
