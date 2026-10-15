@@ -6,6 +6,7 @@
 
 - BOOTH receipt parsing recognizes JPY amounts and the current Order Number and Created At summary labels, restoring proven paid prices and acquisition dates on English, Korean, Simplified Chinese and Traditional Chinese pages. Japanese receipt parsing retains the same order, product and file binding.
 - Copied diagnostics preserve the original execution version of existing 0.2.4 jobs after upgrading.
+- Windows Japanese-name reading stays below the native text limit, rejects incomplete readings and caches only successful results.
 
 ### Added
 

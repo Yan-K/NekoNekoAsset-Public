@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "version": "0.2.5",
-  "sourceSha256": "e88bb9ff89d4eab98cd8da5c5ddb885cbb014d3a01016a8b8a137170c88f8ea4",
-  "verifiedAt": "2026-10-15T19:28:28.405427Z",
+  "sourceSha256": "5abce79d576879c2da811d15f690aa3f2c8acc50558e794e01d454a42e80a453",
+  "verifiedAt": "2026-10-15T19:59:59.213399Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -33,33 +33,33 @@
     "decodedThumbnails": 164,
     "firstPublicationObservedBounds": {
       "jinxxy": {
-        "lowerSeconds": 5.984,
-        "upperSeconds": 11.118
+        "lowerSeconds": 6.09,
+        "upperSeconds": 11.261
       },
       "booth": {
-        "lowerSeconds": 16.253,
-        "upperSeconds": 21.491
+        "lowerSeconds": 16.395,
+        "upperSeconds": 21.533
       },
       "gumroad": {
-        "lowerSeconds": 57.516,
-        "upperSeconds": 62.695
+        "lowerSeconds": 57.725,
+        "upperSeconds": 62.878
       }
     },
     "storeElapsedSeconds": {
-      "gumroad": 189.359,
-      "booth": 165.578,
-      "jinxxy": 11.54
+      "booth": 223.004,
+      "gumroad": 217.511,
+      "jinxxy": 11.201
     },
     "storeRequestCounts": {
-      "gumroad": 211,
       "booth": 137,
+      "gumroad": 211,
       "jinxxy": null
     },
     "authoredUnityFiles": 2,
     "authoredUnityBytes": 1048920,
     "unityFullRestartReceiptMatched": true,
     "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "98966142d4a98d3b44849daec7f2440ffabc383f469598330d04d7fcfce58494",
+    "verifierExecutableSha256": "3c0ce39334bf85a9982c3418e34df225237f27e3e213798d98feb64f6cd7447e",
     "frozenPublicBuildInputs": 378,
     "actualNativeStoreAppVersionVerified": true,
     "metadataNormalSetupRestartVerified": true,
@@ -79,7 +79,7 @@
     "realBoothDiagnosticsChecked": true,
     "realBoothDiagnosticReportBytes": 5475,
     "realBoothDiagnosticSources": 4,
-    "realBoothDiagnosticsSha256": "9475d64674ed0c3d8c21fee7c0fc45365c4f86c671b149c0975d8ff9a56b91fd",
+    "realBoothDiagnosticsSha256": "4f305372ba04f7378b7d064128bfa885b8ca0f1aef5c557c87a229ccb5548a14",
     "authoredNativeDiagnosticChecks": 27,
     "authoredNativeDiagnosticUiChecks": 4,
     "authoredNativeDiagnosticsReadOnly": true,

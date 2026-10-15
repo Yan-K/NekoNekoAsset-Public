@@ -1,12 +1,47 @@
 //! Local Windows reading fallback. No text leaves the device and no reading is
 //! treated as an official creator spelling. Runtime objects stay on their STA.
 #[cfg(target_os = "windows")]
+fn reading_chunks(input: &str) -> Vec<String> {
+    // Some Windows implementations return no words at the documented 100
+    // character boundary. Stay below it without splitting a surrogate pair.
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    let mut units = 0;
+    for c in input.chars() {
+        if units + c.len_utf16() > 99 {
+            chunks.push(std::mem::take(&mut chunk));
+            units = 0;
+        }
+        chunk.push(c);
+        units += c.len_utf16();
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+#[cfg(target_os = "windows")]
+fn complete_chunk_reading(input: &str, pieces: &[(String, String)]) -> Option<String> {
+    let mut display = String::new();
+    let mut output = String::new();
+    for (source, reading) in pieces {
+        if source.is_empty() || reading.is_empty() {
+            return None;
+        }
+        display.push_str(source);
+        output.push_str(reading);
+    }
+    (!display.is_empty() && display == input && !output.is_empty()).then_some(output)
+}
+
+#[cfg(target_os = "windows")]
 pub(super) fn reading(input: &str) -> Option<String> {
     use std::{
         collections::BTreeMap,
         sync::{Mutex, OnceLock},
     };
-    static CACHE: OnceLock<Mutex<BTreeMap<String, Option<String>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     let contains_han=input.chars().any(|c| matches!(c as u32, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x323af));
     if !contains_han
         || input
@@ -16,8 +51,11 @@ pub(super) fn reading(input: &str) -> Option<String> {
         return None;
     }
     let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
-    if let Some(found) = cache.lock().ok()?.get(input).cloned() {
-        return found;
+    // Serialize cache misses through the native call. Failed native calls are
+    // retryable and cannot overwrite an already successful reading.
+    let mut values = cache.lock().ok()?;
+    if let Some(found) = values.get(input).cloned() {
+        return Some(found);
     }
     let owned = input.to_owned();
     let result = std::thread::Builder::new()
@@ -40,26 +78,18 @@ pub(super) fn reading(input: &str) -> Option<String> {
                 }
             }
             let _apartment = Apartment;
-            let mut chunks = Vec::new();
-            let mut chunk = String::new();
-            let mut units = 0;
-            for c in owned.chars() {
-                if units + c.len_utf16() > 100 {
-                    chunks.push(std::mem::take(&mut chunk));
-                    units = 0;
-                }
-                chunk.push(c);
-                units += c.len_utf16();
-            }
-            if !chunk.is_empty() {
-                chunks.push(chunk);
-            }
             let mut output = String::new();
-            for chunk in chunks {
-                let words = JapanesePhoneticAnalyzer::GetWords(&HSTRING::from(chunk)).ok()?;
+            for chunk in reading_chunks(&owned) {
+                let words = JapanesePhoneticAnalyzer::GetWords(&HSTRING::from(chunk.as_str())).ok()?;
+                let mut pieces = Vec::new();
                 for index in 0..words.Size().ok()? {
-                    output.push_str(&words.GetAt(index).ok()?.YomiText().ok()?.to_string_lossy());
+                    let word = words.GetAt(index).ok()?;
+                    pieces.push((
+                        word.DisplayText().ok()?.to_string_lossy(),
+                        word.YomiText().ok()?.to_string_lossy(),
+                    ));
                 }
+                output.push_str(&complete_chunk_reading(&chunk, &pieces)?);
             }
             (!output.is_empty()).then_some(output)
         })
@@ -67,7 +97,7 @@ pub(super) fn reading(input: &str) -> Option<String> {
         .join()
         .ok()
         .flatten();
-    if let Ok(mut values) = cache.lock() {
+    if let Some(result) = &result {
         if values.len() >= 2048 {
             values.clear();
         }
@@ -85,16 +115,52 @@ pub(super) fn reading(_input: &str) -> Option<String> {
 mod tests {
     #[test]
     fn local_windows_reading_handles_synthetic_kanji_and_bounded_input() {
-        let reading = super::reading("星空猫").expect("Windows local phonetic analyzer");
+        let reading = super::reading("星空猫");
+        if reading.is_none() {
+            diagnose_bounded_reading();
+        }
+        let reading = reading.expect("Windows local phonetic analyzer");
         assert_eq!(reading, "ほしぞらねこ");
         assert_eq!(super::reading("星空猫"), Some(reading));
-        let bounded = super::reading(&"星空".repeat(60));
+        let input = "星空".repeat(60);
+        let bounded = super::reading(&input);
         if bounded.is_none() {
             diagnose_bounded_reading();
         }
-        assert!(bounded.is_some());
+        let bounded = bounded.expect("Windows local phonetic analyzer bounded input");
+        let chunks = super::reading_chunks(&input);
+        assert_eq!(chunks.concat(), input);
+        assert!(chunks.iter().all(|chunk| (1..=99).contains(&chunk.encode_utf16().count())));
+        let independently_read = chunks.iter().map(|chunk| super::reading(chunk))
+            .collect::<Option<Vec<_>>>().expect("Windows local phonetic analyzer exact chunks");
+        assert_eq!(bounded, independently_read.concat());
         assert_eq!(super::reading("Synthetic English"), None);
         assert_eq!(super::reading("合成한국어"), None);
+    }
+
+    #[test]
+    fn reading_chunks_cover_every_scalar_below_the_native_boundary() {
+        for input in [String::new(), "星".repeat(99), "星".repeat(100), "星空".repeat(60),
+            "星".repeat(98) + "\u{20000}" + "猫", "\u{20000}".repeat(100)] {
+            let chunks = super::reading_chunks(&input);
+            assert_eq!(chunks.concat(), input);
+            assert!(chunks.iter().all(|chunk| (1..=99).contains(&chunk.encode_utf16().count())));
+        }
+    }
+
+    #[test]
+    fn complete_chunk_reading_rejects_missing_empty_and_partial_source_coverage() {
+        let pieces = [("星空".into(), "ほしぞら".into()), ("猫".into(), "ねこ".into())];
+        assert_eq!(super::complete_chunk_reading("星空猫", &pieces).as_deref(), Some("ほしぞらねこ"));
+        for pieces in [
+            vec![], vec![("星空".into(), "ほしぞら".into())],
+            vec![("星空猫".into(), "".into())], vec![("".into(), "ほしぞらねこ".into())],
+            vec![("猫".into(), "ねこ".into()), ("星空".into(), "ほしぞら".into())],
+            vec![("星空猫".into(), "ほしぞらねこ".into()), ("猫".into(), "ねこ".into())],
+        ] {
+            assert_eq!(super::complete_chunk_reading("星空猫", &pieces), None);
+        }
+        assert_eq!(super::complete_chunk_reading("", &[]), None);
     }
 
 
@@ -113,15 +179,16 @@ mod tests {
             )
         }
         let cases = [
+            ("short-synthetic", vec!["星空猫".into()]),
             ("direct-99", vec!["星空".repeat(49) + "星"]),
             ("direct-100", vec!["星空".repeat(50)]),
-            ("direct-101", vec!["星空".repeat(50) + "星"]),
             ("punctuated-100", vec!["星空を見て猫と歩く。".repeat(10)]),
             (
                 "punctuated-split-120",
                 vec!["星空を見て猫と歩く。".repeat(10), "星空を見て猫と歩く。".repeat(2)],
             ),
             ("kanji-split-120", vec!["星空".repeat(50), "星空".repeat(10)]),
+            ("kanji-safe-split-120", super::reading_chunks(&"星空".repeat(60))),
         ];
         for (case, chunks) in cases {
             let unit_counts: Vec<_> = chunks.iter().map(|input| input.encode_utf16().count()).collect();
