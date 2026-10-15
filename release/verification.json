@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "version": "0.2.5",
-  "sourceSha256": "5abce79d576879c2da811d15f690aa3f2c8acc50558e794e01d454a42e80a453",
-  "verifiedAt": "2026-10-15T19:59:59.213399Z",
+  "sourceSha256": "ffe537a496f4954ae3a443cf8d18c8a536ac7f9a87c0b1ee89f37359b1f58bc1",
+  "verifiedAt": "2026-10-15T20:27:50.167442Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -33,22 +33,22 @@
     "decodedThumbnails": 164,
     "firstPublicationObservedBounds": {
       "jinxxy": {
-        "lowerSeconds": 6.09,
-        "upperSeconds": 11.261
+        "lowerSeconds": 34.265,
+        "upperSeconds": 39.696
       },
       "booth": {
-        "lowerSeconds": 16.395,
-        "upperSeconds": 21.533
+        "lowerSeconds": 60.375,
+        "upperSeconds": 65.542
       },
       "gumroad": {
-        "lowerSeconds": 57.725,
-        "upperSeconds": 62.878
+        "lowerSeconds": 81.072,
+        "upperSeconds": 86.313
       }
     },
     "storeElapsedSeconds": {
-      "booth": 223.004,
-      "gumroad": 217.511,
-      "jinxxy": 11.201
+      "booth": 263.211,
+      "gumroad": 233.023,
+      "jinxxy": 40.043
     },
     "storeRequestCounts": {
       "booth": 137,
@@ -59,7 +59,7 @@
     "authoredUnityBytes": 1048920,
     "unityFullRestartReceiptMatched": true,
     "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "3c0ce39334bf85a9982c3418e34df225237f27e3e213798d98feb64f6cd7447e",
+    "verifierExecutableSha256": "6373bed3f2870a6c32c287ebc338b20351fa0f9cff76b4f7d90d6721cb774e88",
     "frozenPublicBuildInputs": 378,
     "actualNativeStoreAppVersionVerified": true,
     "metadataNormalSetupRestartVerified": true,
@@ -79,7 +79,7 @@
     "realBoothDiagnosticsChecked": true,
     "realBoothDiagnosticReportBytes": 5475,
     "realBoothDiagnosticSources": 4,
-    "realBoothDiagnosticsSha256": "4f305372ba04f7378b7d064128bfa885b8ca0f1aef5c557c87a229ccb5548a14",
+    "realBoothDiagnosticsSha256": "a80e3cb5d9a359879252ac1ce3d185649f27477ab39c381a8d30dc09834f0020",
     "authoredNativeDiagnosticChecks": 27,
     "authoredNativeDiagnosticUiChecks": 4,
     "authoredNativeDiagnosticsReadOnly": true,

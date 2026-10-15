@@ -36,12 +36,28 @@ fn complete_chunk_reading(input: &str, pieces: &[(String, String)]) -> Option<St
 }
 
 #[cfg(target_os = "windows")]
-pub(super) fn reading(input: &str) -> Option<String> {
-    use std::{
-        collections::BTreeMap,
-        sync::{Mutex, OnceLock},
-    };
+fn complete_chunk_with_retry(
+    input: &str,
+    mut analyze: impl FnMut() -> Option<Vec<(String, String)>>,
+) -> Option<String> {
+    for _ in 0..3 {
+        let pieces = analyze()?;
+        if !pieces.is_empty() {
+            return complete_chunk_reading(input, &pieces);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn reading_cache() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, String>> {
+    use std::{collections::BTreeMap, sync::{Mutex, OnceLock}};
     static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn reading(input: &str) -> Option<String> {
     let contains_han=input.chars().any(|c| matches!(c as u32, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x323af));
     if !contains_han
         || input
@@ -50,10 +66,9 @@ pub(super) fn reading(input: &str) -> Option<String> {
     {
         return None;
     }
-    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
     // Serialize cache misses through the native call. Failed native calls are
     // retryable and cannot overwrite an already successful reading.
-    let mut values = cache.lock().ok()?;
+    let mut values = reading_cache().lock().ok()?;
     if let Some(found) = values.get(input).cloned() {
         return Some(found);
     }
@@ -80,16 +95,20 @@ pub(super) fn reading(input: &str) -> Option<String> {
             let _apartment = Apartment;
             let mut output = String::new();
             for chunk in reading_chunks(&owned) {
-                let words = JapanesePhoneticAnalyzer::GetWords(&HSTRING::from(chunk.as_str())).ok()?;
-                let mut pieces = Vec::new();
-                for index in 0..words.Size().ok()? {
-                    let word = words.GetAt(index).ok()?;
-                    pieces.push((
-                        word.DisplayText().ok()?.to_string_lossy(),
-                        word.YomiText().ok()?.to_string_lossy(),
-                    ));
-                }
-                output.push_str(&complete_chunk_reading(&chunk, &pieces)?);
+                let input = HSTRING::from(chunk.as_str());
+                let reading = complete_chunk_with_retry(&chunk, || {
+                    let words = JapanesePhoneticAnalyzer::GetWords(&input).ok()?;
+                    let mut pieces = Vec::new();
+                    for index in 0..words.Size().ok()? {
+                        let word = words.GetAt(index).ok()?;
+                        pieces.push((
+                            word.DisplayText().ok()?.to_string_lossy(),
+                            word.YomiText().ok()?.to_string_lossy(),
+                        ));
+                    }
+                    Some(pieces)
+                })?;
+                output.push_str(&reading);
             }
             (!output.is_empty()).then_some(output)
         })
@@ -163,10 +182,45 @@ mod tests {
         assert_eq!(super::complete_chunk_reading("", &[]), None);
     }
 
+    #[test]
+    fn native_empty_recovery_is_bounded_and_never_retries_partial_results() {
+        let mut calls = 0;
+        let reading = super::complete_chunk_with_retry("星空猫", || {
+            calls += 1;
+            Some(if calls == 1 { vec![] } else { vec![("星空猫".into(), "ほしぞらねこ".into())] })
+        });
+        assert_eq!(reading.as_deref(), Some("ほしぞらねこ"));
+        assert_eq!(calls, 2);
+        let mut calls = 0;
+        assert_eq!(super::complete_chunk_with_retry("星空猫", || {
+            calls += 1;
+            Some(vec![])
+        }), None);
+        assert_eq!(calls, 3);
+        for result in [
+            None,
+            Some(vec![("星空".into(), "ほしぞら".into())]),
+            Some(vec![("星空猫".into(), "".into())]),
+        ] {
+            let mut calls = 0;
+            assert_eq!(super::complete_chunk_with_retry("星空猫", || {
+                calls += 1;
+                result.clone()
+            }), None);
+            assert_eq!(calls, 1);
+        }
+    }
+
 
     // Only authored synthetic input reaches this probe. Report native API stages
     // and HRESULTs without adding catalogue text to test output.
     fn diagnose_bounded_reading() {
+        // Failure diagnostics must not overlap another test's normal native
+        // call; use the same exclusion without invoking or changing the cache.
+        let Ok(_native_exclusion) = super::reading_cache().lock() else {
+            eprintln!("authored phonetic diagnostic stage=cache-lock outcome=poisoned");
+            return;
+        };
         use windows::{
             core::{Error, HSTRING},
             Globalization::JapanesePhoneticAnalyzer,
