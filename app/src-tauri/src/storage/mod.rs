@@ -17,7 +17,10 @@ mod unity_snapshot;
 pub use unity_snapshot::{UnityLeaf, UnitySnapshot, UnitySnapshotEntry};
 
 pub(crate) fn checked_library_root(path: &Path) -> Result<PathBuf> {
-    ensure!(path.is_absolute() && path.is_dir(), "root_offline");
+    ensure!(path.is_absolute(), "root_offline");
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| anyhow::Error::new(error).context("root_offline"))?;
+    ensure!(metadata.is_dir(), "library_path_not_directory");
     archive::validate_no_links(path)?;
     Ok(path.canonicalize()?)
 }

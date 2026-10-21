@@ -1,6 +1,6 @@
 //! One live App owns a shared library. The OS lock, not file age, is authoritative.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{fs::File, fs::OpenOptions, path::Path};
 
 const LOCK_FILE: &str = ".nna-library.lock";
@@ -42,12 +42,12 @@ impl LibraryLock {
         }
         let file = options
             .open(root.join(LOCK_FILE))
-            .map_err(|_| anyhow::anyhow!("library_lock_unavailable"))?;
+            .context("library_lock_unavailable")?;
         fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
             if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
                 anyhow::anyhow!("library_in_use")
             } else {
-                anyhow::anyhow!("library_lock_unavailable")
+                anyhow::Error::new(error).context("library_lock_unavailable")
             }
         })?;
         let guard = Self { file };
@@ -58,9 +58,7 @@ impl LibraryLock {
     /// A surfaced network/handle error requires stopping library work. This
     /// never drops the handle, steals a stale lock, or retries acquisition.
     pub(crate) fn check_available(&self) -> Result<()> {
-        self.file
-            .sync_all()
-            .map_err(|_| anyhow::anyhow!("library_lock_unavailable"))
+        self.file.sync_all().context("library_lock_unavailable")
     }
 }
 

@@ -207,7 +207,7 @@ pub fn validate_no_links(path: &Path) -> Result<()> {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => bail!("storage_path_unavailable"),
+            Err(error) => return Err(anyhow::Error::new(error).context("storage_path_unavailable")),
         }
     }
     Ok(())

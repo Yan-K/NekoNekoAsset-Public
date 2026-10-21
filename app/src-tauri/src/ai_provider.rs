@@ -361,10 +361,11 @@ pub(crate) fn replace_file(source: &Path, target: &Path) -> Result<()> {
     }
     let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    ensure!(
-        unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 1 | 8) } != 0,
-        "ai_config_invalid"
-    );
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 1 | 8) } == 0 {
+        return Err(
+            anyhow::Error::new(std::io::Error::last_os_error()).context("ai_config_invalid")
+        );
+    }
     Ok(())
 }
 #[cfg(not(windows))]

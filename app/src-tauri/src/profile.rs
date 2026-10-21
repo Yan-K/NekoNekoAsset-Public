@@ -9,19 +9,15 @@ const PORTABLE_MARKER: &str = "portable.flag";
 const RESTART_PARENT: &str = "NNA_RESTART_PARENT";
 const DEFAULT_LIBRARY_FOLDER: &str = "NekoNekoDatabase";
 
-fn executable_library_path(executable: &Path) -> Result<PathBuf> {
-    Ok(executable
+/// Installed profiles live in the user's local data directory. Keep the library
+/// beside the profile, outside both Program Files and the reset-protected profile.
+/// Portable profiles are sibling `data/`, so their library stays beside the App.
+/// Looking up this candidate never creates or selects a library.
+pub(crate) fn default_library_path(device_dir: &Path) -> Result<PathBuf> {
+    Ok(device_dir
         .parent()
-        .context("Executable location unavailable")?
+        .context("library_unavailable")?
         .join(DEFAULT_LIBRARY_FOLDER))
-}
-
-/// First setup suggests a library beside the actual executable for both
-/// installed and portable copies. This neither creates nor selects a library.
-pub(crate) fn default_library_path() -> Result<PathBuf> {
-    let executable =
-        tauri::utils::platform::current_exe().context("Executable location unavailable")?;
-    executable_library_path(&executable)
 }
 
 fn library_subfolder(parent: &Path) -> PathBuf {
@@ -197,7 +193,7 @@ pub(crate) fn select_library(device_dir: &Path, selection: &LibrarySelection) ->
         file.sync_all()?;
     }
     crate::ai_provider::replace_file(&temporary, &destination)
-        .map_err(|_| anyhow::anyhow!("library_preferences_write_failed"))?;
+        .context("library_preferences_write_failed")?;
     Ok(())
 }
 
@@ -244,17 +240,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_library_default_uses_the_executable_parent_for_both_distributions() {
+    fn initial_library_default_uses_the_device_profile_parent_without_creating_content() {
         let authored_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join(format!("authored-library-default-{}", uuid::Uuid::new_v4()));
-        for folder in ["Installed App", "Portable App"] {
+        for folder in ["Local App Data", "Portable App"] {
             let directory = authored_root.join(folder);
-            let executable = directory.join("NekoNekoAsset.exe");
+            let profile = directory.join("device-profile");
             assert_eq!(
-                executable_library_path(&executable).unwrap(),
+                default_library_path(&profile).unwrap(),
                 directory.join("NekoNekoDatabase")
             );
+            assert!(!default_library_path(&profile)
+                .unwrap()
+                .starts_with(&profile));
         }
         assert!(
             !authored_root.exists(),
@@ -263,11 +262,19 @@ mod tests {
     }
 
     #[test]
-    fn initial_library_default_resolves_the_running_executable() {
-        let executable = tauri::utils::platform::current_exe().unwrap();
+    #[cfg(windows)]
+    fn installed_library_default_is_outside_program_files_and_the_device_profile() {
+        let profile = Path::new(r"C:\Users\Authored User\AppData\Local\app.nekonekoasset.desktop");
+        let library = default_library_path(profile).unwrap();
         assert_eq!(
-            default_library_path().unwrap(),
-            executable.parent().unwrap().join("NekoNekoDatabase")
+            library,
+            Path::new(r"C:\Users\Authored User\AppData\Local\NekoNekoDatabase")
+        );
+        assert!(!library.starts_with(profile));
+        assert!(!library.starts_with(r"C:\Program Files"));
+        assert_eq!(
+            default_library_path(Path::new(r"F:\Portable App\data")).unwrap(),
+            Path::new(r"F:\Portable App\NekoNekoDatabase")
         );
     }
 

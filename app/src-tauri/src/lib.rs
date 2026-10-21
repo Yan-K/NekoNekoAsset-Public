@@ -211,6 +211,42 @@ struct UiError {
     code: String,
 }
 impl UiError {
+    /// Library setup exposes a cause and recovery action, without raw OS/SQLite
+    /// messages or paths. Inspect typed sources before falling back to stable codes.
+    fn from_library_error(error: &anyhow::Error) -> Self {
+        let io_code = error.downcast_ref::<std::io::Error>().and_then(|source| {
+            match source.kind() {
+                std::io::ErrorKind::PermissionDenied => Some("library_permission_denied"),
+                std::io::ErrorKind::StorageFull => Some("library_disk_full"),
+                std::io::ErrorKind::NotADirectory => Some("library_path_not_directory"),
+                _ => None,
+            }
+        });
+        let sqlite_code = error
+            .downcast_ref::<rusqlite::Error>()
+            .map(|source| match source {
+                rusqlite::Error::SqliteFailure(failure, _) => match failure.code {
+                    rusqlite::ErrorCode::PermissionDenied | rusqlite::ErrorCode::ReadOnly => {
+                        "library_permission_denied"
+                    }
+                    rusqlite::ErrorCode::DiskFull => "library_disk_full",
+                    _ => "library_database_unavailable",
+                },
+                _ => "library_database_unavailable",
+            });
+        if let Some(code) = io_code.or(sqlite_code) {
+            return Self { code: code.into() };
+        }
+        let mut result = Self::from_error(anyhow::anyhow!(error.to_string()));
+        if matches!(
+            result.code.as_str(),
+            "storage.create_directory_failed" | "storage_path_unavailable" | "operation_failed"
+        ) {
+            result.code = "library_create_failed".into();
+        }
+        result
+    }
+
     fn from_error(error: anyhow::Error) -> Self {
         let raw = error.to_string();
         let first = raw.split(':').next().unwrap_or("operation_failed").trim();
@@ -881,7 +917,7 @@ fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {
             .into_iter().filter(|account| account["disconnected"] != true && account["status"] == "connected" && !services.stores.has_local_session(account))
             .map(|account| json!({"id":account["id"],"name":account["name"],"store":account["store"]})).collect();
     } else if status.state == "unconfigured" {
-        status.default_path = profile::default_library_path().ok();
+        status.default_path = profile::default_library_path(&host.device_dir).ok();
     }
     Ok(status)
 }
@@ -1056,7 +1092,7 @@ async fn finish_staged_setup(
         .map_err(|_| UiError {
             code: "worker_failed".into(),
         })?
-        .map_err(UiError::from_error)?;
+        .map_err(|error| UiError::from_library_error(&error))?;
         *host.next_catalogue.lock().map_err(|_| UiError {
             code: "library_unavailable".into(),
         })? = Some(catalogue);
@@ -1185,9 +1221,10 @@ async fn library_open(
             Some(setup) => Some(setup),
             None if host.active_services()?.is_none() && host.status.state == "unconfigured" => {
                 let candidate = validate_setup_candidate(path.clone(), new_library == Some(true))
-                    .map_err(UiError::from_error)?;
+                    .map_err(|error| UiError::from_library_error(&error))?;
                 let existing = if candidate.exists() {
-                    Catalogue::probe_setup_preferences(&candidate).map_err(UiError::from_error)?
+                    Catalogue::probe_setup_preferences(&candidate)
+                        .map_err(|error| UiError::from_library_error(&error))?
                 } else {
                     None
                 };
@@ -1215,7 +1252,7 @@ async fn library_open(
                 new_library == Some(true),
                 locale.as_deref(),
             )
-            .map_err(UiError::from_error)?
+            .map_err(|error| UiError::from_library_error(&error))?
             {
                 host.opening.store(false, Ordering::Release);
                 changed(&app, "state");
@@ -1249,7 +1286,7 @@ async fn library_open(
         .map_err(|_| UiError {
             code: "worker_failed".into(),
         })?
-        .map_err(UiError::from_error)?;
+        .map_err(|error| UiError::from_library_error(&error))?;
         let root = catalogue
             .library_root()
             .ok_or_else(|| UiError {
@@ -1273,7 +1310,7 @@ async fn library_open(
             &host.device_dir,
             &profile::LibrarySelection { path: root, locale },
         )
-        .map_err(UiError::from_error)?;
+        .map_err(|error| UiError::from_library_error(&error))?;
         *host.next_catalogue.lock().map_err(|_| UiError {
             code: "library_unavailable".into(),
         })? = Some(catalogue);
@@ -1397,7 +1434,7 @@ pub fn run() {
                     let error = opened
                         .as_ref()
                         .err()
-                        .map(|error| UiError::from_error(anyhow::anyhow!(error.to_string())).code);
+                        .map(|error| UiError::from_library_error(error).code);
                     (
                         opened.ok().flatten(),
                         LibraryStatus {
@@ -1418,7 +1455,7 @@ pub fn run() {
                     )
                 }
                 Ok(None) if !applying_reset => {
-                    let default_path = profile::default_library_path().ok();
+                    let default_path = profile::default_library_path(&data_dir).ok();
                     let opened = default_path
                         .as_ref()
                         .ok_or_else(|| anyhow::anyhow!("library_unavailable"))
@@ -1427,7 +1464,7 @@ pub fn run() {
                     let error = opened
                         .as_ref()
                         .err()
-                        .map(|error| UiError::from_error(anyhow::anyhow!(error.to_string())).code);
+                        .map(|error| UiError::from_library_error(error).code);
                     let path = opened
                         .as_ref()
                         .ok()

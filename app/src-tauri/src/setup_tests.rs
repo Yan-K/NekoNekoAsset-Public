@@ -90,6 +90,138 @@ fn finish_args() -> Value {
 }
 
 #[test]
+fn library_errors_retain_typed_causes_and_expose_only_actionable_codes() {
+    for (kind, expected) in [
+        (
+            std::io::ErrorKind::PermissionDenied,
+            "library_permission_denied",
+        ),
+        (std::io::ErrorKind::StorageFull, "library_disk_full"),
+        (
+            std::io::ErrorKind::NotADirectory,
+            "library_path_not_directory",
+        ),
+    ] {
+        let error = anyhow::Error::new(std::io::Error::new(kind, "authored private path"))
+            .context("storage.create_directory_failed");
+        assert_eq!(UiError::from_library_error(&error).code, expected);
+    }
+    for (sqlite_code, expected) in [
+        (rusqlite::ffi::SQLITE_PERM, "library_permission_denied"),
+        (rusqlite::ffi::SQLITE_READONLY, "library_permission_denied"),
+        (rusqlite::ffi::SQLITE_FULL, "library_disk_full"),
+        (
+            rusqlite::ffi::SQLITE_CANTOPEN,
+            "library_database_unavailable",
+        ),
+        (rusqlite::ffi::SQLITE_NOTADB, "library_database_unavailable"),
+        (
+            rusqlite::ffi::SQLITE_CORRUPT,
+            "library_database_unavailable",
+        ),
+    ] {
+        let error = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(sqlite_code),
+            Some("authored private database path".into()),
+        ))
+        .context("catalogue initialization");
+        assert_eq!(UiError::from_library_error(&error).code, expected);
+    }
+    for code in [
+        "library_in_use",
+        "root_offline",
+        "storage_link_forbidden",
+        "catalogue.newer_schema",
+        "library_preferences_write_failed",
+    ] {
+        assert_eq!(
+            UiError::from_library_error(&anyhow::anyhow!(code)).code,
+            code
+        );
+    }
+    assert_eq!(
+        UiError::from_library_error(&anyhow::anyhow!("storage.create_directory_failed")).code,
+        "library_create_failed"
+    );
+    assert_eq!(
+        UiError::from_library_error(&anyhow::anyhow!("authored raw OS error /private/path")).code,
+        "library_create_failed"
+    );
+}
+
+#[test]
+fn setup_path_file_failure_preserves_the_draft_and_allows_another_location() {
+    let fixture = Fixture::new();
+    let setup = fixture.setup();
+    let original = setup.candidate().unwrap();
+    let path = fixture.root.join("blocked-by-file");
+    std::fs::write(&path, b"authored preserved file").unwrap();
+    let error = choose_setup_candidate(&setup, path.clone(), false, Some("ja")).unwrap_err();
+    assert_eq!(
+        UiError::from_library_error(&error).code,
+        "library_path_not_directory"
+    );
+    assert_eq!(setup.candidate().unwrap(), original);
+    assert_eq!(
+        setup.catalogue.get("preferences", "app").unwrap().unwrap()["locale"],
+        "en"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"authored preserved file");
+    assert!(choose_setup_candidate(&setup, fixture.root.clone(), true, Some("ja")).unwrap());
+    assert!(!original.exists());
+    drop(setup);
+    fixture.finish();
+}
+
+#[cfg(windows)]
+#[test]
+fn finish_readonly_lock_reports_permission_and_can_retry_without_losing_staged_accounts() {
+    let fixture = Fixture::new();
+    let setup = fixture.setup();
+    let staged = account("BOOTH", "Authored staged account");
+    setup
+        .catalogue
+        .put("account", staged["id"].as_str().unwrap(), staged.clone())
+        .unwrap();
+    let candidate = setup.candidate().unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+    let lock = candidate.join(".nna-library.lock");
+    std::fs::write(&lock, b"").unwrap();
+    let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&lock, permissions).unwrap();
+    let patch = setup_finish_patch(&setup, &finish_args()).unwrap();
+    let error = materialize_setup(&setup, &fixture.host.device_dir, patch.clone())
+        .err()
+        .expect("readonly lock must reject Finish");
+    assert_eq!(
+        UiError::from_library_error(&error).code,
+        "library_permission_denied"
+    );
+    assert_eq!(setup.candidate().unwrap(), candidate);
+    assert_eq!(
+        setup.catalogue.list("account").unwrap(),
+        vec![staged.clone()]
+    );
+    assert!(profile::selected_library(&fixture.host.device_dir)
+        .unwrap()
+        .is_none());
+    assert!(!candidate.join(".nna").exists());
+    let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&lock, permissions).unwrap();
+    let (target, _) = materialize_setup(&setup, &fixture.host.device_dir, patch).unwrap();
+    assert_eq!(target.list("account").unwrap()[0]["id"], staged["id"]);
+    assert_eq!(
+        std::fs::read(fixture.host.device_dir.join("preserved-device-fixture")).unwrap(),
+        b"authored protected device bytes"
+    );
+    drop(target);
+    drop(setup);
+    fixture.finish();
+}
+
+#[test]
 fn fresh_default_is_confirmed_without_materializing_any_library_or_database() {
     let fixture = Fixture::new();
     let setup = fixture.setup();
