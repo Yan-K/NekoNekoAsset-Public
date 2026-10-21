@@ -619,7 +619,7 @@ impl UnityService {
     }
 }
 fn details(record: &RequestRecord) -> Value {
-    json!({"jobId":record.request_id,"projectName":record.project_name,"projectRoot":record.project_root,"unityVersion":record.unity_version,"stage":record.phase,"errorCode":record.error_code,"receipt":record.receipt})
+    json!({"jobId":record.request_id,"projectName":record.project_name,"projectRoot":record.project_root,"unityVersion":record.unity_version,"stage":record.presented_phase(),"errorCode":record.presented_error_code(),"receipt":record.presented_receipt()})
 }
 
 fn validate_result_entries(manifest_json: &str, receipt: &wire::Receipt) -> Result<()> {

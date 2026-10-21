@@ -6,16 +6,12 @@ using System.Diagnostics;
 using System.Threading.Tasks;
 using NekoNekoAsset.Bridge.SmartPackage;
 using UnityEditor;
-using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace NekoNekoAsset.Bridge
 {
     public static partial class BridgeRuntime
     {
-        private static double refreshNotBefore;
-        private static double refreshStableSince = -1;
-
         private static List<LoadedPackage> LoadInputs(StoredBridgeRequest request)
         {
             var manifest = JsonUtility.FromJson<BridgeManifest>(request.manifestJson);
@@ -257,7 +253,6 @@ namespace NekoNekoAsset.Bridge
                 request.receipt.writesStarted = selection.Plan.WriteCount > 0;
                 request.receipt.stage = "importing";
                 request.receipt.error = null;
-                request.applyReloadGeneration = reloadGeneration;
                 Save(request);
                 request.preparedPackages = null;
                 request.preparedSnapshot = null;
@@ -274,7 +269,7 @@ namespace NekoNekoAsset.Bridge
                         if (!Application.isBatchMode) EditorUtility.DisplayProgressBar(new BridgeLocalization(Locale(request)).Text("importing"), index + " / " + total + "  " + item.TargetPath,
                             total == 0 ? 1 : (float)index / total);
                     },
-                    ItemCompleted = item => RecordItem(request, item, fresh)
+                    ItemCompleted = item => RecordItem(request, item)
                 });
                 request.engineDirectory = result.OwnedStagingDirectory;
                 foreach (ImportItemResult item in result.Items)
@@ -290,8 +285,12 @@ namespace NekoNekoAsset.Bridge
                 if (request.appliedFailed) request.receipt.error = "Some files were not imported; inspect the per-file results.";
                 request.receipt.stage = "refreshing";
                 Save(request); // Checkpoint precedes refresh/reload and survives process exit.
-                refreshNotBefore = EditorApplication.timeSinceStartup + 1;
-                refreshStableSince = -1;
+                AssetDatabase.StopAssetEditing();
+                editing = false;
+                if (!Application.isBatchMode) EditorUtility.ClearProgressBar();
+                // Keep only the synchronous refresh/output verification under the reload
+                // lock, so compilation cannot reload us before the terminal receipt is saved.
+                CompleteRefresh(request);
             }
             catch (Exception)
             {
@@ -306,17 +305,14 @@ namespace NekoNekoAsset.Bridge
                 try { if (editing) AssetDatabase.StopAssetEditing(); }
                 finally
                 {
-                    if (reloadLocked) EditorApplication.UnlockReloadAssemblies();
                     if (!Application.isBatchMode) EditorUtility.ClearProgressBar();
+                    try { FinishImportResult(request); }
+                    finally { if (reloadLocked) EditorApplication.UnlockReloadAssemblies(); }
                 }
             }
-            if (active == request && request.receipt.stage == "refreshing")
-                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-            if (Terminal(request.receipt.stage)) ShowImportResult(request);
-            Publish();
         }
 
-        private static void RecordItem(StoredBridgeRequest request, ImportItemResult item, IAssetProbe before)
+        private static void RecordItem(StoredBridgeRequest request, ImportItemResult item)
         {
             string entryId = Path.GetFileName(string.IsNullOrEmpty(item.Item.Entry.SourceAssetPath)
                 ? item.Item.Package.FilePath : item.Item.Entry.SourceAssetPath);
@@ -338,22 +334,6 @@ namespace NekoNekoAsset.Bridge
                     guid = string.IsNullOrEmpty(item.IdentityGuid) ? null : item.IdentityGuid,
                     isFolder = item.Item.Entry.IsFolder });
             }
-            if (item.Status == ImportItemStatus.Applied
-                && (item.TargetPath.StartsWith("Assets/", StringComparison.Ordinal) || item.TargetPath.StartsWith("Packages/", StringComparison.Ordinal)))
-            {
-                string extension = Path.GetExtension(item.TargetPath).ToLowerInvariant();
-                if (extension == ".cs" || extension == ".dll")
-                {
-                    bool changed = !before.TryGetContent(item.TargetPath, out AssetContentFingerprint old)
-                        || !old.HasAsset || old.AssetHash != item.AssetHash;
-                    if (changed)
-                    {
-                        List<string> paths = extension == ".cs" ? request.changedScripts : request.changedPlugins;
-                        if (!paths.Contains(item.TargetPath)) paths.Add(item.TargetPath);
-                    }
-                    else (extension == ".cs" ? request.changedScripts : request.changedPlugins).Remove(item.TargetPath);
-                }
-            }
             foreach (string parent in item.CreatedParents)
                 if (!request.createdParents.Contains(parent)) request.createdParents.Add(parent);
             if (item.Status == ImportItemStatus.Applied)
@@ -367,76 +347,26 @@ namespace NekoNekoAsset.Bridge
             Save(request); // Each completed pair is independently durable; never promise whole-request rollback.
         }
 
-        private static void CompilationStarted(object context)
-        {
-            if (active == null || (active.receipt.stage != "refreshing" && active.receipt.stage != "compiling")) return;
-            active.compileObserved = true;
-            active.compileFinished = false;
-            active.receipt.stage = "compiling";
-            Save(active);
-        }
-
-        private static void AssemblyCompiled(string assemblyPath, CompilerMessage[] messages)
-        {
-            if (active == null || !active.compileObserved || active.receipt.stage != "compiling") return;
-            active.compiledAssemblyCount++;
-            foreach (CompilerMessage message in messages)
-                if (message.type == CompilerMessageType.Error && active.receipt.compileErrors.Count < 50)
-                {
-                    string text = message.message ?? "Unity compilation error.";
-                    active.receipt.compileErrors.Add(BridgeFiles.Diagnostic(text, 1024));
-                }
-            Save(active);
-        }
-
-        private static void CompilationFinished(object context)
-        {
-            if (active == null || active.receipt.stage != "compiling") return;
-            active.compileFinished = true;
-            Save(active);
-            refreshNotBefore = EditorApplication.timeSinceStartup + 1;
-            refreshStableSince = -1; // Compilation event alone never declares completion.
-        }
-
         private static void ObserveRefresh()
         {
-            if (active == null || (active.receipt.stage != "refreshing" && active.receipt.stage != "compiling")) return;
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.timeSinceStartup < refreshNotBefore)
-            { refreshStableSince = -1; return; }
-            if (refreshStableSince < 0) { refreshStableSince = EditorApplication.timeSinceStartup; return; }
-            if (EditorApplication.timeSinceStartup - refreshStableSince < 1) return;
+            if (active == null || active.receipt.stage != "refreshing" || EditorApplication.isUpdating) return;
             StoredBridgeRequest request = active;
+            // A same-session reload can resume the durable refresh checkpoint, never
+            // the asset writes. Compiler results are owned by the Unity Console.
+            EditorApplication.LockReloadAssemblies();
+            try { CompleteRefresh(request); }
+            finally
+            {
+                try { FinishImportResult(request); }
+                finally { EditorApplication.UnlockReloadAssemblies(); }
+            }
+        }
+
+        private static void CompleteRefresh(StoredBridgeRequest request)
+        {
             try
             {
-                bool compileUnconfirmed = request.compileObserved && !request.compileFinished;
-                bool reloadUnconfirmed = request.compileObserved && request.compiledAssemblyCount > 0
-                    && request.receipt.compileErrors.Count == 0 && reloadGeneration <= request.applyReloadGeneration;
-                if (!request.compileObserved && request.changedScripts.Count > 0)
-                {
-                    // An extension alone does not prove Unity compiles an ignored/excluded file.
-                    var sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (UnityEditor.Compilation.Assembly assembly in CompilationPipeline.GetAssemblies(AssembliesType.Editor))
-                        foreach (string source in assembly.sourceFiles)
-                            sources.Add(source.Replace('\\', '/'));
-                    foreach (string path in request.changedScripts)
-                        if (sources.Contains(path) || sources.Contains(BridgeFiles.Under(registry.projectRoot, path).Replace('\\', '/')))
-                            compileUnconfirmed = true;
-                }
-                if (request.receipt.compileErrors.Count == 0 && reloadGeneration <= request.applyReloadGeneration)
-                    foreach (string path in request.changedPlugins)
-                        if (AssetImporter.GetAtPath(path) is PluginImporter plugin && !plugin.isNativePlugin && plugin.GetCompatibleWithEditor())
-                            reloadUnconfirmed = true;
-                if (compileUnconfirmed || reloadUnconfirmed)
-                {
-                    if (EditorApplication.timeSinceStartup - refreshStableSince < 30) return;
-                    request.receipt.stage = "interrupted";
-                    request.receipt.error = "Files imported; Unity compilation/reload could not be confirmed. Applied files and backups remain.";
-                    Save(request);
-                    active = null;
-                    ShowImportResult(request);
-                    Publish();
-                    return;
-                }
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 foreach (BridgeOutputCheck output in request.outputs)
                 {
                     string path = BridgeFiles.Under(registry.projectRoot, output.path);
@@ -457,24 +387,26 @@ namespace NekoNekoAsset.Bridge
                                 write.metaHash = Convert.ToBase64String(hash.ComputeHash(File.ReadAllBytes(meta)));
                     }
                 request.receipt.stage = request.appliedFailed ? "failed" : "completed";
-                if (!request.appliedFailed && request.receipt.compileErrors.Count > 0)
-                    request.receipt.error = "Files imported; Unity compilation reported errors.";
                 Save(request);
-                active = null;
             }
             catch (Exception)
             {
-                Fail(request, "Could not verify imported outputs after Unity refresh; applied files and backups remain.");
-                return;
+                request.receipt.stage = "failed";
+                request.receipt.error = "Could not refresh or verify imported outputs; applied files and backups remain.";
+                Save(request);
             }
+            if (active == request) active = null;
+        }
+
+        private static void FinishImportResult(StoredBridgeRequest request)
+        {
             // Temp cleanup failures cannot change an already durable verified terminal result.
-            if (!request.appliedFailed && request.receipt.compileErrors.Count == 0)
+            if (request.receipt.stage == "completed")
             {
                 try { CleanupSuccessfulEngine(request); CleanupInputs(request); }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
+                catch (Exception) { /* Temp cleanup cannot alter the durable import result. */ }
             }
-            ShowImportResult(request);
+            if (Terminal(request.receipt.stage)) ShowImportResult(request);
             Publish();
         }
 
@@ -500,7 +432,6 @@ namespace NekoNekoAsset.Bridge
             var worst = new BridgeReceipt { requestId = request.receipt.requestId, fingerprint = request.receipt.fingerprint,
                 instanceId = registry.instanceId, sessionId = registry.sessionId, stage = "interrupted", staged = true, writesStarted = true,
                 updatedUtc = BridgeFiles.Now(), error = new string('"', 1024) };
-            for (int i = 0; i < 50; ++i) worst.compileErrors.Add(new string('"', 1024));
             foreach (ImportPlanItem item in plan.OrderedItems)
             {
                 worst.results.Add(new BridgeFileResult { entryId = new string('f', 36), path = item.TargetPath,

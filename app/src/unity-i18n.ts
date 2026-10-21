@@ -22,9 +22,8 @@ const text:Record<string,string[]>={
  noEditors:['No running Bridge Editors','実行中の Bridge Editor はありません','실행 중인 Bridge Editor 없음','没有运行中的 Bridge Editor','沒有執行中的 Bridge Editor'],
  noFiles:['No available files','利用できるファイルはありません','사용 가능한 파일 없음','没有可用文件','沒有可用檔案'],
  noResults:['No file results yet','ファイル結果はまだありません','아직 파일 결과가 없음','尚无文件结果','尚無檔案結果'],
- compileErrors:['Files imported; Unity reported compile errors','ファイルは適用済み。Unity のコンパイルエラーがあります','파일이 적용되었으나 Unity 컴파일 오류가 있음','文件已导入；Unity 报告编译错误','檔案已匯入；Unity 回報編譯錯誤'],
  preparing:['Preparing files','ファイルを準備中','파일 준비 중','准备文件','準備檔案'],
- waitingForEditor:['Waiting for Unity to finish compiling or updating','Unity のコンパイル・更新完了を待機中','Unity 컴파일 또는 업데이트 완료 대기 중','等待 Unity 完成编译或更新','等待 Unity 完成編譯或更新'],
+ waitingForEditor:['Waiting for Unity to become available','Unity が操作可能になるまで待機中','Unity를 사용할 수 있을 때까지 대기 중','等待 Unity 就绪','等待 Unity 就緒'],
  verify:['Verifying files in Unity','Unity でファイルを検証中','Unity에서 파일 확인 중','Unity 正在验证文件','Unity 正在驗證檔案'],
  readPackage:['Reading package in Unity','Unity でパッケージを読み込み中','Unity에서 패키지 읽는 중','Unity 正在读取包','Unity 正在讀取套件'],
  checkTargets:['Checking Unity targets','Unity の保存先を確認中','Unity 대상 확인 중','正在检查 Unity 目标','正在檢查 Unity 目標'],
@@ -32,7 +31,6 @@ const text:Record<string,string[]>={
  waitingForUser:['Waiting for Unity confirmation','Unity での確認待ち','Unity 확인 대기 중','等待 Unity 确认','等待 Unity 確認'],
  importing:['Importing','インポート中','가져오는 중','正在导入','正在匯入'],
  refreshing:['Refreshing assets','アセット更新中','에셋 새로 고침 중','刷新资源','重新整理資產'],
- compiling:['Compiling in Unity','Unity でコンパイル中','Unity 컴파일 중','Unity 正在编译','Unity 正在編譯'],
  completed:['Completed','完了','완료','已完成','已完成'],
  cancelled:['Cancelled','キャンセル済み','취소됨','已取消','已取消'],
  failed:['Failed','失敗','실패','失败','失敗'],
@@ -53,12 +51,11 @@ const text:Record<string,string[]>={
  UNITY_SELECTION_TOO_LARGE:['Too many file descriptors; select fewer files','ファイル情報が多すぎます。選択を減らしてください','파일 정보가 너무 많습니다. 선택을 줄이세요','文件信息过多，请减少选取','檔案資訊過多，請減少選取'],
  UNITY_INVALID_RESPONSE:['Unity returned an invalid response','Unity の応答が無効です','Unity 응답이 올바르지 않습니다','Unity 回应无效','Unity 回應無效'],
  unity_partial_failure:['Some files could not be imported','一部ファイルをインポートできませんでした','일부 파일을 가져올 수 없습니다','部分文件导入失败','部分檔案匯入失敗'],
- unity_compile_errors:['Unity reported compile errors','Unity のコンパイルエラーがあります','Unity 컴파일 오류가 있습니다','Unity 报告编译错误','Unity 回報編譯錯誤'],
  unity_import_failed:['Import failed; review file results','インポート失敗。ファイル結果を確認してください','가져오기에 실패했습니다. 파일 결과를 확인하세요','导入失败，请查看文件结果','匯入失敗，請查看檔案結果'],
  unity_interrupted:['Import interrupted','インポートが中断されました','가져오기가 중단되었습니다','导入已中断','匯入已中斷'],
  unity_path_collision:['Files share a destination path. Select one.','保存先が同じファイルがあります。1つ選択してください。','대상 경로가 같은 파일입니다. 하나를 선택하세요.','文件的目标路径相同，请选取其中一个。','檔案的目的路徑相同，請選取其中一個。'],
 };
-export function unityText(locale:Locale,key:string):string{return text[key]?.[locales.indexOf(locale)]??key;}
+export function unityText(locale:Locale,key:string):string{return text[key==='compiling'?'refreshing':key]?.[locales.indexOf(locale)]??key;}
 export function unityProgressLabel(locale:Locale,value:UnityPreparation&{stage?:string}):string{
  if(value.stage==='preparing'&&value.preparationWaitingForEditor)return unityText(locale,'waitingForEditor');
  const phase=value.stage==='preparing'?value.preparationPhase:null;

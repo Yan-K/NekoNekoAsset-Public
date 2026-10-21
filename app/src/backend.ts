@@ -5,7 +5,21 @@ import type {Product, Account, Locale} from './model';
 
 export type Service = 'catalogue'|'booth'|'storage'|'unity';
 export interface SourceProgress {stage?:string;source?:string;pages?:number;detailsCompleted?:number;requestsCompleted?:number;products?:number;published?:number;metadataCompleted?:number;metadataTotal?:number;availabilityWarnings?:number}
-export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number};compileErrorCount?:number}
+export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
+export function importOnlyUnityJob(job:NativeJob):NativeJob{
+ if(job.type!=='unity:import')return job;
+ const projected={...job};
+ Reflect.deleteProperty(projected,'compileErrorCount');
+ if(projected.stage==='compiling')projected.stage='refreshing';
+ if(['unity_compile_errors','UNITY_COMPILE_ERRORS'].includes(projected.errorCode??'')){
+  delete projected.errorCode;
+  if(projected.stage==='completed'&&projected.resultCounts?.failed===0)projected.state='completed';
+  else if((projected.resultCounts?.failed??0)>0)projected.errorCode='unity_partial_failure';
+  else if(projected.stage==='interrupted')projected.errorCode='unity_interrupted';
+  else if(projected.stage==='failed')projected.errorCode='unity_import_failed';
+ }
+ return projected;
+}
 export interface UnityPreparation {preparationPhase?:string|null;preparationWaitingForEditor?:boolean;preparationBytes?:number|null;preparationTotalBytes?:number|null;preparationEntries?:number|null;preparationTotalEntries?:number|null}
 export function progressPercent(job:(NativeJob&UnityPreparation)|undefined):number|undefined{
  if(job?.type==='unity:import'&&['waitingForUser','importing','refreshing','compiling','completed'].includes(job.stage??''))return 100;
@@ -34,7 +48,9 @@ export const emptyState:NativeState={version:1,products:[],accounts:[],roots:[],
 export interface DialogResult {path:string;content?:string;paths?:string[]}
 export async function invokeAction<T=any>(service:Service,action:string,args:Record<string,unknown>={}):Promise<T>{
  if(!isTauri())throw new Error('nativeUnavailable');
- return invoke<T>(`${service}_action`,{action,args});
+ const value=await invoke<T>(`${service}_action`,{action,args});
+ if(service==='catalogue'&&['bootstrap','state'].includes(action)&&value&&typeof value==='object'&&'jobs' in value&&Array.isArray(value.jobs))value.jobs=value.jobs.map(importOnlyUnityJob);
+ return value;
 }
 export async function dialog(kind:'folder'|'open_file'|'save_file',options:Record<string,unknown>={}):Promise<DialogResult|null>{
  if(!isTauri())throw new Error('nativeUnavailable');
@@ -93,7 +109,7 @@ export function errorCode(error:unknown):string {const value=typeof error==='str
 
 export interface UnityEditor {instanceId:string;sessionId:string;projectName:string;projectRoot:string;unityVersion:string;bridgeVersion?:string|null;busy:boolean}
 export interface UnityLeaf {leafRef:string;productId:string;productTitle:string;fileId:string;sourceName:string;variantName:string;revision:string;memberPath:string;displayName:string;relativePath:string;kind:'unitypackage'|'file';bytes:number;sha256:string}
-export interface UnityReceipt extends UnityPreparation {requestId:string;fingerprint:string;instanceId:string;sessionId:string;stage:string;staged:boolean;writesStarted:boolean;updatedUtc:string;error?:string|null;compileErrors:string[];results:{entryId:string;path:string;state:'applied'|'skipped'|'failed';message?:string|null}[]}
+export interface UnityReceipt extends UnityPreparation {requestId:string;fingerprint:string;instanceId:string;sessionId:string;stage:string;staged:boolean;writesStarted:boolean;updatedUtc:string;error?:string|null;results:{entryId:string;path:string;state:'applied'|'skipped'|'failed';message?:string|null}[]}
 export interface UnityDetails {jobId:string;projectName:string;projectRoot:string;unityVersion:string;stage:string;errorCode?:string|null;receipt:UnityReceipt|null}
 export const listUnityEditors=()=>invokeAction<{editors:UnityEditor[]}>('unity','list_editors');
 export const unityInventory=(productIds:string[])=>invokeAction<{files:UnityLeaf[]}>('unity','inventory',{productIds});

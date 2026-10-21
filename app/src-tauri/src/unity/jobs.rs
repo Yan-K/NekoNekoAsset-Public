@@ -169,6 +169,49 @@ impl RequestRecord {
             && self.created_at == other.created_at
     }
 
+    pub(super) fn presented_phase(&self) -> &str {
+        // Older v1 Bridges may still wait for compilation after applying the files.
+        // Keep that request active without presenting compiler state as importer work.
+        if self.phase == "compiling" {
+            "refreshing"
+        } else {
+            &self.phase
+        }
+    }
+
+    pub(super) fn presented_receipt(&self) -> Option<Value> {
+        self.receipt.as_ref().map(|receipt| {
+            let mut projected = receipt.clone();
+            let failed = receipt["results"]
+                .as_array()
+                .is_some_and(|results| results.iter().any(|result| result["state"] == "failed"));
+            let compiler_summary = match receipt["stage"].as_str() {
+                Some("completed") if !failed => {
+                    receipt["error"] == "Files imported; Unity compilation reported errors."
+                }
+                Some("interrupted") => receipt["error"]
+                    == "Files imported; Unity compilation/reload could not be confirmed. Applied files and backups remain.",
+                _ => false,
+            };
+            if let Some(fields) = projected.as_object_mut() {
+                fields.remove("compileErrors");
+                if compiler_summary {
+                    fields.insert("error".into(), Value::Null);
+                }
+                if receipt["stage"] == "compiling" {
+                    fields.insert("stage".into(), json!("refreshing"));
+                }
+            }
+            projected
+        })
+    }
+
+    pub(super) fn presented_error_code(&self) -> Option<&str> {
+        self.error_code
+            .as_deref()
+            .filter(|code| !matches!(*code, "unity_compile_errors" | "UNITY_COMPILE_ERRORS"))
+    }
+
     fn job(&self) -> Value {
         let receipt = self.receipt.as_ref().unwrap_or(&Value::Null);
         let results = receipt["results"].as_array();
@@ -178,18 +221,16 @@ impl RequestRecord {
             })
         };
         let failed = count("failed");
-        let compile = receipt["compileErrors"].as_array().map_or(0, Vec::len);
         let state = match self.phase.as_str() {
-            "completed" if failed > 0 || compile > 0 => "needsAction",
+            "completed" if failed > 0 => "needsAction",
             "completed" => "completed",
             "cancelled" => "cancelled",
             "failed" | "interrupted" | "unresolved" => "needsAction",
             "preparing" if self.receipt.is_none() => "queued",
             _ => "running",
         };
-        let error = self.error_code.as_deref().or(match self.phase.as_str() {
+        let error = self.presented_error_code().or(match self.phase.as_str() {
             "completed" if failed > 0 => Some("unity_partial_failure"),
-            "completed" if compile > 0 => Some("unity_compile_errors"),
             "failed" => Some("unity_import_failed"),
             "interrupted" => Some("unity_interrupted"),
             _ => None,
@@ -199,10 +240,10 @@ impl RequestRecord {
             "originDeviceId":self.origin_device_id,
             "productIds":self.product_ids, "projectName":self.project_name,
             "unityVersion":self.unity_version, "targetInstanceId":self.instance_id,
-            "state":state, "stage":self.phase,
+            "state":state, "stage":self.presented_phase(),
             "writesStarted":receipt["writesStarted"].as_bool().unwrap_or(false),
             "resultCounts":{"applied":count("applied"),"skipped":count("skipped"),"failed":failed},
-            "compileErrorCount":compile,"errorCode":error,
+            "errorCode":error,
             "createdAt":self.created_at,"updatedAt":self.updated_at
         });
         // Only safe counters are projected into Activity; complete results remain in details.
@@ -569,6 +610,14 @@ mod tests {
             r.receipt = Some(receipt(&r, phase));
             assert_eq!(r.job()["state"], "running");
             assert_eq!(r.job()["writesStarted"], true);
+            assert_eq!(
+                r.job()["stage"],
+                if phase == "compiling" {
+                    "refreshing"
+                } else {
+                    phase
+                }
+            );
         }
         r.phase = "preparing".into();
         r.receipt = Some(receipt(&r, "preparing"));
@@ -582,12 +631,13 @@ mod tests {
         r.receipt = Some(receipt(&r, "completed"));
         assert_eq!(r.job()["state"], "completed");
         r.receipt.as_mut().unwrap()["compileErrors"] = json!(["authored compile failure"]);
-        assert_eq!(r.job()["state"], "needsAction");
-        assert_eq!(r.job()["compileErrorCount"], 1);
+        assert_eq!(r.job()["state"], "completed");
+        assert!(r.job()["errorCode"].is_null());
+        assert!(r.job().get("compileErrorCount").is_none());
         assert_eq!(r.job()["resultCounts"]["applied"], 1);
         assert!(r.job().get("receipt").is_none());
         assert!(r.job().get("manifestJson").is_none());
-        r.receipt.as_mut().unwrap()["compileErrors"] = json!([]);
+        // Compiler diagnostics must not hide a real failure in the same receipt.
         r.receipt.as_mut().unwrap()["results"][0]["state"] = json!("failed");
         assert_eq!(r.job()["state"], "needsAction");
         assert_eq!(r.job()["errorCode"], "unity_partial_failure");
@@ -597,6 +647,55 @@ mod tests {
         }
         r.phase = "cancelled".into();
         assert_eq!(r.job()["state"], "cancelled");
+    }
+
+    #[test]
+    fn legacy_compiler_diagnostics_are_not_presented_or_rewritten() {
+        let mut r = record();
+        freeze(&mut r);
+        r.phase = "completed".into();
+        r.error_code = Some("unity_compile_errors".into());
+        r.receipt = Some(receipt(&r, "completed"));
+        r.receipt.as_mut().unwrap()["compileErrors"] = json!(["authored compiler error"]);
+        r.receipt.as_mut().unwrap()["error"] =
+            json!("Files imported; Unity compilation reported errors.");
+        let stored = r.stored().unwrap();
+        let projected = r.presented_receipt().unwrap();
+        assert!(projected.get("compileErrors").is_none());
+        assert!(projected["error"].is_null());
+        assert_eq!(projected["results"][0]["state"], "applied");
+        assert_eq!(r.job()["state"], "completed");
+        assert!(r.job()["errorCode"].is_null());
+        assert_eq!(r.stored().unwrap(), stored);
+
+        r.receipt.as_mut().unwrap()["error"] = json!("An authored import failure summary");
+        assert_eq!(
+            r.presented_receipt().unwrap()["error"],
+            "An authored import failure summary"
+        );
+        r.receipt.as_mut().unwrap()["results"][0]["state"] = json!("failed");
+        assert_eq!(r.job()["state"], "needsAction");
+        assert_eq!(r.job()["errorCode"], "unity_partial_failure");
+        assert_eq!(
+            r.presented_receipt().unwrap()["results"][0]["state"],
+            "failed"
+        );
+
+        r.phase = "interrupted".into();
+        r.receipt.as_mut().unwrap()["stage"] = json!("interrupted");
+        r.receipt.as_mut().unwrap()["results"][0]["state"] = json!("applied");
+        r.receipt.as_mut().unwrap()["error"] = json!(
+            "Files imported; Unity compilation/reload could not be confirmed. Applied files and backups remain."
+        );
+        assert_eq!(r.job()["state"], "needsAction");
+        assert_eq!(r.job()["errorCode"], "unity_interrupted");
+        assert!(r.presented_receipt().unwrap()["error"].is_null());
+
+        r.phase = "compiling".into();
+        r.receipt.as_mut().unwrap()["stage"] = json!("compiling");
+        assert_eq!(r.presented_phase(), "refreshing");
+        assert_eq!(r.presented_receipt().unwrap()["stage"], "refreshing");
+        assert_eq!(r.receipt.as_ref().unwrap()["stage"], "compiling");
     }
 
     #[test]

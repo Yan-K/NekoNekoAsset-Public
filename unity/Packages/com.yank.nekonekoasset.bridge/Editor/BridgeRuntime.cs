@@ -7,7 +7,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace NekoNekoAsset.Bridge
@@ -29,7 +28,6 @@ namespace NekoNekoAsset.Bridge
         private static int mainThread;
         private static bool stopped;
         private static double nextHeartbeat;
-        private static int reloadGeneration;
 
         static BridgeRuntime()
         {
@@ -84,8 +82,6 @@ namespace NekoNekoAsset.Bridge
                     SessionState.SetString(SessionKey, session);
                 }
                 enabledPreference = "NekoNekoAsset.Bridge.Enabled." + instance;
-                reloadGeneration = SessionState.GetInt(SessionKey + ".ReloadGeneration", 0) + 1;
-                SessionState.SetInt(SessionKey + ".ReloadGeneration", reloadGeneration);
                 registry = new BridgeRegistry {
                     instanceId = instance, sessionId = session,
                     processId = Process.GetCurrentProcess().Id,
@@ -108,11 +104,9 @@ namespace NekoNekoAsset.Bridge
                 EditorApplication.update += Update;
                 EditorApplication.quitting += Shutdown;
                 AssemblyReloadEvents.beforeAssemblyReload += Shutdown;
-                CompilationPipeline.compilationStarted += CompilationStarted;
-                CompilationPipeline.assemblyCompilationFinished += AssemblyCompiled;
-                CompilationPipeline.compilationFinished += CompilationFinished;
                 Menu.SetChecked(MenuPath, registry.enabled);
                 Publish();
+                RestoreImportResult();
             }
             catch (Exception error)
             {
@@ -230,9 +224,13 @@ namespace NekoNekoAsset.Bridge
                             request.receipt.preparationEntries = 0;
                             Save(request);
                         }
-                        if (request.compileObserved && reloadGeneration > request.applyReloadGeneration)
-                        { request.compileFinished = true; Save(request); }
-                        refreshNotBefore = EditorApplication.timeSinceStartup + 1;
+                        // Older v1 receivers waited for compilation here. Resume only
+                        // the import refresh/output checks with the existing checkpoint.
+                        if (request.receipt.stage == "compiling")
+                        {
+                            request.receipt.stage = "refreshing";
+                            Save(request);
+                        }
                     }
                     else
                     {
@@ -257,8 +255,18 @@ namespace NekoNekoAsset.Bridge
             if (receipt == null || !Requests.TryGetValue(receipt.requestId, out StoredBridgeRequest request)
                 || string.IsNullOrEmpty(request.lastDurableJson)) return null;
             // A failed disk commit must never expose a merely mutated staged=true receipt.
-            return JsonUtility.FromJson<StoredBridgeRequest>(request.lastDurableJson).receipt;
+            var durable = JsonUtility.FromJson<StoredBridgeRequest>(request.lastDurableJson);
+            BridgeReceipt result = durable.receipt;
+            // Preserve historical stored evidence while returning only import facts.
+            result.compileErrors = new List<string>();
+            if (!durable.appliedFailed && LegacyCompilationError(result.error)) result.error = null;
+            if (result.stage == "compiling") result.stage = "refreshing";
+            return result;
         }
+
+        internal static bool LegacyCompilationError(string error)
+            => error == "Files imported; Unity compilation reported errors."
+                || error == "Files imported; Unity compilation/reload could not be confirmed. Applied files and backups remain.";
 
         private static string SerializeResponse(BridgeResponse response)
         {

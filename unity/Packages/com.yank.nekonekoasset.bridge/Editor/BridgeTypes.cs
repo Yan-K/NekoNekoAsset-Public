@@ -99,6 +99,8 @@ namespace NekoNekoAsset.Bridge
         public int preparationEntries;
         public int preparationTotalEntries;
         public string error;
+        // Retained for v1 compatibility; new receipts leave this empty and outgoing
+        // receipts never include historical compiler diagnostics.
         public List<string> compileErrors = new List<string>();
         public List<BridgeFileResult> results = new List<BridgeFileResult>();
     }
@@ -133,12 +135,6 @@ namespace NekoNekoAsset.Bridge
         public List<string> createdParents = new List<string>();
         public bool cleanupDone;
         public bool appliedFailed;
-        public bool compileObserved;
-        public bool compileFinished;
-        public int compiledAssemblyCount;
-        public List<string> changedScripts = new List<string>();
-        public List<string> changedPlugins = new List<string>();
-        public int applyReloadGeneration;
         public string engineDirectory;
         public List<BridgeBackup> engineBackups = new List<BridgeBackup>();
     }

@@ -233,7 +233,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
             return result;
         }
 
-        // Call only after the Bridge has durably completed its refresh/compile/GUID checks.
+        // Call only after the Bridge has durably completed its import refresh/output/GUID checks.
         // Partial results retain streaming inputs and any rollback backups for recovery.
         public static List<string> CleanupSuccessfulRun(ImportRunResult result)
         {

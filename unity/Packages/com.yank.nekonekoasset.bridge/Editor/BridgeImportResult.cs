@@ -10,14 +10,32 @@ namespace NekoNekoAsset.Bridge
 {
     public static partial class BridgeRuntime
     {
+        private const string PendingImportResultKey = SessionKey + ".PendingImportResult";
+
         private static void ShowImportResult(StoredBridgeRequest request)
         {
             if (Application.isBatchMode || stopped || request == null || !Terminal(request.receipt.stage)
                 || request.receipt.stage == "cancelled") return;
+            string requestId = request.receipt.requestId;
+            SessionState.SetString(PendingImportResultKey, requestId);
             EditorApplication.delayCall += () => {
-                if (!stopped) BridgeImportResultWindow.Show(request, Locale(request), () => CleanupLastWrites(request));
+                if (stopped || SessionState.GetString(PendingImportResultKey, "") != requestId) return;
+                BridgeImportResultWindow.Show(request, Locale(request));
+                if (SessionState.GetString(PendingImportResultKey, "") == requestId)
+                    SessionState.EraseString(PendingImportResultKey);
             };
         }
+
+        private static void RestoreImportResult()
+        {
+            if (Application.isBatchMode) return;
+            string requestId = SessionState.GetString(PendingImportResultKey, "");
+            if (Requests.TryGetValue(requestId, out StoredBridgeRequest request)
+                && request.receipt.sessionId == registry.sessionId) ShowImportResult(request);
+        }
+
+        internal static StoredBridgeRequest ImportResultRequest(string requestId)
+            => Requests.TryGetValue(requestId, out StoredBridgeRequest request) ? request : null;
 
         // Only new, owned targets are eligible. Overwritten preexisting targets are
         // intentionally retained. Asset/meta hashes guard all subsequent edits.
@@ -56,9 +74,9 @@ namespace NekoNekoAsset.Bridge
             return new[] { removed, retained };
         }
 
-        private static int[] CleanupLastWrites(StoredBridgeRequest request)
+        internal static int[] CleanupLastWrites(StoredBridgeRequest request)
         {
-            if (active != null || !Terminal(request.receipt.stage)) return new[] { 0, request.ownedWrites.Count };
+            if (registry == null || active != null || !Terminal(request.receipt.stage)) return new[] { 0, request.ownedWrites.Count };
             int[] counts = CleanupOwnedWrites(registry.projectRoot, request);
             Save(request);
             AssetDatabase.Refresh();
@@ -68,30 +86,37 @@ namespace NekoNekoAsset.Bridge
 
     internal sealed class BridgeImportResultWindow : EditorWindow
     {
-        private StoredBridgeRequest request;
+        [SerializeField] private StoredBridgeRequest request;
+        [SerializeField] private string locale;
         private BridgeLocalization labels;
-        private Func<int[]> cleanup;
         private Vector2 scroll;
         private string cleanupSummary;
-        internal static void Show(StoredBridgeRequest request, string locale, Func<int[]> cleanup)
+        internal static void Show(StoredBridgeRequest request, string locale)
         {
             var window = CreateInstance<BridgeImportResultWindow>();
             window.request = request;
+            window.locale = locale;
             window.labels = new BridgeLocalization(locale);
-            window.cleanup = cleanup;
             window.titleContent = new GUIContent(window.labels.Text("resultTitle"));
             window.minSize = new Vector2(440, 280);
             window.ShowUtility();
         }
+        private void OnEnable()
+        {
+            labels = new BridgeLocalization(locale);
+        }
         private void OnGUI()
         {
             if (request == null || labels == null) return;
+            request = BridgeRuntime.ImportResultRequest(request.receipt.requestId) ?? request;
             GUILayout.Label(labels.Text(request.receipt.stage == "completed" ? "completed" : "failed"), EditorStyles.boldLabel);
             int applied = request.receipt.results.Count(result => result.state == "applied");
             int failed = request.receipt.results.Count(result => result.state == "failed");
             int skipped = request.receipt.results.Count(result => result.state == "skipped");
             GUILayout.Label(labels.Format("resultCounts", applied, skipped, failed));
-            if (!string.IsNullOrEmpty(request.receipt.error)) EditorGUILayout.HelpBox(request.receipt.error, MessageType.Warning);
+            if (!string.IsNullOrEmpty(request.receipt.error)
+                && (request.appliedFailed || !BridgeRuntime.LegacyCompilationError(request.receipt.error)))
+                EditorGUILayout.HelpBox(request.receipt.error, MessageType.Warning);
             scroll = EditorGUILayout.BeginScrollView(scroll);
             foreach (BridgeFileResult result in request.receipt.results)
             {
@@ -102,7 +127,6 @@ namespace NekoNekoAsset.Bridge
                 }
                 if (!string.IsNullOrEmpty(result.message)) GUILayout.Label(result.message, EditorStyles.wordWrappedMiniLabel);
             }
-            foreach (string message in request.receipt.compileErrors) GUILayout.Label(message, EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.EndScrollView();
             if (!string.IsNullOrEmpty(cleanupSummary)) GUILayout.Label(cleanupSummary, EditorStyles.wordWrappedMiniLabel);
             using (new EditorGUILayout.HorizontalScope())
@@ -111,7 +135,7 @@ namespace NekoNekoAsset.Bridge
                     if (GUILayout.Button(labels.Text("cleanup"))
                         && EditorUtility.DisplayDialog(labels.Text("cleanup"), labels.Text("cleanupConfirm"), labels.Text("cleanup"), labels.Text("cancel")))
                     {
-                        int[] counts = cleanup();
+                        int[] counts = BridgeRuntime.CleanupLastWrites(request);
                         cleanupSummary = labels.Format("cleanupCounts", counts[0], counts[1]);
                     }
                 GUILayout.FlexibleSpace();
