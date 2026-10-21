@@ -156,15 +156,34 @@ fn publish_source_tree_part(
     let target = io::safe_join(root, relative)?;
     if target.try_exists()? {
         io::verify(&target, hash, size)?;
-    } else {
-        std::fs::create_dir_all(target.parent().unwrap())?;
-        let target = io::safe_join(root, relative)?;
+        std::fs::remove_file(part)?;
+        return Ok(());
+    }
+    std::fs::create_dir_all(target.parent().unwrap())?;
+    let target = io::safe_join(root, relative)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+        }
+        let existing: Vec<u16> = part.as_os_str().encode_wide().chain(Some(0)).collect();
+        let new: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Same-root staging permits a same-volume rename. Flags 0 never replace
+        // an existing target and work without hard links or another payload copy.
+        if unsafe { MoveFileExW(existing.as_ptr(), new.as_ptr(), 0) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    #[cfg(not(windows))]
+    {
         // Exclusive publication protects an existing sibling/retry target.
         if std::fs::hard_link(part, &target).is_err() {
             io::copy_new_verified(part, &target, hash, size, cancel)?;
         }
+        std::fs::remove_file(part)?;
     }
-    std::fs::remove_file(part)?;
     Ok(())
 }
 
@@ -1617,6 +1636,66 @@ mod tests {
             download_retry_delay(Some("Mon, 12 Oct 2026 01:03:00 GMT"), 0, now),
             None
         );
+    }
+
+    #[test]
+    fn source_tree_publication_reuses_staged_bytes_and_preserves_existing_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "nna-source-publication-synthetic-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".nna-partials")).unwrap();
+        let part = root.join(".nna-partials/file.part");
+        let relative = "source/file.bin";
+        let target = root.join(relative);
+        let bytes = b"synthetic source bytes";
+        std::fs::write(&part, bytes).unwrap();
+        let (hash, size) = io::hash_file(&part).unwrap();
+        let cancel = AtomicBool::new(false);
+        #[cfg(windows)]
+        let mut original = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&part)
+            .unwrap();
+        publish_source_tree_part(&root, relative, &part, &hash, size, &cancel).unwrap();
+        assert!(!part.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            // The open staged handle still addresses the final file, proving
+            // publication moved the file object instead of copying its bytes.
+            original.set_len(0).unwrap();
+            assert_eq!(std::fs::metadata(&target).unwrap().len(), 0);
+            original.write_all(bytes).unwrap();
+            original.sync_all().unwrap();
+            drop(original);
+        }
+        // A matching retry removes only its own partial and keeps the target.
+        std::fs::write(&part, bytes).unwrap();
+        publish_source_tree_part(&root, relative, &part, &hash, size, &cancel).unwrap();
+        assert!(!part.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+
+        std::fs::write(&part, bytes).unwrap();
+        std::fs::write(&target, b"preserve existing target").unwrap();
+        assert!(publish_source_tree_part(&root, relative, &part, &hash, size, &cancel).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"preserve existing target");
+        assert_eq!(std::fs::read(&part).unwrap(), bytes);
+
+        cancel.store(true, Ordering::Release);
+        assert!(
+            publish_source_tree_part(&root, "cancelled/file.bin", &part, &hash, size, &cancel)
+                .is_err()
+        );
+        assert!(!root.join("cancelled").exists());
+        assert_eq!(std::fs::read(&part).unwrap(), bytes);
+        std::fs::remove_file(&part).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(root.join(".nna-partials")).unwrap();
+        std::fs::remove_dir(root.join("source")).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[tokio::test]

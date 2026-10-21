@@ -1240,21 +1240,12 @@ impl StorageService {
                     let prior = self
                         .catalogue
                         .get("artifact", io::required_string(&artifacts[n], "id")?)?;
-                    let prior_extracted = prior
-                        .as_ref()
-                        .filter(|a| {
-                            a["rootId"] == root["id"]
-                                && a["relativePath"] == artifacts[n]["relativePath"]
-                        })
-                        .and_then(|a| a["extractedPath"].as_str());
+                    let prior = prior.as_ref().filter(|a| {
+                        a["rootId"] == root["id"]
+                            && a["relativePath"] == artifacts[n]["relativePath"]
+                    });
                     let result = self.extract_local_archive(
-                        &root_path,
-                        group,
-                        &path,
-                        &available,
-                        prior_extracted,
-                        seven_zip,
-                        cancel,
+                        &root_path, group, &path, &available, prior, &artifacts, seven_zip, cancel,
                     );
                     match result {
                         Ok((relative, inventory, volumes)) => {
@@ -1394,7 +1385,8 @@ impl StorageService {
         group: &LocalGroup,
         source: &Path,
         available: &[PathBuf],
-        prior_extracted: Option<&str>,
+        prior: Option<&Value>,
+        artifacts: &[Value],
         tool: &Path,
         cancel: &AtomicBool,
     ) -> Result<(String, Value, Vec<PathBuf>)> {
@@ -1411,12 +1403,79 @@ impl StorageService {
                     .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?
             )
         );
-        if let Some(prior) =
-            prior_extracted.filter(|p| p.starts_with(&format!("{}/extracted/", group.prefix)))
+        if let Some(prior) = prior
+            .and_then(|a| a["extractedPath"].as_str())
+            .filter(|p| p.starts_with(&format!("{}/extracted/", group.prefix)))
         {
             relative = prior.to_owned();
         }
         let mut target = io::safe_join(root, &relative)?;
+        if let Some(prior) = prior.filter(|a| {
+            a["status"] == "ready" && a["extractedPath"].as_str() == Some(relative.as_str())
+        }) {
+            if let Ok(inventory) = serde_json::from_value::<Vec<archive::VerifiedEntry>>(
+                prior["extractedInventory"].clone(),
+            ) {
+                let sources = archive::validate_volume_group(source, available)?;
+                let records = self.catalogue.related("artifact", &group.product_id)?;
+                let mut previous_sources = HashSet::new();
+                let mut unchanged = !inventory.is_empty();
+                // Every source in the recorded extraction must still be attached
+                // with the same bytes. A shorter or changed split set is not reusable.
+                for record in records.iter().filter(|a| {
+                    a["rootId"] == prior["rootId"]
+                        && a["extractedPath"] == prior["extractedPath"]
+                        && a["extractedInventory"] == prior["extractedInventory"]
+                }) {
+                    let Some(current) = artifacts.iter().find(|a| a["id"] == record["id"]) else {
+                        unchanged = false;
+                        break;
+                    };
+                    if record["status"] != "ready"
+                        || record["originalAvailable"] != true
+                        || [
+                            "fileId",
+                            "productId",
+                            "rootId",
+                            "relativePath",
+                            "revision",
+                            "hash",
+                            "sizeBytes",
+                        ]
+                        .iter()
+                        .any(|key| record[*key] != current[*key])
+                    {
+                        unchanged = false;
+                        break;
+                    }
+                    let path = io::safe_join(root, io::required_string(record, "relativePath")?)?;
+                    if !previous_sources.insert(path) {
+                        unchanged = false;
+                        break;
+                    }
+                }
+                unchanged &= previous_sources.len() == sources.len()
+                    && sources.iter().all(|path| previous_sources.contains(path));
+                if unchanged {
+                    let expected = inventory
+                        .iter()
+                        .map(|entry| archive::ArchiveEntry {
+                            relative_path: entry.relative_path.clone(),
+                            size_bytes: entry.size_bytes,
+                            is_directory: entry.is_directory,
+                            crc32: None,
+                        })
+                        .collect::<Vec<_>>();
+                    let matches = archive::verify_extracted_inventory(&target, &expected, cancel)
+                        .is_ok_and(|actual| actual == inventory);
+                    io::check_cancel(cancel)?;
+                    if matches {
+                        // The caller verifies every original source again before publication.
+                        return Ok((relative, prior["extractedInventory"].clone(), sources));
+                    }
+                }
+            }
+        }
         let staging = io::safe_join(
             root,
             &format!(".nna-import-staging/{}", io::key(&group.product_id)),

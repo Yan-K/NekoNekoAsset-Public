@@ -708,6 +708,160 @@ fn local_import_batch_failure_keeps_prior_group_completed_and_managed_archive_or
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "requires explicit NNA_7ZIP on non-Windows")]
+fn local_import_retry_reuses_only_recorded_unchanged_complete_extraction() {
+    let tool = native_seven_zip_test_tool();
+    let f = Fixture::new();
+    let source = f.path.join("a-complete.zip");
+    let failed = f.path.join("b-corrupt.zip");
+    std::fs::write(
+        &source,
+        authored_zip(&[("model.unitypackage", b"authored reusable package")]),
+    )
+    .unwrap();
+    std::fs::write(&failed, b"authored invalid archive").unwrap();
+    let original = io::hash_file(&source).unwrap();
+    let mut job = local_job(&f, &[source.clone(), failed.clone()], "single");
+    assert!(f
+        .service
+        .run_local_import(&mut job, &tool, &AtomicBool::new(false))
+        .is_err());
+    let artifacts = f.service.catalogue.list("artifact").unwrap();
+    let completed = artifacts
+        .iter()
+        .find(|a| {
+            a["relativePath"]
+                .as_str()
+                .unwrap()
+                .ends_with("a-complete.zip")
+        })
+        .unwrap()
+        .clone();
+    assert_eq!(completed["status"], "ready");
+    assert_eq!(
+        artifacts
+            .iter()
+            .filter(|a| a["status"] == "extractionFailed")
+            .count(),
+        1
+    );
+    let library = f.path.join("library");
+    let extracted = io::safe_join(&library, completed["extractedPath"].as_str().unwrap()).unwrap();
+    let member = extracted.join("model.unitypackage");
+    let missing_tool = f.path.join("missing-synthetic-sevenzip");
+    // The sibling still fails, but this known successful ZIP must stay Ready
+    // even when invoking the extractor is impossible: no new output was written.
+    let error = f
+        .service
+        .run_local_import(&mut job, &missing_tool, &AtomicBool::new(false))
+        .unwrap_err();
+    assert_eq!(io::stable_error(&error), "archive_tool_unavailable");
+    assert_eq!(
+        f.service
+            .catalogue
+            .get("artifact", completed["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap(),
+        completed
+    );
+    assert_eq!(
+        std::fs::read(&member).unwrap(),
+        b"authored reusable package"
+    );
+    assert!(!library.join(".nna-import-staging").exists());
+
+    // A dropped old volume must prevent reuse even if every currently supplied
+    // member still matches the saved bytes and inventory.
+    let mut old_volume = completed.clone();
+    old_volume["id"] = json!("authored-dropped-volume");
+    old_volume["fileId"] = json!("authored-dropped-file");
+    let old_relative = Path::new(completed["relativePath"].as_str().unwrap())
+        .with_file_name("a-complete.z01")
+        .to_string_lossy()
+        .replace('\\', "/");
+    old_volume["relativePath"] = json!(old_relative);
+    f.service
+        .catalogue
+        .put("artifact", "authored-dropped-volume", old_volume)
+        .unwrap();
+    assert!(f
+        .service
+        .run_local_import(&mut job, &missing_tool, &AtomicBool::new(false))
+        .is_err());
+    assert_eq!(
+        f.service
+            .catalogue
+            .get("artifact", completed["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap()["status"],
+        "extractionFailed"
+    );
+    f.service
+        .catalogue
+        .delete("artifact", "authored-dropped-volume")
+        .unwrap();
+
+    // An existing output directory alone is not proof of successful publication.
+    let mut no_inventory = completed.clone();
+    no_inventory
+        .as_object_mut()
+        .unwrap()
+        .remove("extractedInventory");
+    f.service
+        .catalogue
+        .put("artifact", completed["id"].as_str().unwrap(), no_inventory)
+        .unwrap();
+    assert!(f
+        .service
+        .run_local_import(&mut job, &missing_tool, &AtomicBool::new(false))
+        .is_err());
+    assert_eq!(
+        f.service
+            .catalogue
+            .get("artifact", completed["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap()["status"],
+        "extractionFailed"
+    );
+
+    // User-modified output still takes the existing full-extraction fallback,
+    // leaving that tree intact when extraction cannot run.
+    f.service
+        .catalogue
+        .put(
+            "artifact",
+            completed["id"].as_str().unwrap(),
+            completed.clone(),
+        )
+        .unwrap();
+    std::fs::write(&member, b"authored retained user edit").unwrap();
+    assert!(f
+        .service
+        .run_local_import(&mut job, &missing_tool, &AtomicBool::new(false))
+        .is_err());
+    assert_eq!(
+        f.service
+            .catalogue
+            .get("artifact", completed["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap()["status"],
+        "extractionFailed"
+    );
+    assert_eq!(
+        std::fs::read(&member).unwrap(),
+        b"authored retained user edit"
+    );
+    assert_eq!(io::hash_file(&source).unwrap(), original);
+    io::verify(
+        &io::safe_join(&library, completed["relativePath"].as_str().unwrap()).unwrap(),
+        &original.0,
+        original.1,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&failed).unwrap(), b"authored invalid archive");
+}
+
+#[test]
 fn local_import_rejected_publication_does_not_skip_group_on_retry() {
     let f = Fixture::new();
     let first = f.path.join("first-folder");
