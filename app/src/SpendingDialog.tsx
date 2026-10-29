@@ -72,7 +72,7 @@ function Fireworks({tier}:{tier:number}) {
   if(!tier)return;
   const surface=canvas.current,context=surface?.getContext('2d');
   if(!surface||!context)return;
-  const motion=window.matchMedia('(prefers-reduced-motion: reduce)');
+  const motion=window.matchMedia('(prefers-reduced-motion: reduce)'),reduced=()=>motion.matches||!!surface.closest('.app.reduce-motion');
   let frame=0,width=0,height=0,particles:Particle[]=[],previous=0,start=0,nextBurst=0;
   const resize=()=>{width=window.innerWidth;height=window.innerHeight;const ratio=Math.min(window.devicePixelRatio||1,2);surface.width=Math.ceil(width*ratio);surface.height=Math.ceil(height*ratio);context.setTransform(ratio,0,0,ratio,0,0);};
   const stop=()=>{cancelAnimationFrame(frame);frame=0;particles=[];context.clearRect(0,0,width,height);};
@@ -85,7 +85,7 @@ function Fireworks({tier}:{tier:number}) {
    }
   };
   const draw=(time:number)=>{
-   if(motion.matches){stop();return;}
+   if(reduced()){stop();return;}
    if(!start)start=time;
    const dt=Math.min(previous?(time-previous)/1000:0,.05);previous=time;
    context.clearRect(0,0,width,height);
@@ -100,7 +100,7 @@ function Fireworks({tier}:{tier:number}) {
    context.globalAlpha=1;
    if(time-start<duration||particles.length)frame=requestAnimationFrame(draw);else frame=0;
   };
-  const updateMotion=()=>{stop();if(!motion.matches){previous=0;start=0;nextBurst=0;frame=requestAnimationFrame(draw);}};
+  const updateMotion=()=>{stop();if(!reduced()){previous=0;start=0;nextBurst=0;frame=requestAnimationFrame(draw);}};
   resize();window.addEventListener('resize',resize);motion.addEventListener('change',updateMotion);updateMotion();
   return()=>{stop();window.removeEventListener('resize',resize);motion.removeEventListener('change',updateMotion);};
  },[tier]);

@@ -41,6 +41,8 @@ const labels:Record<string,string[]>={
  syncFailure:['Sync failed','同期エラー','동기화 실패','同步失败','同步失敗'],
  secondaryAccent:['Unity accent','Unity のアクセント','Unity 강조 색상','Unity 强调色','Unity 強調色'],
  secondaryAccentText:['Unity button text','Unity ボタンの文字','Unity 버튼 글자','Unity 按钮文字','Unity 按鈕文字'],
+ roundedCorners:['Rounded corners','角丸','둥근 모서리','圆角','圓角'],
+ reduceMotion:['Reduce motion','アニメーションを減らす','모션 줄이기','减少动画','減少動畫'],
 };
 const indexes:Record<Locale,number>={en:0,ja:1,ko:2,'zh-Hans':3,'zh-Hant':4};
 export function uxText(locale:Locale,key:string):string|undefined{return labels[key]?.[indexes[locale]];}

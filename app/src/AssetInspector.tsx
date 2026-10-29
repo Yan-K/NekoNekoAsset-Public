@@ -1,11 +1,12 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
-import {CheckCircle2,AlertCircle,Clock,FileArchive,FileBox,RefreshCw,Download,Plus,SlidersHorizontal,FolderOpen,ExternalLink,Trash2,Check,X} from 'lucide-react';
+import {FileArchive,FileBox,RefreshCw,Download,Plus,SlidersHorizontal,FolderOpen,ExternalLink,Trash2,Check,X} from 'lucide-react';
 import type {Product,Locale,Account} from './model';
 import {getProductDisplayStatus,getEffectiveTags,getEffectiveAvatarTags,sourceCategoryLabel,isFileDownloaded,isProductDownloaded,priceLabel,currentPriceLabel,fileCountLabel} from './model';
 import {t} from './i18n';
 import {shellText} from './shell-i18n';
 import {wf} from './workflow-i18n';
 import Preview from './Preview';
+import {StatusIcon} from './LibraryIcons';
 import './inspector.css';
 const fileActionLabels: Record<Locale,{openFolder:string;openFile:string;openPage:string}> = {
  en:{openFolder:'Open folder',openFile:'Open file',openPage:'Open product page'},ja:{openFolder:'フォルダーを開く',openFile:'ファイルを開く',openPage:'商品ページを開く'},ko:{openFolder:'폴더 열기',openFile:'파일 열기',openPage:'상품 페이지 열기'},'zh-Hans':{openFolder:'打开文件夹',openFile:'打开文件',openPage:'打开商品页面'},'zh-Hant':{openFolder:'開啟資料夾',openFile:'開啟檔案',openPage:'開啟商品頁面'}
@@ -68,11 +69,12 @@ export default function AssetInspector({product:p,locale,wide,tab,onTabChange,se
  const paidPrices=(p.ownedPaidPrices??[]).filter(row=>accountIds===null||!!row.accountId&&accountIds.includes(row.accountId));
  const variantPrices=(rows:readonly {name:string;price:number|null;currency:string|null}[],fallback:string|null)=>rows.length?<span className="asset-inspector-prices">{rows.map((row,index)=><span key={index}>{row.name&&<strong>{row.name} · </strong>}{priceLabel(locale,row.price,row.currency)||L('unknown')}</span>)}</span>:<span>{fallback||L('unknown')}</span>;
  const details=<div className="asset-inspector-scroll" ref={detailScroll}>
+  {image&&!blocked&&<div className="asset-inspector-ambient" aria-hidden="true"><Preview key={image} src={image} title=""/></div>}
   <div className="asset-inspector-preview">{blocked?<button type="button" className="asset-inspector-reveal" onClick={onReveal}>{L('showR18')}</button>:pageAvailable?<button type="button" className="asset-inspector-page-link" aria-label={fileActionLabels[locale].openPage} title={fileActionLabels[locale].openPage} onClick={openPage}><Preview src={image} title={p.title}/><span className="asset-inspector-page-hint" aria-hidden="true"><ExternalLink size={14}/><span>{fileActionLabels[locale].openPage}</span></span></button>:<Preview src={image} title={p.title}/>}</div>
   <div className="asset-inspector-body">
    <h2 title={p.title}>{p.title}</h2><div className="asset-inspector-shop">{p.provider==='local'?L('localProductShop'):p.shop}{p.custom&&<span className="badge">{L('custom')}</span>}</div>
-   <div className={'asset-inspector-status '+(status==='ready'?'positive':status==='attention'?'warning':'')}>
-    {status==='ready'?<CheckCircle2 size={12}/>:status==='attention'?<AlertCircle size={12}/>:<Clock size={12}/>}<span>{L(status)}</span><span className="asset-inspector-count" title={p.manifestComplete===true?undefined:L('totalUnverified')}>{fileCountLabel(p)}</span>
+   <div className="asset-inspector-status">
+    <span className={'asset-inspector-state '+(status==='ready'?'positive':status==='attention'?'warning':'')} data-status={status}><StatusIcon status={status}/><span>{L(status)}</span></span><span className="asset-inspector-count" title={p.manifestComplete===true?undefined:L('totalUnverified')}>{fileCountLabel(p)}</span>
    </div>
    {actions}
    <section className="asset-inspector-section"><div className="asset-inspector-label">{L('tags')}</div><div className="asset-inspector-tags">{getEffectiveTags(p).map(tag=><button type="button" key={tag} title={tag} onClick={()=>onTagClick?.(tag)}>{tag}</button>)}<button type="button" className="asset-inspector-tag-add" aria-label={L('edit')+' '+L('tags')} title={L('edit')+' '+L('tags')} onClick={onEdit}><Plus size={12}/></button></div></section>

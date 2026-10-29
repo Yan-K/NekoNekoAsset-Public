@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
+import type {CSSProperties} from 'react';
 
 /** Keep the slider stationary until the pointer is released. */
 export default function ScaleControl({label,value,onCommit}:{label:string;value:number;onCommit:(value:number)=>void}) {
@@ -17,7 +18,7 @@ export default function ScaleControl({label,value,onCommit}:{label:string;value:
   window.addEventListener('pointerup',release,true);window.addEventListener('pointercancel',cancel,true);
   return()=>{pointer.current=null;window.removeEventListener('pointerup',release,true);window.removeEventListener('pointercancel',cancel,true);};
  },[]);
- return <div className="ui-scale-control"><input aria-label={label} type="range" min={80} max={300} step={1} value={draft} aria-valuetext={`${draft}%`}
+ return <div className="ui-scale-control"><input aria-label={label} type="range" min={80} max={300} step={1} value={draft} aria-valuetext={`${draft}%`} style={{'--fill':`${(draft-80)/220*100}%`} as CSSProperties}
   onKeyDown={event=>{if(event.altKey||event.ctrlKey||event.metaKey)return;const delta=event.key==='ArrowLeft'?-1:event.key==='ArrowRight'?1:event.key==='ArrowDown'?-10:event.key==='ArrowUp'?10:0;if(!delta)return;event.preventDefault();event.stopPropagation();if(pointer.current===null)commit(clamp(latestDraft.current+delta));}}
   onPointerDown={event=>{if(event.button===0)pointer.current=event.pointerId;}}
   onChange={event=>{const next=pointerStep(Number(event.target.value));updateDraft(next);if(pointer.current===null)commit(next);}}
