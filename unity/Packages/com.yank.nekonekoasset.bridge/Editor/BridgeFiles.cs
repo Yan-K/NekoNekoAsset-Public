@@ -1,8 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+#if UNITY_EDITOR_WIN
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+#endif
 
 namespace NekoNekoAsset.Bridge
 {
@@ -11,6 +16,75 @@ namespace NekoNekoAsset.Bridge
         internal const int MaximumControlBytes = 16 * 1024 * 1024;
         internal const int MaximumStoredBytes = 128 * 1024 * 1024;
         internal static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
+#if UNITY_EDITOR_WIN
+        private sealed class TrustedRoot
+        {
+            internal string path, finalPath;
+            internal uint volume, indexHigh, indexLow;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DirectoryInformation
+        {
+            internal uint attributes, creationLow, creationHigh, accessLow, accessHigh,
+                writeLow, writeHigh, volume, sizeHigh, sizeLow, links, indexHigh, indexLow;
+        }
+        private static TrustedRoot[] trustedRoots = Array.Empty<TrustedRoot>();
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        private static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+        [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out DirectoryInformation information);
+
+        private static TrustedRoot ResolveRoot(string path)
+        {
+            using (SafeFileHandle handle = CreateFileW(path, 0x80, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+            {
+                if (handle.IsInvalid || !GetFileInformationByHandle(handle, out DirectoryInformation information))
+                    throw new IOException("Could not verify the trusted directory.");
+                var finalPath = new StringBuilder(512);
+                uint length = GetFinalPathNameByHandleW(handle, finalPath, (uint)finalPath.Capacity, 0);
+                if (length >= finalPath.Capacity && length < 32768)
+                {
+                    finalPath = new StringBuilder((int)length + 1);
+                    length = GetFinalPathNameByHandleW(handle, finalPath, (uint)finalPath.Capacity, 0);
+                }
+                if (length == 0 || length >= finalPath.Capacity || (information.attributes & 0x10) == 0)
+                    throw new IOException("Could not resolve the trusted directory.");
+                return new TrustedRoot { path = path, finalPath = finalPath.ToString(), volume = information.volume,
+                    indexHigh = information.indexHigh, indexLow = information.indexLow };
+            }
+        }
+#endif
+
+        // Only initialization can trust existing, explicitly supplied roots.
+        // Their displayed paths/IDs remain unchanged; trust is not inherited by
+        // linked descendants or by arbitrary paths supplied to file operations.
+        internal static void ConfigureTrustedRoots(params string[] roots)
+        {
+#if UNITY_EDITOR_WIN
+            var prepared = new List<TrustedRoot>();
+            foreach (string root in roots)
+            {
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+                string path = Path.GetFullPath(root);
+                string volumeRoot = Path.GetPathRoot(path);
+                while (path.Length > volumeRoot.Length && (path.EndsWith("\\") || path.EndsWith("/"))) path = path.Substring(0, path.Length - 1);
+                prepared.Add(ResolveRoot(path));
+            }
+            prepared.Sort((left, right) => right.path.Length.CompareTo(left.path.Length));
+            System.Threading.Volatile.Write(ref trustedRoots, prepared.ToArray());
+#endif
+        }
+
+        internal static void ClearTrustedRoots()
+        {
+#if UNITY_EDITOR_WIN
+            System.Threading.Volatile.Write(ref trustedRoots, Array.Empty<TrustedRoot>());
+#endif
+        }
 
         internal static string Now() => DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
@@ -113,11 +187,30 @@ namespace NekoNekoAsset.Bridge
 
         internal static void RejectLinks(string path)
         {
-            for (string current = Path.GetFullPath(path); !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
+            string full = Path.GetFullPath(path), boundary = null;
+#if UNITY_EDITOR_WIN
+            foreach (TrustedRoot trusted in System.Threading.Volatile.Read(ref trustedRoots))
             {
-                if ((File.Exists(current) || Directory.Exists(current))
-                    && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                    throw new IOException("Linked paths are not allowed.");
+                string prefix = trusted.path.EndsWith("\\") ? trusted.path : trusted.path + "\\";
+                if (!full.Equals(trusted.path, StringComparison.OrdinalIgnoreCase) && !full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                TrustedRoot current = ResolveRoot(trusted.path);
+                if (!current.finalPath.Equals(trusted.finalPath, StringComparison.OrdinalIgnoreCase)
+                    || current.volume != trusted.volume || current.indexHigh != trusted.indexHigh || current.indexLow != trusted.indexLow)
+                    throw new IOException("The trusted directory changed.");
+                boundary = trusted.path;
+                break;
+            }
+#endif
+            for (string current = full; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
+            {
+                if (boundary != null && current.Equals(boundary, StringComparison.OrdinalIgnoreCase)) break;
+                try
+                {
+                    if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("Linked paths are not allowed.");
+                }
+                catch (FileNotFoundException) { }
+                catch (DirectoryNotFoundException) { }
             }
         }
 

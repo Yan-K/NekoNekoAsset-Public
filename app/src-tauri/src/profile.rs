@@ -183,18 +183,20 @@ pub(crate) fn selected_library(device_dir: &Path) -> Result<Option<LibrarySelect
 }
 
 pub(crate) fn select_library(device_dir: &Path, selection: &LibrarySelection) -> Result<()> {
-    std::fs::create_dir_all(device_dir)?;
-    let temporary = device_dir.join("library.json.pending");
-    let destination = device_dir.join("library.json");
-    {
-        use std::io::Write;
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(&serde_json::to_vec(selection)?)?;
-        file.sync_all()?;
-    }
-    crate::ai_provider::replace_file(&temporary, &destination)
-        .context("library_preferences_write_failed")?;
-    Ok(())
+    let result = (|| -> Result<()> {
+        std::fs::create_dir_all(device_dir)?;
+        let temporary = device_dir.join("library.json.pending");
+        let destination = device_dir.join("library.json");
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temporary)?;
+            file.write_all(&serde_json::to_vec(selection)?)?;
+            file.sync_all()?;
+        }
+        crate::ai_provider::replace_file(&temporary, &destination)?;
+        Ok(())
+    })();
+    result.context("library_preferences_write_failed")
 }
 
 fn portable_data_dir(executable: &Path) -> Option<PathBuf> {

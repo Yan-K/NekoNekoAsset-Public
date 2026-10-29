@@ -51,7 +51,14 @@ impl AiImage {
         limits.max_image_height = Some(8192);
         limits.max_alloc = Some(96 * 1024 * 1024);
         reader.limits(limits);
-        let image = reader.decode().map_err(|_| anyhow!("ai_image_invalid"))?;
+        let mut decoder = reader
+            .into_decoder()
+            .map_err(|_| anyhow!("ai_image_invalid"))?;
+        let orientation = image::ImageDecoder::orientation(&mut decoder)
+            .map_err(|_| anyhow!("ai_image_invalid"))?;
+        let mut image =
+            image::DynamicImage::from_decoder(decoder).map_err(|_| anyhow!("ai_image_invalid"))?;
+        image.apply_orientation(orientation);
         let image = if image.width() > MAX_DIMENSION || image.height() > MAX_DIMENSION {
             image.resize(
                 MAX_DIMENSION,
@@ -108,6 +115,23 @@ pub fn normalize_images(images: &[AiImage]) -> Result<Vec<AiImage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn phone_photo_orientation_is_applied_before_metadata_is_removed() {
+        let mut jpeg = vec![];
+        image::DynamicImage::new_rgb8(3, 2)
+            .write_to(&mut Cursor::new(&mut jpeg), ImageFormat::Jpeg)
+            .unwrap();
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut oriented = vec![0xff, 0xd8, 0xff, 0xe1];
+        oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        oriented.extend_from_slice(exif);
+        oriented.extend_from_slice(&jpeg[2..]);
+        let normalized = AiImage::from_bytes("image/jpeg", &oriented).unwrap();
+        let bytes = STANDARD.decode(&normalized.data_base64).unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((image.width(), image.height()), (2, 3));
+        assert!(!bytes.windows(6).any(|window| window == b"Exif\0\0"));
+    }
     #[test]
     fn image_decode_normalizes_dimensions_and_rejects_mime_or_corruption() {
         let image = image::DynamicImage::new_rgba8(1600, 2);

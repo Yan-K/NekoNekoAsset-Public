@@ -41,7 +41,7 @@ pub(super) fn query(conn: &Connection, args: &Value) -> Result<Value> {
     }
     let sort = args["sort"].as_str().unwrap_or("acquired");
     let status = text(args, "status");
-    if !status.is_empty() && status != "all" && sort == "status" {
+    if !status.is_empty() && status != "all" {
         conditions.push(format!("p.status={}", bind(Sql::Text(status.to_owned()))));
     }
     let sensitive = args["sensitive"]
@@ -211,7 +211,14 @@ pub(super) fn query(conn: &Connection, args: &Value) -> Result<Value> {
     all_downloaded &= !ids.is_empty();
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM products", [], |r| r.get(0))?;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-    let limit = args["limit"].as_u64().unwrap_or(100).min(10000) as usize;
+    let limit = if args["allSummaries"] == true
+        && args["includeFiles"] == false
+        && args["presentation"] == "list"
+    {
+        ids.len()
+    } else {
+        args["limit"].as_u64().unwrap_or(100).min(10000) as usize
+    };
     let mut products = vec![];
     let mut product_stmt = conn.prepare_cached(if args["includeFiles"] == false {
         "SELECT summary FROM products WHERE id=?1"

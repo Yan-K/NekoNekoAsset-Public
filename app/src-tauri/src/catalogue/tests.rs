@@ -1,6 +1,95 @@
 use super::*;
 
 #[test]
+fn all_summary_queries_include_results_after_10000_without_unbounding_file_payloads() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.inner.lock().unwrap().execute_batch("WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10001) INSERT INTO products(id,body,category,status,sensitive,downloaded,title,search,in_all,summary) SELECT CAST(value AS TEXT),json_object('id',CAST(value AS TEXT),'files',json_array('AUTHORED_DETAIL')),'Tool','notDownloaded',0,0,printf('%05d',value),'authored',1,json_object('id',CAST(value AS TEXT),'filesLoaded',0) FROM n").unwrap();
+    let query = |args| c.command("query", args).unwrap();
+    let all = query(json!({"allSummaries":true,"includeFiles":false,"presentation":"list","sort":"title"}));
+    assert_eq!(all["matched"], 10001);
+    assert_eq!(all["products"].as_array().unwrap().len(), 10001);
+    assert_eq!(all["products"][10000]["id"], "10001");
+    let details = query(json!({"allSummaries":true,"includeFiles":true,"presentation":"list","limit":20000}));
+    assert_eq!(details["products"].as_array().unwrap().len(), 10000);
+}
+
+#[test]
+fn status_filter_survives_every_sort_order() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    product(&c, "wanted");
+    product(&c, "other");
+    c.put("job", "authored-failure", json!({"id":"authored-failure","productId":"wanted","type":"download","state":"failed","errorCode":"network_failed"})).unwrap();
+    for sort in ["title", "acquired", "price", "status"] {
+        assert_eq!(c.command("query", json!({"status":"attention","sort":sort})).unwrap()["matchedIds"], json!(["wanted"]));
+    }
+}
+
+#[test]
+fn undo_history_is_bounded_and_noop_edits_do_not_write_records_or_revisions() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    product(&c, "authored-undo");
+    c.inner.lock().unwrap().execute_batch("WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<100) INSERT INTO undo(token,body) SELECT CAST(value AS TEXT),'[]' FROM n").unwrap();
+    let changed = c.command("overlay", json!({"ids":["authored-undo"],"patch":{"note":"Saved note"}})).unwrap();
+    assert_eq!(changed["changed"], 1);
+    let revision = c.revision().unwrap();
+    let unchanged = c.command("overlay", json!({"ids":["authored-undo"],"patch":{"note":"Saved note"}})).unwrap();
+    assert_eq!(unchanged["changed"], 0);
+    assert!(unchanged.get("undoToken").is_none());
+    assert_eq!(c.revision().unwrap(), revision);
+    assert_eq!(c.inner.lock().unwrap().query_row("SELECT COUNT(*) FROM undo", [], |row| row.get::<_, u64>(0)).unwrap(), 100);
+    assert!(c.inner.lock().unwrap().query_row("SELECT COUNT(*) FROM undo WHERE token='1'", [], |row| row.get::<_, u64>(0)).unwrap() == 0);
+    c.command("undo", json!({"token":changed["undoToken"]})).unwrap();
+}
+
+#[test]
+fn batch_import_status_snapshot_preserves_completed_members_and_updates_after_job_changes() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    let mut records = (0..10000).map(|n| {
+        let id = format!("authored-history-{n}");
+        ("job".into(), id.clone(), json!({"id":id,"type":"download","state":"completed"}))
+    }).collect::<Vec<_>>();
+    for id in ["one", "two"] {
+        records.push(("product".into(), id.into(), json!({"id":id,"title":"Authored import","sourceCategory":{"name":"Tool"}})));
+    }
+    let mut job = json!({"id":"authored-import","type":"storage:import_local","state":"running","productIds":["one","two"],"completedProductIds":["one"]});
+    records.push(("job".into(), "authored-import".into(), job.clone()));
+    c.put_many(records).unwrap();
+    let status = |id| c.command("product_details", json!({"id":id})).unwrap()["status"].clone();
+    assert_eq!(status("one"), "notDownloaded");
+    assert_eq!(status("two"), "processing");
+    job["completedProductIds"] = json!(["one", "two"]);
+    c.put("job", "authored-import", job).unwrap();
+    assert_eq!(status("one"), "notDownloaded");
+    assert_eq!(status("two"), "notDownloaded");
+}
+
+#[test]
+fn tag_edits_reject_only_visible_tags_and_preserve_new_hidden_source_compatibility() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    let mut source = json!({"id":"authored-tag-edit","title":"Authored clothes","sourceCategory":{"name":"Clothes"},"sourceTags":["Cute"]});
+    c.put("product", "authored-tag-edit", source.clone()).unwrap();
+    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute","Mine"]}})).unwrap();
+    source["sourceTags"] = json!(["Cute", "Mafuyu"]);
+    c.put("product", "authored-tag-edit", source).unwrap();
+    let details = || c.command("product_details", json!({"id":"authored-tag-edit"})).unwrap();
+    assert_eq!(details()["tags"], json!(["Cute", "Mine"]));
+    assert!(details()["ownedAvatarEvidence"].as_array().unwrap().iter().any(|entry| entry["avatarId"] == "booth:5007531"));
+    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute","Mine","Fav"]}})).unwrap();
+    assert!(!strings(&c.get("overlay", "authored-tag-edit").unwrap().unwrap()["rejectedTags"]).contains(&"Mafuyu".into()));
+    assert_eq!(c.command("query", json!({"avatar":"booth:5007531"})).unwrap()["matchedIds"], json!(["authored-tag-edit"]));
+    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{},"clearFields":["tags"]})).unwrap();
+    assert!(strings(&details()["tags"]).contains(&"Mafuyu".into()));
+    // A tag actually removed from the displayed list still remains rejected.
+    c.command("overlay", json!({"ids":["authored-tag-edit"],"patch":{"tags":["Cute"]}})).unwrap();
+    assert!(strings(&c.get("overlay", "authored-tag-edit").unwrap().unwrap()["rejectedTags"]).contains(&"Mafuyu".into()));
+}
+
+#[test]
 fn job_diagnostics_is_read_only_private_and_does_not_mix_later_account_snapshots() {
     let fixture = Fixture::new();
     let c = fixture.open();

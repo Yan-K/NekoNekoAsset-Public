@@ -195,7 +195,7 @@ pub fn file_action(
                 bail!("file_too_large");
             }
             let text = fs::read_to_string(path).context("invalid_text_file")?;
-            Ok(json!({"text":text}))
+            Ok(json!({"text":text.strip_prefix('\u{feff}').unwrap_or(&text)}))
         }
         "write_text" => {
             let path = selected_path(&args)?;

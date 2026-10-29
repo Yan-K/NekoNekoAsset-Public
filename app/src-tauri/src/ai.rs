@@ -290,10 +290,10 @@ impl AiService {
             AiRequest::RemoveEntry { entry_id } => {
                 let _guard = self.gate.lock().await;
                 let config = ai_provider::entry_config(&self.settings_path, &entry_id)?;
-                ai_provider::remove_entry(&self.settings_path, &entry_id)?;
-                self.draft_tests.lock().await.clear();
                 let target = self.target_for(&config);
                 vault_task(move || vault::delete(&target)).await?;
+                ai_provider::remove_entry(&self.settings_path, &entry_id)?;
+                self.draft_tests.lock().await.clear();
                 Ok(AiResponse::Entries(self.entries_locked().await?))
             }
             AiRequest::TestEntry { entry_id } => {

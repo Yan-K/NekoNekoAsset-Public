@@ -19,7 +19,7 @@ use crate::catalogue::Catalogue;
 use anyhow::{bail, ensure, Result};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -231,7 +231,7 @@ impl BoothService {
                 job["updatedAt"] = json!(now());
                 self.inner.catalogue.put("job", &id, job.clone())?;
                 if let Some(account) = job["accountId"].as_str() {
-                    self.inner.catalogue.discard_unverified_account(account)?;
+                    crate::stores::session::discard_unverified_account(&self.inner.catalogue, crate::stores::StoreProvider::Booth, account)?;
                 }
                 continue;
             }
@@ -399,6 +399,7 @@ impl BoothService {
             "account_logout" | "account_remove" => {
                 let id = field(&args, "accountId")?;
                 self.known_account(id)?;
+                self.inner.catalogue.require_account_idle(id)?;
                 if self
                     .inner
                     .running
@@ -454,7 +455,7 @@ impl BoothService {
             }
             "cancel_sync" => {
                 let id = field(&args, "jobId")?;
-                let mut job = self
+                let job = self
                     .inner
                     .catalogue
                     .get("job", id)?
@@ -465,11 +466,16 @@ impl BoothService {
                 ) {
                     bail!("INVALID_JOB");
                 }
-                if matches!(job["state"].as_str(), Some("queued" | "running")) {
-                    job["state"] = json!("cancelled");
-                    job["updatedAt"] = json!(now());
-                    job["completedAt"] = json!(now());
-                    self.inner.catalogue.put("job", id, job)?;
+                for attempt in 0..4 {
+                    let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
+                    let mut latest = batch.get("job", id)?.ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                    if !matches!(latest["state"].as_str(), Some("queued" | "running")) { break; }
+                    latest["state"] = json!("cancelled");
+                    latest["updatedAt"] = json!(now());
+                    latest["completedAt"] = json!(now());
+                    batch.stage("job", id, latest)?;
+                    if batch.try_commit()?.is_some() { break; }
+                    ensure!(attempt < 3, "CONCURRENT_UPDATE");
                 }
                 self.changed(app, Some(id));
                 Ok(json!({"jobId":id}))
@@ -496,7 +502,7 @@ impl BoothService {
                 let key = job["accountId"]
                     .as_str()
                     .map(|id| format!("account:{id}"))
-                    .unwrap_or_else(|| "booth-global".into());
+                    .unwrap_or_else(|| if job["args"]["publicOnly"] == true { format!("booth-public:{id}") } else { "booth-global".into() });
                 if self
                     .inner
                     .running
@@ -526,16 +532,42 @@ impl BoothService {
                     .as_array()
                     .or_else(|| args["ids"].as_array())
                     .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))?;
-                let ids: Vec<_> = ids.iter().filter_map(Value::as_str).collect();
-                if ids.is_empty() || ids.iter().any(|id| !safety::numeric(id)) {
-                    bail!("INVALID_PRODUCT_IDS");
+                let ids: BTreeSet<String> = ids.iter().map(|value| {
+                    value.as_str().filter(|id| safety::numeric(id)).map(str::to_owned)
+                        .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_IDS"))
+                }).collect::<Result<_>>()?;
+                ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
+                let mut jobs = Vec::new();
+                for scope in self.update_scopes(&ids)? {
+                    let job = self.make_job("boothUpdate", scope)?;
+                    self.spawn_job(app.clone(), job.clone())?;
+                    jobs.push(job["id"].clone());
                 }
-                let job = self.make_job("boothUpdate", json!({"productIds":ids}))?;
-                self.spawn_job(app.clone(), job.clone())?;
-                Ok(json!({"jobId":job["id"]}))
+                Ok(json!({"jobId":jobs.first(),"jobIds":jobs}))
             }
             _ => bail!("UNKNOWN_BOOTH_ACTION"),
         }
+    }
+    fn update_scopes(&self, ids: &BTreeSet<String>) -> Result<Vec<Value>> {
+        let mut sources = self.inner.catalogue.list("entitlement")?;
+        sources.extend(self.inner.catalogue.list("acquisition")?.into_iter()
+            .filter(|row| row["source"] == "free"));
+        let mut accounts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut owned = BTreeSet::new();
+        for source in sources {
+            let (Some(product), Some(account)) = (source["productId"].as_str(), source["accountId"].as_str()) else { continue };
+            if ids.contains(product) && self.known_account(account).is_ok() {
+                accounts.entry(account.into()).or_default().insert(product.into());
+                owned.insert(product.to_owned());
+            }
+        }
+        let mut scopes: Vec<_> = accounts.into_iter()
+            .map(|(account, products)| json!({"accountId":account,"productIds":products})).collect();
+        let public: Vec<_> = ids.difference(&owned).cloned().collect();
+        if !public.is_empty() {
+            scopes.push(json!({"productIds":public,"publicOnly":true}));
+        }
+        Ok(scopes)
     }
     fn make_job(&self, kind: &str, args: Value) -> Result<Value> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -554,7 +586,7 @@ impl BoothService {
         let key = job["accountId"]
             .as_str()
             .map(|a| format!("account:{a}"))
-            .unwrap_or_else(|| "booth-global".into());
+            .unwrap_or_else(|| if job["args"]["publicOnly"] == true { format!("booth-public:{id}") } else { "booth-global".into() });
         {
             let mut running = self
                 .inner
@@ -634,7 +666,7 @@ impl BoothService {
             let _work = work;
             // Accounts of this store share one execution queue. Other providers
             // own independent gates and continue concurrently.
-            let _execution = service.inner.execution.lock().await;
+            let _execution = if job["type"] == "boothLogin" { None } else { Some(service.inner.execution.lock().await) };
             crate::support::begin_attempt(&mut job);
             let (result, diagnostics) = crate::support_trace::capture(async {
                 crate::support_trace::job_stage(&job);
@@ -674,7 +706,7 @@ impl BoothService {
             }
             if job["type"] == "boothLogin" {
                 if let Some(account) = job["accountId"].as_str() {
-                    let _ = service.inner.catalogue.discard_unverified_account(account);
+                    let _ = crate::stores::session::discard_unverified_account(&service.inner.catalogue, crate::stores::StoreProvider::Booth, account);
                 }
                 if service.inner.catalogue.get("job", &id).ok().flatten()
                     .is_some_and(|terminal| terminal["state"] == "completed")
@@ -938,24 +970,31 @@ impl BoothService {
                                     let mut account = batch
                                         .get("account", &id)?
                                         .ok_or_else(|| anyhow::anyhow!("ACCOUNT_UNAVAILABLE"))?;
+                                    let unverified = account["identityVerified"] != true
+                                        && account["authenticatedAt"].as_str().is_none_or(str::is_empty)
+                                        && account["identityHash"].as_str().is_none_or(str::is_empty);
+                                    crate::stores::session::remember(
+                                        window.clone(), &self.inner.catalogue.device_dir(),
+                                        crate::stores::StoreProvider::Booth, &id,
+                                    ).await?;
+                                    if app.get_webview_window(window.label()).is_none() {
+                                        if unverified { crate::stores::session::forget(&self.inner.catalogue.device_dir(), crate::stores::StoreProvider::Booth, &id)?; }
+                                        bail!("CANCELLED");
+                                    }
                                     account["disconnected"] = json!(false);
                                     account["state"] = json!("connected");
                                     account["status"] = json!("connected");
                                     account["authenticatedAt"] = json!(now());
                                     batch.stage("account", &id, account)?;
-                                    if batch.try_commit()?.is_none() {
-                                        if self.cancelled(job)? {
-                                            bail!("CANCELLED");
+                                    match batch.try_commit() {
+                                        Ok(Some(_)) => {}
+                                        result => {
+                                            if unverified { crate::stores::session::forget(&self.inner.catalogue.device_dir(), crate::stores::StoreProvider::Booth, &id)?; }
+                                            result?;
+                                            if self.cancelled(job)? { bail!("CANCELLED"); }
+                                            bail!("CONCURRENT_UPDATE");
                                         }
-                                        bail!("CONCURRENT_UPDATE");
                                     }
-                                    crate::stores::session::remember(
-                                        window.clone(),
-                                        &self.inner.catalogue.device_dir(),
-                                        crate::stores::StoreProvider::Booth,
-                                        &id,
-                                    )
-                                    .await?;
                                     return Ok(());
                                 }
                                 Err(error) => {

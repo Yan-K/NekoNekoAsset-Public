@@ -276,6 +276,32 @@ impl StorageService {
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone()
     }
+    fn cancel_job(&self, id: &str) -> Result<Value> {
+        loop {
+            let before = self.catalogue.get("job", id)?
+                .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
+            ensure!(before["type"] == "download"
+                || before["type"].as_str().is_some_and(|t| t.starts_with("storage:")),
+                "invalid_job");
+            if !matches!(before["state"].as_str(), Some("queued" | "running")) {
+                return Ok(json!({"cancelRequested":false}));
+            }
+            let mut job = before.clone();
+            job["cancelRequested"] = json!(true);
+            job["updatedAt"] = json!(now());
+            if job["state"] == "queued" {
+                job["state"] = json!("cancelled");
+                job["errorCode"] = Value::Null;
+            }
+            if self.catalogue.put_many_if_unchanged(
+                vec![("job".into(), id.to_owned(), job)],
+                vec![("job".into(), id.to_owned(), Some(before))],
+            )? {
+                self.cancellation(id).store(true, Ordering::Release);
+                return Ok(json!({"cancelRequested":true}));
+            }
+        }
+    }
     fn remote_files(&self, product: &str) -> Result<(Vec<Value>, bool)> {
         if let Some(source) = self
             .catalogue
@@ -622,7 +648,8 @@ impl StorageService {
         let active: Vec<_> = jobs
             .iter()
             .filter(|j| {
-                j["type"] == "download" && matches!(j["state"].as_str(), Some("queued" | "running"))
+                j["type"] == "download" && j["cancelRequested"] != true
+                    && matches!(j["state"].as_str(), Some("queued" | "running"))
             })
             .collect();
         let mut writes = Vec::new();
@@ -728,6 +755,7 @@ impl StorageService {
                     | "open_product_folder"
                     | "open_file"
                     | "open_root_folder"
+                    | "cancel_job"
             ) {
             None
         } else {
@@ -741,25 +769,7 @@ impl StorageService {
             "enqueue_file" => self.enqueue_file(&args).await,
             "cancel_job" => {
                 let id = io::required_string(&args, "jobId")?;
-                let mut job = self
-                    .catalogue
-                    .get("job", id)?
-                    .ok_or_else(|| anyhow::anyhow!("job_missing"))?;
-                ensure!(
-                    job["type"] == "download"
-                        || job["type"]
-                            .as_str()
-                            .is_some_and(|t| t.starts_with("storage:")),
-                    "invalid_job"
-                );
-                job["cancelRequested"] = json!(true);
-                self.cancellation(id).store(true, Ordering::Release);
-                if job["state"] == "queued" {
-                    self.put_job(&mut job, "cancelled", None)?;
-                } else {
-                    self.catalogue.put("job", id, job)?;
-                }
-                Ok(json!({"cancelRequested":true}))
+                self.cancel_job(id)
             }
             "retry_job" | "retry_file" => {
                 let mut retry = args.clone();

@@ -4,7 +4,11 @@ use anyhow::{anyhow, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{path::Path, sync::Mutex};
+use std::{
+    ops::{Deref, DerefMut},
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard},
+};
 
 pub const BUILTINS: [&str; 7] = [
     "chat",
@@ -82,13 +86,20 @@ pub struct ChatMessage {
     pub response: Option<Value>,
 }
 pub struct ChatStore {
-    connection: Mutex<Connection>,
+    path: PathBuf,
+    connection: Mutex<Option<Connection>>,
 }
 impl ChatStore {
     pub fn new(profile: &Path) -> Result<Self> {
-        let path = profile.join("ai-chat.sqlite3");
-        crate::preview::no_links(&path)?;
-        let conn = Connection::open(path).context("ai_chat_storage")?;
+        // Optional chat storage must not prevent the asset library from opening.
+        Ok(Self {
+            path: profile.join("ai-chat.sqlite3"),
+            connection: Mutex::new(None),
+        })
+    }
+    fn open(&self) -> Result<Connection> {
+        crate::preview::no_links(&self.path)?;
+        let conn = Connection::open(&self.path).context("ai_chat_storage")?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,preset_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,system_prompt TEXT NOT NULL,title_edited INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS messages(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,request_id TEXT NOT NULL,body TEXT NOT NULL);
@@ -98,14 +109,17 @@ impl ChatStore {
             CREATE TABLE IF NOT EXISTS personalization(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
             UPDATE messages SET body=json_set(body,'$.status','cancelled') WHERE request_id IN(SELECT request_id FROM request_logs WHERE status='pending');
             UPDATE request_logs SET status='cancelled',error_code='ai_cancelled' WHERE status='pending';").context("ai_chat_storage")?;
-        Ok(Self {
-            connection: Mutex::new(conn),
-        })
+        Ok(conn)
     }
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
-        self.connection
+    fn lock(&self) -> Result<ChatConnection<'_>> {
+        let mut connection = self
+            .connection
             .lock()
-            .map_err(|_| anyhow!("ai_chat_storage"))
+            .map_err(|_| anyhow!("ai_chat_storage"))?;
+        if connection.is_none() {
+            *connection = Some(self.open()?);
+        }
+        Ok(ChatConnection(connection))
     }
     pub fn workspace(&self) -> Result<Value> {
         let conn = self.lock()?;
@@ -508,6 +522,23 @@ impl ChatStore {
         self.save_preset(value.preset)
     }
 }
+
+struct ChatConnection<'a>(MutexGuard<'a, Option<Connection>>);
+impl Deref for ChatConnection<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.0
+            .as_ref()
+            .expect("chat connection initialized under its lock")
+    }
+}
+impl DerefMut for ChatConnection<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.0
+            .as_mut()
+            .expect("chat connection initialized under its lock")
+    }
+}
 fn chat_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
     Ok(Chat {
         id: row.get(0)?,
@@ -608,6 +639,22 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         let store = ChatStore::new(&path).unwrap();
         (path, store)
+    }
+    #[test]
+    fn optional_chat_storage_opens_on_demand_and_retries_without_replacing_data() {
+        let (path, store) = fixture();
+        let database = path.join("ai-chat.sqlite3");
+        assert!(!database.exists());
+        std::fs::write(&database, b"authored corrupt chat database").unwrap();
+        assert!(store.workspace().is_err());
+        assert_eq!(
+            std::fs::read(&database).unwrap(),
+            b"authored corrupt chat database"
+        );
+        std::fs::remove_file(&database).unwrap();
+        assert_eq!(store.workspace().unwrap()["chats"], json!([]));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn durable_history_memory_and_delete_remove_images_and_logs() {

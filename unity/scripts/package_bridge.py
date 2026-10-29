@@ -12,6 +12,7 @@ import io
 import json
 from pathlib import Path
 import re
+import subprocess
 import tarfile
 import zipfile
 
@@ -33,10 +34,22 @@ def source_inventory(source: Path) -> tuple[dict, list[dict]]:
         raise ValueError("Unexpected package identity")
     entries = []
     guids = set()
+    tracked = None
+    repository = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=source,
+                                capture_output=True, check=False)
+    if repository.returncode == 0:
+        inventory = subprocess.run(["git", "ls-files", "-z", "--", "."], cwd=source,
+                                   capture_output=True, check=True)
+        tracked = set(inventory.stdout.decode("utf-8").split("\0")) - {""}
+        for relative in tracked:
+            if not (source / relative).is_file():
+                raise ValueError(f"Tracked package input missing: {relative}")
     for path in sorted(source.rglob("*"), key=lambda value: value.as_posix()):
+        rel = path.relative_to(source).as_posix()
+        if tracked is not None and rel not in tracked and not any(name.startswith(rel + "/") for name in tracked):
+            continue
         if path.is_symlink():
             raise ValueError(f"Symlink is not allowed: {path.relative_to(source)}")
-        rel = path.relative_to(source).as_posix()
         if rel.endswith(".meta"):
             if not path.with_suffix("").exists():
                 raise ValueError(f"Orphan meta: {rel}")

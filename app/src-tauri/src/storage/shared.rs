@@ -20,6 +20,11 @@ impl StorageService {
             !source.starts_with(&destination) && !destination.starts_with(&source),
             "storage.migration_overlapping_roots"
         );
+        // Reject unrelated contents before acquiring a lock can create its marker.
+        // copy_into_locked_root rechecks under the destination lock.
+        for entry in std::fs::read_dir(&destination)? {
+            ensure!(entry?.file_name() == ".nna-library.lock", "storage.destination_not_fresh");
+        }
         let destination_lock = Arc::new(LibraryLock::acquire(&destination)?);
         let mut payload = self.payload(None, None, false)?;
         for item in &mut payload {
@@ -177,6 +182,28 @@ mod tests {
                 .to_string(),
             "local_source_required"
         );
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn shared_move_rejects_unrelated_contents_without_creating_a_lock_marker() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target")
+            .join(format!("shared-move-refused-{}", uuid::Uuid::new_v4()));
+        let source = fixture.join("source");
+        let destination = fixture.join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("unrelated.txt"), b"human-owned bytes").unwrap();
+        let catalogue = Catalogue::open_bound(&source, &fixture.join("profile")).unwrap();
+        let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
+        let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
+        let service = StorageService::new(catalogue.clone(), stores).unwrap();
+        assert!(service.move_library(&json!({"path":destination}), &AtomicBool::new(false)).is_err());
+        assert!(!destination.join(".nna-library.lock").exists());
+        assert_eq!(std::fs::read(destination.join("unrelated.txt")).unwrap(), b"human-owned bytes");
+        drop(catalogue.begin_catalogue_work().unwrap());
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(fixture).unwrap();

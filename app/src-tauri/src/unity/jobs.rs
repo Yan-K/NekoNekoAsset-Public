@@ -37,6 +37,13 @@ fn terminal(phase: &str) -> bool {
 }
 
 impl RequestRecord {
+    pub(crate) fn snapshot_cleanup_proved(&self) -> bool {
+        !self.bytes_started
+            || self.payload_rejected
+            || self.receipt.as_ref().is_some_and(|receipt| {
+                receipt["staged"] == true || terminal(receipt["stage"].as_str().unwrap_or(""))
+            })
+    }
     fn validate(&self) -> Result<()> {
         ensure!(
             uuid::Uuid::parse_str(&self.request_id).is_ok()
@@ -349,12 +356,7 @@ impl RequestStore {
                 Ok(record)
                     if !self.is_local(&record)
                         || record.snapshot_removed
-                        || (record.bytes_started
-                            && !record.payload_rejected
-                            && !record
-                                .receipt
-                                .as_ref()
-                                .is_some_and(|receipt| receipt["staged"] == true)) =>
+                        || !record.snapshot_cleanup_proved() =>
                 {
                     None
                 }
@@ -515,6 +517,31 @@ mod tests {
         drop(returned_store);
         drop(returned);
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn terminal_receipts_allow_snapshot_cleanup_without_a_staged_ack() {
+        let fixture = Fixture::new();
+        let c = fixture.open();
+        let store = RequestStore::new(c.clone());
+        for stage in ["cancelled", "failed", "interrupted", "completed"] {
+            let mut r = record();
+            freeze(&mut r);
+            r.bytes_started = true;
+            store.create(&r).unwrap();
+            assert!(!r.snapshot_cleanup_proved());
+            r.phase = stage.into();
+            let mut proof = receipt(&r, stage);
+            proof["staged"] = json!(false);
+            r.receipt = Some(proof);
+            store.update(&r).unwrap();
+            assert!(r.snapshot_cleanup_proved());
+        }
+        assert_eq!(store.cleanup_pending().unwrap().len(), 4);
+        drop(store);
+        drop(c);
+        let reopened = RequestStore::new(fixture.open());
+        assert_eq!(reopened.cleanup_pending().unwrap().len(), 4);
     }
 
     #[test]

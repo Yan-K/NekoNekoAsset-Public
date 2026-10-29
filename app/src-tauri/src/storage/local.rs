@@ -343,6 +343,7 @@ fn local_error(error: &anyhow::Error) -> &'static str {
         "local_source_changed",
         "local_import_too_many_files",
         "local_batch_requires_folder_or_zip",
+        "local_membership_changed",
         "unsafe_link",
     ] {
         if error.to_string().contains(code) {
@@ -1091,7 +1092,16 @@ impl StorageService {
         let plan: LocalPlan = serde_json::from_value(job["localPlan"].clone())?;
         let root = self.root(job["rootId"].as_str())?;
         let root_path = self.root_path(&root)?;
+        let mut first_error = None;
+        let mut failures = Vec::new();
         for (index, group) in plan.groups.iter().enumerate() {
+            let completed = job["completedGroupIndexes"]
+                .as_array()
+                .is_some_and(|a| a.contains(&json!(index)));
+            if completed && !group.membership && plan.groups.len() > 1 {
+                continue;
+            }
+            let outcome = (|| -> Result<()> {
             if let Some(product) = self.catalogue.get("product", &group.product_id)? {
                 let current = product["localManifest"]["lastMutationId"].as_str();
                 if group.membership {
@@ -1104,14 +1114,13 @@ impl StorageService {
                     ensure!(current.is_none(), "local_membership_changed");
                 }
             }
-            if job["completedGroupIndexes"]
-                .as_array()
-                .is_some_and(|a| a.contains(&json!(index)))
-            {
+            if completed {
+                // Membership cleanup must still be bound to its captured
+                // mutation. A later membership edit invalidates this replay.
                 if group.membership {
                     self.cleanup_removed_local(group)?;
                 }
-                continue;
+                return Ok(());
             }
             io::check_cancel(cancel)?;
             for directory in &group.directories {
@@ -1374,8 +1383,17 @@ impl StorageService {
                 }
                 let _ = fs::remove_dir(io::safe_join(&root_path, &group.prefix)?);
             }
+            Ok(())
+            })();
+            if let Err(error) = outcome {
+                let code = local_error(&error);
+                if code == "cancelled" { return Err(error); }
+                failures.push(json!({"groupIndex":index,"productId":group.product_id,"errorCode":code}));
+                first_error.get_or_insert(error);
+            }
         }
-        job["result"] = json!({"productIds":job["productIds"],"completedProductIds":job["completedProductIds"]});
+        job["result"] = json!({"productIds":job["productIds"],"completedProductIds":job["completedProductIds"],"failedGroups":failures});
+        if let Some(error) = first_error { return Err(error); }
         Ok(())
     }
 

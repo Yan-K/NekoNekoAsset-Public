@@ -1,5 +1,36 @@
 use super::*;
 
+#[test]
+fn cancellation_during_restore_and_after_completion_preserves_terminal_facts() {
+    let f = Fixture::new();
+    let running = json!({"id":"restore","type":"storage:restore_backup","state":"running"});
+    let permit = f.service.catalogue.begin_restore_work().unwrap();
+    f.service.catalogue.put("job", "restore", running).unwrap();
+    assert_eq!(f.service.cancel_job("restore").unwrap()["cancelRequested"], true);
+    assert!(f.service.cancellation("restore").load(Ordering::Acquire));
+    assert_eq!(f.service.catalogue.get("job", "restore").unwrap().unwrap()["state"], "running");
+    let completed = json!({"id":"restore","type":"storage:restore_backup","state":"completed","result":{"restoredFiles":3}});
+    f.service.catalogue.put("job", "restore", completed.clone()).unwrap();
+    assert_eq!(f.service.cancel_job("restore").unwrap()["cancelRequested"], false);
+    assert_eq!(f.service.catalogue.get("job", "restore").unwrap().unwrap(), completed);
+    drop(permit);
+}
+
+#[tokio::test]
+async fn a_cancelling_download_does_not_absorb_an_explicit_new_request() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    let first = f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    let first_id = first["jobIds"][0].as_str().unwrap();
+    let mut running = f.service.catalogue.get("job", first_id).unwrap().unwrap();
+    running["state"] = json!("running");
+    f.service.catalogue.put("job", first_id, running).unwrap();
+    f.service.cancel_job(first_id).unwrap();
+    let next = f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    assert_ne!(next["jobIds"][0], first["jobIds"][0]);
+    assert_eq!(f.service.catalogue.list("job").unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn stale_automatic_enqueue_rechecks_removed_or_disconnected_accounts_after_queue_pause() {
     for action in ["remove-keep", "disconnect", "remove-products"] {
@@ -705,6 +736,53 @@ fn local_import_batch_failure_keeps_prior_group_completed_and_managed_archive_or
         )
         .is_err());
     assert_eq!(job["completedProductIds"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn local_import_batch_failure_does_not_block_later_groups_or_recheck_completed_membership() {
+    let f = Fixture::new();
+    let archive = f.path.join("a-corrupt.zip");
+    let folder_b = f.path.join("b-folder");
+    let folder_c = f.path.join("c-folder");
+    std::fs::write(&archive, b"authored invalid archive").unwrap();
+    for (folder, bytes) in [(&folder_b, b"independent B"), (&folder_c, b"independent C")] {
+        std::fs::create_dir(folder).unwrap();
+        std::fs::write(folder.join("model.unitypackage"), bytes).unwrap();
+    }
+    let mut job = local_job(&f, &[archive, folder_b, folder_c], "batch");
+    let run = |job: &mut Value| f.service.run_local_import(job, Path::new("missing-synthetic-sevenzip"), &AtomicBool::new(false));
+    assert_eq!(io::stable_error(&run(&mut job).unwrap_err()), "archive_tool_unavailable");
+    assert_eq!(job["completedGroupIndexes"], json!([1, 2]));
+    assert_eq!(job["completedProductIds"].as_array().unwrap().len(), 2);
+    assert_eq!(job["result"]["failedGroups"].as_array().unwrap().len(), 1);
+    for index in [1, 2] {
+        let id = job["productIds"][index].as_str().unwrap();
+        let mut product = f.service.catalogue.get("product", id).unwrap().unwrap();
+        product["localManifest"]["lastMutationId"] = json!("later-user-membership-change");
+        f.service.catalogue.put("product", id, product.clone()).unwrap();
+        assert_eq!(f.service.catalogue.related("artifact", id).unwrap()[0]["status"], "ready");
+    }
+    assert_eq!(io::stable_error(&run(&mut job).unwrap_err()), "archive_tool_unavailable");
+    assert_eq!(job["result"]["failedGroups"].as_array().unwrap().len(), 1);
+    assert_eq!(job["completedProductIds"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+#[cfg_attr(not(windows), ignore = "requires explicit NNA_7ZIP on non-Windows")]
+fn local_import_preserves_leading_space_names_in_an_archive_with_trailing_data() {
+    let f = Fixture::new();
+    let source = f.path.join("authored-leading-space.zip");
+    let mut bytes = authored_zip(&[(" leading.txt", b"literal space"), ("nested/ inner.txt", b"nested space")]);
+    bytes.extend_from_slice(b"authored harmless trailing data");
+    std::fs::write(&source, &bytes).unwrap();
+    let mut job = local_job(&f, &[source.clone()], "single");
+    f.service.run_local_import(&mut job, &native_seven_zip_test_tool(), &AtomicBool::new(false)).unwrap();
+    let artifact = &f.service.catalogue.related("artifact", job["productIds"][0].as_str().unwrap()).unwrap()[0];
+    assert_eq!(artifact["status"], "ready");
+    let extracted = io::safe_join(&f.path.join("library"), artifact["extractedPath"].as_str().unwrap()).unwrap();
+    assert_eq!(std::fs::read(extracted.join(" leading.txt")).unwrap(), b"literal space");
+    assert_eq!(std::fs::read(extracted.join("nested/ inner.txt")).unwrap(), b"nested space");
+    assert_eq!(std::fs::read(source).unwrap(), bytes);
 }
 
 #[test]
@@ -3255,6 +3333,38 @@ fn full_backup_restore_preserves_files_empty_dirs_media_and_human_metadata() {
         .unwrap();
     assert_eq!(restored["status"], "ready");
     assert_eq!(restored["originalAvailable"], true);
+}
+
+#[test]
+fn backup_export_refuses_missing_current_or_conflict_thumbnail_payloads() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    f.artifact(0);
+    f.service.catalogue.put("overlay", "42", json!({"id":"42","thumbnailPath":"media/missing.png"})).unwrap();
+    let backup = f.path.join("missing-media.zip");
+    let error = f.service.disk_operation("export_backup", &json!({"path":backup}), &AtomicBool::new(false)).unwrap_err();
+    assert!(error.to_string().contains("backup_payload_missing"));
+    assert!(!backup.exists());
+    let mut manifest = f.service.catalogue.manifest().unwrap();
+    manifest["records"]["overlay"][0].as_object_mut().unwrap().remove("thumbnailPath");
+    manifest["media"] = json!(["media/retained-conflict.png"]);
+    assert!(f.service.backup_payload(&manifest).is_err());
+}
+
+#[test]
+fn backup_export_uses_captured_artifacts_after_the_live_records_change() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    let artifact = f.artifact(0);
+    let manifest = f.service.catalogue.manifest().unwrap();
+    f.service.catalogue.delete("artifact", artifact["id"].as_str().unwrap()).unwrap();
+    let payload = f.service.backup_payload(&manifest).unwrap();
+    assert_eq!(payload.len(), 1);
+    let backup = f.path.join("captured-backup.zip");
+    portable::create_backup(&backup, manifest, &payload, &AtomicBool::new(false)).unwrap();
+    let restored = portable::restore_backup(&backup, &f.path.join("captured-restore"), &AtomicBool::new(false)).unwrap();
+    assert_eq!(restored.payload.len(), 1);
+    assert_eq!(restored.catalogue["records"]["artifact"][0], artifact);
 }
 
 #[test]

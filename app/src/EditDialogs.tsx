@@ -59,7 +59,7 @@ export async function exportThemeConfig(tokens: Record<string,string>, name = ''
   const normalized = Object.fromEntries(Object.entries(tokens).map(([key,value])=>[key.replace(/^--/,''),value]));
   const config = {format:'NekoNekoAsset.Theme',version:1,name:name.trim(),tokens:normalized};
   config.tokens = parseThemeConfig(JSON.stringify(config));
-  const chosen = await dialog('save_file',{defaultPath:'NekoNekoAsset-theme.json',filters:[{name:'JSON',extensions:['json']}]});
+  const chosen = await dialog('save_file',{defaultName:'NekoNekoAsset-theme.json',filters:[{name:'JSON',extensions:['json']}]});
   if (!chosen) return false;
   await nativeFileAction('write_text',{path:chosen.path,text:JSON.stringify(config,null,2)});
   return true;
@@ -79,7 +79,9 @@ const sameTag = (left:string,right:string) => { const aliases=new Set(getAvatarA
 const focusable = (element: HTMLDivElement | null) => Array.from(element?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled):not([type=hidden]),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]') ?? []).filter(el => el.offsetParent !== null && !el.closest('[inert]'));
 const localFileName = (path:string) => path.replace(/[\\/]+$/,'').split(/[\\/]/).pop() || path;
 
-function DialogBody(p: EditDialogsProps) {
+function DialogBody(props: EditDialogsProps) {
+  const [target] = useState(()=>({active:props.active,selected:[...props.selected]}));
+  const p = {...props,...target};
   const L = (key: string) => editorText(p.locale, key);
   const active = p.active;
   // This editor is keyed by product. Background source/AI updates must not
@@ -87,8 +89,9 @@ function DialogBody(p: EditDialogsProps) {
   const opening = useRef(active).current;
   const offline=opening?.provider==='local';
   const batch = p.dialog === 'batch';
-  const openingBatch=useRef(batch?p.products.filter(item=>p.selected.includes(item.id)):[]).current;
-  const scoped = batch?openingBatch.map(item=>p.products.find(current=>current.id===item.id)??item):p.products.filter(item => p.selected.includes(item.id));
+  const productMap=useMemo(()=>new Map(p.products.map(item=>[item.id,item])),[p.products]);
+  const [openingBatch]=useState(()=>batch?p.selected.flatMap(id=>{const item=productMap.get(id);return item?[item]:[];}):[]);
+  const scoped = batch?openingBatch.map(item=>productMap.get(item.id)??item):p.selected.flatMap(id=>{const item=productMap.get(id);return item?[item]:[];});
   const allSuggestions = useMemo(()=>[...new Set([...(p.tagOptions??[]).map(option=>option.label),...p.products.flatMap(product=>[...getEffectiveTags(product),...(product.tagSuggestions??[]).map(option=>option.label)])])],[p.products,p.tagOptions]);
   const [title, setTitle] = useState(active?.title ?? '');
   const [sourceUrl,setSourceUrl]=useState(active?.sourceUrl??'');
@@ -107,11 +110,11 @@ function DialogBody(p: EditDialogsProps) {
   const chooseLocalFiles=async()=>{if(inFlight.current)return;try{const picked=await dialog('open_file',{multiple:true});if(picked&&alive.current&&!inFlight.current&&!confirmationOpen.current)appendLocalFiles(picked.paths??[picked.path]);}catch(error){if(alive.current)setError(errorCode(error));}};
   const returnToFileList=()=>requestAnimationFrame(()=>localFileList.current?.focus({preventScroll:true}));
   const [category, setCategory] = useState(batch ? '' : active?.category ?? 'NonVRChat');
-  const initialAvatarOptions=useRef(batch?productsAvatarOptions(scoped,p.avatarOptions??[]):opening?productAvatarOptions(opening,p.avatarOptions??[]):p.avatarOptions??[]).current;
+  const [initialAvatarOptions]=useState(()=>batch?productsAvatarOptions(scoped,p.avatarOptions??[]):opening?productAvatarOptions(opening,p.avatarOptions??[]):p.avatarOptions??[]);
   const avatarOptions=useMemo(()=>[...(p.avatarOptions??[]),...initialAvatarOptions.filter(option=>'legacyValue' in option)],[p.avatarOptions,initialAvatarOptions]);
-  const initialAvatarSelection=useRef(!batch&&opening?productAvatarSelection(opening,initialAvatarOptions):[]).current;
+  const [initialAvatarSelection]=useState(()=>!batch&&opening?productAvatarSelection(opening,initialAvatarOptions):[]);
   const [selectedAvatars,setSelectedAvatars]=useState(initialAvatarSelection);
-  const initialBatchAvatarSelections=useRef(Object.fromEntries(scoped.map(item=>[item.id,productAvatarSelection(item,initialAvatarOptions)]))).current;
+  const [initialBatchAvatarSelections]=useState(()=>Object.fromEntries(scoped.map(item=>[item.id,productAvatarSelection(item,initialAvatarOptions)])));
   const [batchAvatarSelections,setBatchAvatarSelections]=useState(initialBatchAvatarSelections);
   const batchAvatarEnabled=(id:string)=>scoped.length>0&&scoped.every(item=>batchAvatarSelections[item.id]?.includes(id));
   const batchAvatarMixed=(id:string)=>!batchAvatarEnabled(id)&&scoped.some(item=>batchAvatarSelections[item.id]?.includes(id));
@@ -391,8 +394,8 @@ function CollectionDialog(p:EditDialogsProps){
  const L=(key:string)=>editorText(p.locale,key);
  // Removing members from the active filter may change the library selection.
  // Keep this popup's targets fixed until it closes.
- const ids=useRef([...new Set(p.selected)]).current;
- const products=useRef(p.products.filter(product=>ids.includes(product.id))).current;
+ const [ids]=useState(()=>[...new Set(p.selected)]);
+ const [products]=useState(()=>{const selected=new Set(ids);return p.products.filter(product=>selected.has(product.id));});
  const [name,setName]=useState(''),[error,setError]=useState(''),[creating,setCreating]=useState(false);
  const inFlight=useRef(false),alive=useRef(true),box=useRef<HTMLDivElement>(null),close=useRef(p.onClose);close.current=p.onClose;
  useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
@@ -442,5 +445,5 @@ function ManagerDialog(p:EditDialogsProps){
   </div><footer className="modal-footer"><button type="button" disabled={busy&&!collections} onClick={requestClose}>{L('close')}</button></footer>
  </div></div>;
 }
-export function EditDialogs(props:EditDialogsProps){if(props.dialog==='collection')return <CollectionDialog {...props}/>;if(props.dialog==='manageCollections'||props.dialog==='manageSearches')return <ManagerDialog key={props.dialog} {...props}/>;if(!props.dialog||!['edit','batch','saveSearch','theme'].includes(props.dialog))return null;return <DialogBody key={`${props.dialog}/${props.active?.id??''}`} {...props}/>;}
+export function EditDialogs(props:EditDialogsProps){if(props.dialog==='collection')return <CollectionDialog {...props}/>;if(props.dialog==='manageCollections'||props.dialog==='manageSearches')return <ManagerDialog key={props.dialog} {...props}/>;if(!props.dialog||!['edit','batch','saveSearch','theme'].includes(props.dialog))return null;return <DialogBody key={props.dialog} {...props}/>;}
 export default EditDialogs;

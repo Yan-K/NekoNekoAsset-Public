@@ -87,11 +87,11 @@ impl MetadataHttp {
                         .and_then(|v| v.to_str().ok()),
                     std::time::SystemTime::now(),
                 );
+                self.defer(wait.max(Duration::from_secs(2u64.pow(attempt + 1))))
+                    .await;
                 if attempt == 2 || wait > Duration::from_secs(120) {
                     bail!("RATE_LIMITED");
                 }
-                self.defer(wait.max(Duration::from_secs(2u64.pow(attempt + 1))))
-                    .await;
                 continue;
             }
             return Ok(response);
@@ -169,12 +169,12 @@ impl MetadataHttp {
                         .and_then(|v| v.to_str().ok()),
                     std::time::SystemTime::now(),
                 );
-                if attempt == 2 || wait > Duration::from_secs(120) {
-                    bail!("RATE_LIMITED");
-                }
                 let wait = wait.max(Duration::from_secs(2u64.pow(attempt + 1)));
                 crate::support_trace::backoff(&url, wait);
                 self.defer(wait).await;
+                if attempt == 2 || wait > Duration::from_secs(120) {
+                    bail!("RATE_LIMITED");
+                }
                 continue;
             }
             if status.is_server_error() && attempt < 2 {
@@ -287,16 +287,21 @@ pub fn build_client(jar: Arc<reqwest::cookie::Jar>, download: bool) -> Result<Cl
             attempt.error("UNSAFE_REDIRECT")
         }
     });
-    Client::builder()
+    let builder = Client::builder()
         .cookie_provider(jar)
         .redirect(policy)
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(if download { 3600 } else { 45 }))
         .user_agent(concat!(
             "NekoNekoAsset/",
             env!("CARGO_PKG_VERSION"),
             " (Windows; private asset manager)"
-        ))
+        ));
+    let builder = if download {
+        builder.read_timeout(Duration::from_secs(60))
+    } else {
+        builder.timeout(Duration::from_secs(45))
+    };
+    builder
         .build()
         .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))
 }

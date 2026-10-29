@@ -11,6 +11,17 @@ fn ensure_account_idle(conn: &Connection, account: &str) -> Result<()> {
               AND (
                 json_extract(job.body,'$.accountId')=?1
                 OR (
+                  json_extract(job.body,'$.type')='boothUpdate'
+                  AND json_extract(job.body,'$.accountId') IS NULL
+                  AND coalesce(json_extract(job.body,'$.args.publicOnly'),0)<>1
+                  AND EXISTS(
+                    SELECT 1 FROM entities AS source
+                    WHERE source.kind IN ('acquisition','entitlement','remote_file')
+                      AND json_extract(source.body,'$.accountId')=?1
+                      AND EXISTS(SELECT 1 FROM json_each(job.body,'$.args.productIds') WHERE value=source.product_id)
+                  )
+                )
+                OR (
                   (json_extract(job.body,'$.type')='download' OR substr(json_extract(job.body,'$.type'),1,8)='storage:')
                   AND EXISTS(
                     SELECT 1 FROM entities AS source
@@ -51,6 +62,47 @@ fn account_sources(conn: &Connection, account: &str) -> Result<Vec<(String, Stri
 }
 
 impl Catalogue {
+    /// Remove superseded provider journals, retaining every current source and
+    /// in-flight run. Current cancellation/restart evidence remains reachable.
+    pub(crate) fn prune_store_checkpoints(&self, provider: &str, account: &str) -> Result<usize> {
+        ensure!(matches!(provider, "BOOTH" | "Gumroad") && !account.is_empty(), "catalogue.invalid_id");
+        self.mutate(|tx, projections| {
+            let mut statement = tx.prepare("SELECT id,body FROM entities WHERE kind='checkpoint' AND json_extract(body,'$.accountId')=?1")?;
+            let stored = statement.query_map([account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            let checkpoints: Vec<(String, Value)> = stored.into_iter().map(|(id, body)| Ok((id, serde_json::from_str(&body)?))).collect::<Result<_>>()?;
+            let mut keep = BTreeSet::new();
+            if provider == "BOOTH" {
+                for source in ["library", "purchase", "gift", "free"] {
+                    if let Some(value) = checkpoints.iter().find(|(id, _)| id == &format!("booth:{account}:{source}")).map(|(_, value)| value) {
+                        if let Some(run) = value["runId"].as_str() { keep.insert(run.to_owned()); }
+                    }
+                }
+            } else {
+                let current = format!("gumroad:{account}:library");
+                if let Some(run) = checkpoints.iter().find(|(id, _)| id == &current).and_then(|(_, value)| value["jobId"].as_str()) {
+                    keep.insert(run.to_owned());
+                }
+                let mut jobs = tx.prepare("SELECT id FROM entities WHERE kind='job' AND json_extract(body,'$.store')='Gumroad' AND json_extract(body,'$.accountId')=?1 AND json_extract(body,'$.state') IN ('queued','running')")?;
+                keep.extend(jobs.query_map([account], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+            }
+            let mut removed = 0;
+            for (id, value) in checkpoints {
+                let run = if provider == "BOOTH" && (id.starts_with("booth-page:") || id.starts_with("booth-product:")) {
+                    value["runId"].as_str()
+                } else if provider == "Gumroad" && value["store"] == "Gumroad" && id.starts_with(&format!("gumroad:{account}:")) {
+                    if id.starts_with(&format!("gumroad:{account}:selected:")) { value["jobId"].as_str() } else { value["runId"].as_str() }
+                } else { None };
+                if run.is_some_and(|run| !keep.contains(run)) {
+                    Self::write(tx, projections, "checkpoint", &id, None)?;
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        })
+    }
+
     /// Provider preflight before clearing its device session. Removal repeats
     /// this same check inside its record transaction.
     pub fn require_account_idle(&self, id: &str) -> Result<()> {

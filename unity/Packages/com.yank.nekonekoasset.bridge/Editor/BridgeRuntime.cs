@@ -18,6 +18,7 @@ namespace NekoNekoAsset.Bridge
         private const string SessionKey = "NekoNekoAsset.Bridge.ProcessSession";
         private static readonly ConcurrentQueue<Action> MainActions = new ConcurrentQueue<Action>();
         private static readonly Dictionary<string, StoredBridgeRequest> Requests = new Dictionary<string, StoredBridgeRequest>(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> PendingTerminalSaves = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static BridgeRegistry registry;
         private static BridgeServer server;
         private static StoredBridgeRequest active;
@@ -94,6 +95,7 @@ namespace NekoNekoAsset.Bridge
                 // Authored batch verification keeps test discovery wholly within its owned workspace.
                 string testRegistry = Environment.GetEnvironmentVariable("NEKONEKOASSET_BRIDGE_TEST_REGISTRY");
                 if (Application.isBatchMode && !string.IsNullOrEmpty(testRegistry)) localRoot = Path.GetFullPath(testRegistry);
+                BridgeFiles.ConfigureTrustedRoots(root, localRoot);
                 registryPath = BridgeFiles.Under(Path.Combine(localRoot, "NekoNekoAsset", "UnityBridge", "instances"), session + ".json");
                 requestsRoot = BridgeFiles.Under(root, "Library/NekoNekoAssetBridge/requests");
                 Directory.CreateDirectory(requestsRoot);
@@ -112,6 +114,7 @@ namespace NekoNekoAsset.Bridge
             {
                 server?.Dispose();
                 server = null;
+                BridgeFiles.ClearTrustedRoots();
                 UnityEngine.Debug.LogError("NekoNekoAsset Bridge could not initialize its local storage/listener (" + error.GetType().Name + ").");
             }
         }
@@ -144,6 +147,12 @@ namespace NekoNekoAsset.Bridge
             if (EditorApplication.timeSinceStartup >= nextHeartbeat)
             {
                 nextHeartbeat = EditorApplication.timeSinceStartup + 2;
+                foreach (string id in PendingTerminalSaves.ToArray())
+                    if (Requests.TryGetValue(id, out StoredBridgeRequest pending) && SaveTerminal(pending))
+                    {
+                        if (!pending.receipt.writesStarted) TryCleanupInputs(pending);
+                        FinishImportResult(pending);
+                    }
                 try { Publish(); }
                 catch (IOException) { /* Discovery remains stale; never claim connection success. */ }
                 catch (UnauthorizedAccessException) { }
@@ -182,6 +191,19 @@ namespace NekoNekoAsset.Bridge
                 throw new InvalidDataException("Local receipt exceeds storage bound.");
             BridgeFiles.AtomicWrite(path, json);
             request.lastDurableJson = json;
+        }
+
+        private static bool SaveTerminal(StoredBridgeRequest request)
+        {
+            try
+            {
+                Save(request);
+                PendingTerminalSaves.Remove(request.receipt.requestId);
+                return true;
+            }
+            catch (IOException) { PendingTerminalSaves.Add(request.receipt.requestId); return false; }
+            catch (UnauthorizedAccessException) { PendingTerminalSaves.Add(request.receipt.requestId); return false; }
+            finally { if (active == request) active = null; }
         }
 
         private static bool Terminal(string stage) => stage == "completed" || stage == "cancelled" || stage == "failed" || stage == "interrupted";
@@ -394,16 +416,16 @@ namespace NekoNekoAsset.Bridge
             request.preparedSnapshot = null;
             request.preparedPreview = null;
             request.receipt.stage = "cancelled";
-            Save(request);
+            bool durable = SaveTerminal(request);
             server?.CancelTransfer(request.receipt.requestId);
-            if (active == request)
+            if (review != null && active == null)
             {
                 active = null;
                 var pending = review;
                 review = null;
                 pending?.CancelPending();
             }
-            if (request.receipt.staged) TryCleanupInputs(request);
+            if (durable && request.receipt.staged) TryCleanupInputs(request);
             Publish();
         }
 
@@ -414,12 +436,11 @@ namespace NekoNekoAsset.Bridge
             request.preparedPreview = null;
             request.receipt.error = message;
             request.receipt.stage = "failed";
-            Save(request);
+            bool durable = SaveTerminal(request);
             // The receiver has closed its payload handles; preparation failures arrive
             // after the worker exits. Retain only durable dedupe and any applied-write recovery.
-            if (!request.receipt.writesStarted && !request.preparingReview) TryCleanupInputs(request);
-            ShowImportResult(request);
-            if (active == request) active = null;
+            if (durable && !request.receipt.writesStarted && !request.preparingReview) TryCleanupInputs(request);
+            if (durable) ShowImportResult(request);
             Publish();
         }
 

@@ -301,7 +301,11 @@ impl AiJobs {
         Ok(())
     }
     pub async fn cancel_all(self: &Arc<Self>, app: &tauri::AppHandle) -> Result<()> {
-        for job in self.catalogue.list("job")? {
+        let jobs = {
+            let _gate = self.enqueue_gate.lock().await;
+            self.catalogue.list("job")?
+        };
+        for job in jobs {
             if job["type"]
                 .as_str()
                 .is_some_and(|kind| kind.starts_with("ai:"))
@@ -391,10 +395,12 @@ impl AiJobs {
                 let completed: BTreeSet<String> =
                     serde_json::from_value(job["completedProductIds"].clone()).unwrap_or_default();
                 let ids: Vec<String> = serde_json::from_value(job["productIds"].clone())?;
-                let remaining: Vec<_> = ids
-                    .into_iter()
-                    .filter(|id| !completed.contains(id))
-                    .collect();
+                let mut remaining = vec![];
+                for id in ids {
+                    if !completed.contains(&id) && self.catalogue.get("product", &id)?.is_some() {
+                        remaining.push(id);
+                    }
+                }
                 // Empty is a global-organize intent only for an explicit Start,
                 // never for a fully applied cancelled/failed batch's Retry.
                 if remaining.is_empty() {
@@ -515,6 +521,7 @@ impl AiJobs {
             {
                 let _gate = self.enqueue_gate.lock().await;
                 ensure!(!*cancellation.borrow(), "ai_cancelled");
+                ensure!(self.catalogue.get("preferences", "app")?.is_some_and(|p| p["aiFeaturesEnabled"] == true), "ai_features_disabled");
                 self.save_job(app, &mut job, "running", None)?;
             }
             if mode == AiMode::Organize {
@@ -524,6 +531,7 @@ impl AiJobs {
                 for (index, product_id) in ids.iter().enumerate() {
                     ensure!(!*cancellation.borrow(), "ai_cancelled");
                     ensure!(self.catalogue.get("preferences", "app")?.is_some_and(|p| p["aiFeaturesEnabled"] == true), "ai_features_disabled");
+                    let prepared = async {
                     let snapshot = self.catalogue.collect_ai_metadata(product_id)?;
                     let mut input = selected_input(snapshot.input, &scopes)?;
                     if scopes.files {
@@ -546,6 +554,20 @@ impl AiJobs {
                         }
                         input = ai_analysis::normalize_input(input)?;
                     }
+                    Ok::<_, anyhow::Error>((snapshot.catalogue_fingerprint, snapshot.preview_fingerprint, input))
+                    }.await;
+                    let (catalogue_fingerprint, preview_fingerprint, mut input) = match prepared {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            let _gate = self.enqueue_gate.lock().await;
+                            ensure!(!*cancellation.borrow(), "ai_cancelled");
+                            ensure!(self.catalogue.get("preferences", "app")?.is_some_and(|p| p["aiFeaturesEnabled"] == true), "ai_features_disabled");
+                            job["failures"][product_id] = json!(safe_error(error));
+                            job["progress"] = json!((index + 1) * 100 / ids.len());
+                            self.save_job(app, &mut job, "running", None)?;
+                            continue;
+                        }
+                    };
                     // Cancellation during document reads must not start a paid
                     // request; if both futures are ready, cancellation wins.
                     ensure!(!*cancellation.borrow(), "ai_cancelled");
@@ -555,27 +577,29 @@ impl AiJobs {
                         _ = cancellation.changed() => Err(anyhow::anyhow!("ai_cancelled")),
                         result = async {
                             let image = if scopes.images {
-                                self.selected_preview(product_id, &snapshot.preview_fingerprint).await?
+                                self.selected_preview(product_id, &preview_fingerprint).await?
                             } else { None };
                             ensure!(image.is_some() || !input.title.trim().is_empty() || !input.source_tags.is_empty() || !input.description.trim().is_empty() || !input.files.is_empty(), if scopes.images { "ai_image_missing" } else { "ai_scope_empty" });
                             if let Some(image) = &image {
                                 add_preview_evidence(&mut input, image)?;
                             }
                             ensure!(!*request_cancellation.borrow(), "ai_cancelled");
+                            ensure!(self.catalogue.get("preferences", "app")?.is_some_and(|p| p["aiFeaturesEnabled"] == true), "ai_features_disabled");
                             self.ai.analyze_with_images_for_config(&input, image.as_slice(), &config).await
                                 .map(|output| (output, image.is_some()))
                         } => result,
                     };
                     let _gate = self.enqueue_gate.lock().await;
                     ensure!(!*cancellation.borrow(), "ai_cancelled");
+                    ensure!(self.catalogue.get("preferences", "app")?.is_some_and(|p| p["aiFeaturesEnabled"] == true), "ai_features_disabled");
                     match output.and_then(|(output, used_preview)| {
                         self.catalogue.publish_ai_analysis_with_preview(
                             product_id,
-                            &snapshot.catalogue_fingerprint,
+                            &catalogue_fingerprint,
                             &input,
                             &output,
                             &config.model,
-                            used_preview.then_some(snapshot.preview_fingerprint.as_str()),
+                            used_preview.then_some(preview_fingerprint.as_str()),
                         )
                     }) {
                         Ok(()) => {
@@ -660,7 +684,13 @@ impl AiJobs {
         let mut tags = BTreeSet::new();
         for id in &ids {
             ensure!(!*cancellation.borrow(), "ai_cancelled");
-            let snapshot = self.catalogue.collect_ai_metadata(id)?;
+            let snapshot = match self.catalogue.collect_ai_metadata(id) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    job["failures"][id] = json!(safe_error(error));
+                    continue;
+                }
+            };
             tags.extend(snapshot.input.source_tags.iter().cloned());
             snapshots.push((id, snapshot));
         }
@@ -668,6 +698,12 @@ impl AiJobs {
         let tags: Vec<_> = tags.into_iter().collect();
         let mut aliases = vec![];
         for batch in tags.chunks(128) {
+            ensure!(
+                self.catalogue
+                    .get("preferences", "app")?
+                    .is_some_and(|p| p["aiFeaturesEnabled"] == true),
+                "ai_features_disabled"
+            );
             if *cancellation.borrow() {
                 anyhow::bail!("ai_cancelled");
             }
@@ -693,6 +729,12 @@ impl AiJobs {
         for (index, (id, snapshot)) in snapshots.iter().enumerate() {
             let _gate = self.enqueue_gate.lock().await;
             ensure!(!*cancellation.borrow(), "ai_cancelled");
+            ensure!(
+                self.catalogue
+                    .get("preferences", "app")?
+                    .is_some_and(|p| p["aiFeaturesEnabled"] == true),
+                "ai_features_disabled"
+            );
             let relevant: Vec<TagAliasSuggestion> = aliases
                 .iter()
                 .filter(|a| snapshot.input.source_tags.contains(&a.from))
@@ -716,6 +758,7 @@ impl AiJobs {
             job["progress"] = json!((index + 1) * 100 / ids.len());
             self.save_job(app, job, "running", None)?;
         }
+        job["progress"] = json!(100);
         Ok(())
     }
 }

@@ -581,6 +581,7 @@ pub async fn submit(
     )
     .await?;
     if response.code != "accepted" {
+        let _ = timeout(STREAM_IDLE, stream.shutdown()).await;
         return Ok(response);
     }
     let receipt = response
@@ -620,6 +621,7 @@ pub async fn submit(
             .map_err(|_| anyhow!("UNITY_TIMEOUT"))?
             .map_err(|_| anyhow!("UNITY_SOURCE_CHANGED"))?;
         if extra != 0 || hex::encode(hash.finalize()) != entry.sha256 {
+            let _ = timeout(STREAM_IDLE, stream.shutdown()).await;
             return Err(anyhow!("UNITY_SOURCE_CHANGED"));
         }
     }
@@ -715,6 +717,18 @@ mod tests {
             writer.write_all(&bytes).await.unwrap();
             writer.shutdown().await.unwrap();
             assert!(read_frame(&mut reader).await.is_err());
+        }
+    }
+
+    #[test]
+    fn encoded_response_preserves_absent_preparation_counters() {
+        let registry = registry(9000);
+        let (request, _, _) = manifest(&registry, b"authored");
+        for code in ["accepted", "staged", "status"] {
+            let original = response(&registry, &request, code);
+            let encoded = serde_json::to_vec(&original).unwrap();
+            let decoded: BridgeResponse = serde_json::from_slice(&encoded).unwrap();
+            validate_response(&decoded, &registry, Some(&request)).unwrap();
         }
     }
 
@@ -880,6 +894,7 @@ mod tests {
                 hex::encode(Sha256::digest(&bytes))
             );
             write_frame(&mut socket, &staged).await.unwrap();
+            socket.shutdown().await.unwrap();
         });
         let result = submit(
             &registry,

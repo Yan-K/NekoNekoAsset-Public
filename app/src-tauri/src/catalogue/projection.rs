@@ -10,8 +10,42 @@ pub(super) struct ProjectionChanges {
     pub source_aliases: BTreeMap<String, BTreeSet<String>>,
     /// Optional transaction-local snapshot already needed to interpret tag edits.
     pub prepared_resolver: Option<crate::taxonomy::AvatarTagResolver>,
+    /// Batch-import membership is the only job relation not indexed by product.
+    /// Read it once per mutation, rather than scanning all history per product.
+    pub local_import_jobs: Option<Vec<Value>>,
 }
 impl ProjectionChanges {
+    fn prepare_jobs(&mut self, conn: &Connection) -> Result<()> {
+        if self.local_import_jobs.is_none() {
+            self.local_import_jobs = Some(local_import_jobs(conn)?);
+        }
+        Ok(())
+    }
+
+    pub fn refresh(&mut self, conn: &Connection, id: &str) -> Result<()> {
+        self.prepare_jobs(conn)?;
+        let changes = refresh_with_jobs(conn, id, self.local_import_jobs.as_deref().unwrap())?;
+        self.merge(changes);
+        Ok(())
+    }
+
+    pub fn refresh_local(
+        &mut self,
+        conn: &Connection,
+        id: &str,
+        files: &BTreeSet<String>,
+        roots_changed: bool,
+    ) -> Result<()> {
+        self.prepare_jobs(conn)?;
+        refresh_local(
+            conn,
+            id,
+            files,
+            roots_changed,
+            self.local_import_jobs.as_deref().unwrap(),
+        )
+    }
+
     pub fn merge(&mut self, other: Self) {
         self.tags.extend(other.tags);
         self.identities_changed |= other.identities_changed;
@@ -190,8 +224,9 @@ pub(super) fn bases(conn: &Connection) -> Result<Vec<Value>> {
 }
 pub(super) fn rebuild(conn: &Connection) -> Result<()> {
     conn.execute_batch("DELETE FROM products; DELETE FROM search_grams;")?;
+    let jobs = local_import_jobs(conn)?;
     for value in rows(conn, "product")? {
-        refresh(conn, text(&value, "id"))?;
+        refresh_with_jobs(conn, text(&value, "id"), &jobs)?;
     }
     Ok(())
 }
@@ -210,6 +245,7 @@ pub(super) fn reconcile_ready_badges(conn: &Connection) -> Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
     let tx = conn.unchecked_transaction()?;
+    let local_import_jobs = local_import_jobs(&tx)?;
     for (id, body, summary) in candidates {
         let mut product: Value = serde_json::from_str(&body)?;
         let Some(files) = product["files"].as_array() else {
@@ -218,7 +254,7 @@ pub(super) fn reconcile_ready_badges(conn: &Connection) -> Result<()> {
         if files.is_empty() || !files.iter().all(|file| text(file, "status") == "ready") {
             continue;
         }
-        let jobs = product_jobs(&tx, &id)?;
+        let jobs = product_jobs(&tx, &id, &local_import_jobs)?;
         update_status(&mut product, &jobs);
         if product["status"] != "ready" {
             continue;
@@ -271,15 +307,40 @@ fn file_job(job: &Value) -> bool {
     text(job, "type").contains("download") || text(job, "type") == "storage:import_local"
 }
 
-fn product_jobs(conn: &Connection, id: &str) -> Result<Vec<Value>> {
-    let mut statement = conn.prepare("SELECT body FROM entities WHERE kind='job' AND product_id=?1 AND (json_extract(body,'$.type')<>'storage:import_local' OR NOT EXISTS(SELECT 1 FROM json_each(body,'$.completedProductIds') WHERE value=?1)) UNION SELECT body FROM entities WHERE kind='job' AND json_extract(body,'$.type')='storage:import_local' AND EXISTS(SELECT 1 FROM json_each(body,'$.productIds') WHERE value=?1) AND NOT EXISTS(SELECT 1 FROM json_each(body,'$.completedProductIds') WHERE value=?1)")?;
+fn local_import_jobs(conn: &Connection) -> Result<Vec<Value>> {
+    // Keep large import plans out of the transaction-local status snapshot.
+    let mut statement = conn.prepare("SELECT json_object('id',id,'productId',product_id,'productIds',json_extract(body,'$.productIds'),'completedProductIds',json_extract(body,'$.completedProductIds'),'type',json_extract(body,'$.type'),'state',json_extract(body,'$.state'),'stage',json_extract(body,'$.stage'),'updatedAt',json_extract(body,'$.updatedAt'),'errorCode',json_extract(body,'$.errorCode')) FROM entities WHERE kind='job' AND json_extract(body,'$.type')='storage:import_local'")?;
     let bodies = statement
-        .query_map([id], |row| row.get::<_, String>(0))?
+        .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     bodies
         .into_iter()
         .map(|body| serde_json::from_str(&body).map_err(Into::into))
         .collect()
+}
+
+fn product_jobs(conn: &Connection, id: &str, local_import_jobs: &[Value]) -> Result<Vec<Value>> {
+    let mut statement = conn.prepare("SELECT body FROM entities WHERE kind='job' AND product_id=?1 AND (json_extract(body,'$.type')<>'storage:import_local' OR NOT EXISTS(SELECT 1 FROM json_each(body,'$.completedProductIds') WHERE value=?1))")?;
+    let bodies = statement
+        .query_map([id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut jobs: Vec<Value> = bodies
+        .into_iter()
+        .map(|body| serde_json::from_str(&body).map_err(Into::into))
+        .collect::<Result<_>>()?;
+    for job in local_import_jobs {
+        if strings(&job["productIds"])
+            .iter()
+            .any(|product| product == id)
+            && !strings(&job["completedProductIds"])
+                .iter()
+                .any(|product| product == id)
+            && !jobs.iter().any(|direct| direct["id"] == job["id"])
+        {
+            jobs.push(job.clone());
+        }
+    }
+    Ok(jobs)
 }
 
 pub(super) fn job_changes_product(before: Option<&Value>, after: Option<&Value>) -> bool {
@@ -350,11 +411,12 @@ fn update_status(product: &mut Value, jobs: &[Value]) {
 
 /// Local state never changes taxonomy, filename search or compatibility evidence.
 /// Keep their materialized values and update only affected file facts and badges.
-pub(super) fn refresh_local(
+fn refresh_local(
     conn: &Connection,
     id: &str,
     changed_files: &BTreeSet<String>,
     roots_changed: bool,
+    local_import_jobs: &[Value],
 ) -> Result<()> {
     let body: Option<String> = conn
         .query_row("SELECT body FROM products WHERE id=?1", [id], |row| {
@@ -487,7 +549,7 @@ pub(super) fn refresh_local(
             }
         }
     }
-    update_status(&mut product, &product_jobs(conn, id)?);
+    update_status(&mut product, &product_jobs(conn, id, local_import_jobs)?);
     let updated = serde_json::to_string(&product)?;
     if updated != body {
         conn.execute(
@@ -570,7 +632,16 @@ fn source_rows(
     result.retain(|(p, a), _| !a.is_empty() || !account_providers.contains(p));
     Ok(result.into_values().collect())
 }
+#[cfg(test)]
 pub(super) fn effective(conn: &Connection, id: &str) -> Result<Option<Value>> {
+    effective_with_jobs(conn, id, &local_import_jobs(conn)?)
+}
+
+fn effective_with_jobs(
+    conn: &Connection,
+    id: &str,
+    local_import_jobs: &[Value],
+) -> Result<Option<Value>> {
     let Some(source) = raw(conn, "product", id)? else {
         return Ok(None);
     };
@@ -595,7 +666,7 @@ pub(super) fn effective(conn: &Connection, id: &str) -> Result<Option<Value>> {
     {
         roots.insert(root, raw(conn, "root", root)?.unwrap_or(Value::Null));
     }
-    let jobs = product_jobs(conn, id)?;
+    let jobs = product_jobs(conn, id, local_import_jobs)?;
     let inference = category(&source);
     let mut p = source.clone();
     let provider = match normalized(if text(&source, "provider").is_empty() {
@@ -1011,10 +1082,19 @@ pub(super) fn resolver_tag_key(resolver: &crate::taxonomy::AvatarTagResolver, ta
     }
 }
 
+#[cfg(test)]
 pub(super) fn refresh(conn: &Connection, id: &str) -> Result<ProjectionChanges> {
+    refresh_with_jobs(conn, id, &local_import_jobs(conn)?)
+}
+
+fn refresh_with_jobs(
+    conn: &Connection,
+    id: &str,
+    local_import_jobs: &[Value],
+) -> Result<ProjectionChanges> {
     let previous = compact(conn, id)?;
     let mut changes = ProjectionChanges::default();
-    let Some(mut p) = effective(conn, id)? else {
+    let Some(mut p) = effective_with_jobs(conn, id, local_import_jobs)? else {
         if let Some(previous) = previous {
             changes.identities_changed = !identity_inputs(&previous).is_null();
             if changes.identities_changed {

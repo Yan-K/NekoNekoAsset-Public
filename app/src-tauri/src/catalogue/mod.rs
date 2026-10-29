@@ -2271,9 +2271,9 @@ impl Catalogue {
         }
         for id in affected {
             if full.contains(&id) {
-                projections.merge(projection::refresh(tx, &id)?);
+                projections.refresh(tx, &id)?;
             } else {
-                projection::refresh_local(tx, &id, &local_files, roots_changed)?;
+                projections.refresh_local(tx, &id, &local_files, roots_changed)?;
             }
         }
         Ok(())
@@ -2679,6 +2679,9 @@ impl Catalogue {
         changes: &mut projection::ProjectionChanges,
         affected: &mut BTreeSet<String>,
     ) -> Result<()> {
+        if kind == "job" && before.into_iter().chain(after).any(|job| job["type"] == "storage:import_local") {
+            changes.local_import_jobs = None;
+        }
         if kind == "job" && projection::job_changes_product(before, after) {
             for job in before.into_iter().chain(after) {
                 if job["type"] == "storage:import_local" {
@@ -2798,9 +2801,9 @@ impl Catalogue {
         }
         for p in affected {
             if matches!(kind, "job" | "artifact" | "root") && !ai_changed {
-                projection::refresh_local(tx, &p, &local_files, kind == "root")?;
+                projections.refresh_local(tx, &p, &local_files, kind == "root")?;
             } else {
-                projections.merge(projection::refresh(tx, &p)?);
+                projections.refresh(tx, &p)?;
             }
         }
         Ok(())
@@ -3088,30 +3091,19 @@ impl Catalogue {
                         after["ownedAvatars"] = json!(delta_resolver.as_ref().unwrap().apply(&current, delta)?);
                     }
                 }
-                // Removing a suggested source tag records a durable rejection.
+                // Only removing a tag present in the editor's projected list
+                // records a rejection. Hidden source/stale AI tags were never offered.
                 if let Some(tags) = patch.get("tags") {
-                    let source = raw(tx, "product", &id)?.unwrap();
+                    let body: String = tx.query_row(
+                        "SELECT body FROM products WHERE id=?1", [&id], |row| row.get(0),
+                    )?;
+                    let current: Value = serde_json::from_str(&body)?;
                     let kept: BTreeSet<_> = strings(tags)
                         .iter()
                         .map(|s| projection::resolver_tag_key(tag_resolver.as_ref().unwrap(), s))
                         .collect();
                     let mut rejected = strings(&after["rejectedTags"]);
-                    let mut offered = strings(source.get("sourceTags").unwrap_or(&source["tags"]));
-                    offered.extend(
-                        after["ai"]["analysis"]["tags"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|t| t["label"].as_str().map(str::to_owned)),
-                    );
-                    offered.extend(
-                        after["aiTagOrganization"]["aliases"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|a| a["to"].as_str().map(str::to_owned)),
-                    );
-                    for tag in offered {
+                    for tag in strings(&current["tags"]) {
                         if !kept.contains(&projection::resolver_tag_key(
                             tag_resolver.as_ref().unwrap(),
                             &tag,
@@ -3143,11 +3135,15 @@ impl Catalogue {
                 }
             }
             projections.prepared_resolver = tag_resolver;
+            if entries.is_empty() {
+                return Ok(json!({"ok":true,"changed":0}));
+            }
             let token = Uuid::new_v4().to_string();
             tx.execute(
                 "INSERT INTO undo(token,body) VALUES(?1,?2)",
                 params![token, serde_json::to_string(&entries)?],
             )?;
+            tx.execute("DELETE FROM undo WHERE rowid NOT IN(SELECT rowid FROM undo ORDER BY rowid DESC LIMIT 100)", [])?;
             Ok(json!({"ok":true,"token":token,"undoToken":token,"changed":entries.len()}))
         })
     }
@@ -3468,7 +3464,7 @@ impl Catalogue {
             }
         }
         for id in affected {
-            projections.merge(projection::refresh(tx, &id)?);
+            projections.refresh(tx, &id)?;
         }
         Ok(())
     }

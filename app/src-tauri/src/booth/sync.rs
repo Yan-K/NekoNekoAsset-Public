@@ -7,7 +7,7 @@ use super::{
     incremental::{Baseline, Tracker},
     metadata, now, parser, safety, BoothService,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -261,6 +261,11 @@ fn record_source_head(checkpoint: &mut Checkpoint, final_head: &parser::Page) {
         checkpoint.unresolved += 1;
         crate::support_trace::source_reason(&checkpoint.source, "SOURCE_HEAD_CHANGED", 1);
     }
+}
+fn source_local_failure(code: &str) -> bool {
+    matches!(code, "COLLECTOR_UNSUPPORTED" | "SOURCE_UNSUPPORTED" | "CHECKPOINT_INVALID"
+        | "NO_RECOGNIZED_ROWS" | "SOURCE_MARKER_UNKNOWN" | "DIGITAL_PROOF_UNPROVEN"
+        | "SOURCE_TRAVERSAL_LIMIT" | "METADATA_TOO_LARGE")
 }
 fn source_has_incomplete_product(
     checkpoint: &Checkpoint,
@@ -817,6 +822,7 @@ impl BoothService {
                                 || json!({"id":coverage_id,"accountId":account,"source":source}),
                             );
                         coverage["status"] = json!("incomplete");
+                        coverage["coverageComplete"] = json!(false);
                         coverage["errorCode"] = json!(super::code(&error));
                         coverage["updatedAt"] = json!(now());
                         self.inner
@@ -834,7 +840,14 @@ impl BoothService {
                                 .catalogue
                                 .put("account", account, account_record)?;
                         }
-                        return Err(error);
+                        if !source_local_failure(&super::code(&error)) {
+                            return Err(error);
+                        }
+                        incomplete = true;
+                        publications.unbound_sources.insert((account.into(), source.into()));
+                        let mut early = early.lock().map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+                        early.remaining_sources.remove(source);
+                        early.publications.unbound_sources.insert((account.into(), source.into()));
                     }
                 }
                 for (product, entries) in collected.products {
@@ -931,6 +944,8 @@ impl BoothService {
         let accounts: BTreeSet<String> = owned_sources
             .iter()
             .filter(|e| e["productId"].as_str().is_some_and(|p| ids.contains(p)))
+            .filter(|e| job["args"]["publicOnly"] != true
+                && job["accountId"].as_str().is_none_or(|account| e["accountId"] == account))
             .filter_map(|e| e["accountId"].as_str().map(str::to_owned))
             .collect();
         let owned_accounts_present = !accounts.is_empty();
@@ -1338,6 +1353,7 @@ impl BoothService {
             bail!("CHECKPOINT_INVALID");
         }
         self.save_checkpoint(&key, &checkpoint)?;
+        self.inner.catalogue.prune_store_checkpoints("BOOTH", account)?;
         let coverage_id = format!("{account}:{source}");
         if let Some((kind, id, value)) = source_coverage_record(
             selected,
@@ -2688,6 +2704,11 @@ impl BoothService {
                     // its certified facts already committed atomically.
                     continue;
                 }
+                if job["type"] == "boothUpdate" {
+                    ensure!(job["args"]["publicOnly"] != true, "ACCOUNT_UNAVAILABLE");
+                    ensure!(job["accountId"].as_str().is_none_or(|account| account == entry.account), "ACCOUNT_UNAVAILABLE");
+                    ensure!(batch.get("account", &entry.account)?.is_some_and(|account| account["store"] == "BOOTH"), "ACCOUNT_UNAVAILABLE");
+                }
                 if entry.needs_enrichment {
                     bail!("PUBLIC_METADATA_FAILED");
                 }
@@ -3969,6 +3990,43 @@ fn revision_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_source_local_failures_allow_other_source_scans_to_continue() {
+        for code in ["COLLECTOR_UNSUPPORTED", "SOURCE_UNSUPPORTED", "CHECKPOINT_INVALID",
+            "NO_RECOGNIZED_ROWS", "SOURCE_MARKER_UNKNOWN", "DIGITAL_PROOF_UNPROVEN",
+            "SOURCE_TRAVERSAL_LIMIT", "METADATA_TOO_LARGE"] {
+            assert!(source_local_failure(code));
+        }
+        for code in ["AUTH_REQUIRED", "AUTH_CHALLENGE", "PERMISSION_DENIED", "RATE_LIMITED",
+            "NETWORK_UNAVAILABLE", "NETWORK_TIMEOUT", "SOURCE_HTTP_FAILED", "CANCELLED",
+            "ACCOUNT_UNAVAILABLE", "CONCURRENT_UPDATE", "catalogue.lock"] {
+            assert!(!source_local_failure(code));
+        }
+    }
+    #[test]
+    fn selected_update_cannot_recreate_a_removed_accounts_grants() {
+        let path = std::env::temp_dir().join(format!("nna-booth-removed-account-{}", uuid::Uuid::new_v4()));
+        let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
+        let service = BoothService::new(catalogue.clone()).unwrap();
+        let account = "10000000-0000-4000-8000-000000000001";
+        let job = json!({"id":"authored-update","type":"boothUpdate","accountId":account,"state":"running","args":{"accountId":account,"productIds":["900001"]}});
+        catalogue.put("job", "authored-update", job.clone()).unwrap();
+        let entry = ProductPublication {
+            account:account.into(), source:"library".into(), product:"900001".into(),
+            rows:vec![], routes:BTreeMap::new(), draft:json!({"id":"900001"}),
+            files:BTreeSet::new(), checkpoint_key:"authored-source".into(),
+            force_verify:true, needs_enrichment:false,
+        };
+        let mut checkpoints = BTreeMap::from([("authored-source".to_owned(), Checkpoint::fresh(account, "library", "full").unwrap())]);
+        assert_eq!(service.commit_product_group_mode(&job, "900001", &[entry], &mut checkpoints, true).unwrap_err().to_string(), "ACCOUNT_UNAVAILABLE");
+        for kind in ["product", "acquisition", "entitlement", "remote_file"] {
+            assert!(catalogue.list(kind).unwrap().is_empty());
+        }
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[tokio::test]
     async fn source_diagnostics_keep_checked_journal_reasons_and_changed_head() {
         let page = parser::Page {

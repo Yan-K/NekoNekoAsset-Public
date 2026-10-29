@@ -143,6 +143,14 @@ pub fn forget(data_dir: &Path, provider: StoreProvider, account: &str) -> Result
     super::session_cache::clear(&profile_path(data_dir, provider, account)?)
 }
 
+/// Only a confirmed discarded draft loses its account-scoped snapshot. Other
+/// libraries' profiles and established accounts are never inferred as obsolete.
+pub(crate) fn discard_unverified_account(catalogue: &crate::catalogue::Catalogue, provider: StoreProvider, account: &str) -> Result<bool> {
+    let discarded = catalogue.discard_unverified_account(account)?;
+    if discarded { forget(&catalogue.device_dir(), provider, account)?; }
+    Ok(discarded)
+}
+
 /// Login polling must not recreate a window the human has closed.
 pub fn existing_window(
     app: &AppHandle,
@@ -408,6 +416,32 @@ pub async fn disconnect(window: WebviewWindow) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discarded_draft_clears_only_its_snapshot_and_retains_established_profiles() {
+        let root = std::env::temp_dir().join(format!("nna-authored-draft-cleanup-{}", uuid::Uuid::new_v4()));
+        let catalogue = crate::catalogue::Catalogue::open(&root).unwrap();
+        let draft = "10000000-0000-4000-8000-000000000001";
+        let established = "10000000-0000-4000-8000-000000000002";
+        catalogue.put("account", draft, serde_json::json!({"id":draft,"store":"BOOTH"})).unwrap();
+        catalogue.put("account", established, serde_json::json!({"id":established,"store":"BOOTH","identityVerified":true})).unwrap();
+        let draft_profile = profile_path(&catalogue.device_dir(), StoreProvider::Booth, draft).unwrap();
+        let established_profile = profile_path(&catalogue.device_dir(), StoreProvider::Booth, established).unwrap();
+        let other_provider = profile_path(&catalogue.device_dir(), StoreProvider::Gumroad, draft).unwrap();
+        for profile in [&draft_profile, &established_profile, &other_provider] {
+            std::fs::create_dir_all(profile).unwrap();
+            std::fs::write(profile.join("session.bin"), b"authored snapshot marker").unwrap();
+            std::fs::write(profile.join("browser-profile-marker"), b"preserve profile bytes").unwrap();
+        }
+        assert!(discard_unverified_account(&catalogue, StoreProvider::Booth, draft).unwrap());
+        assert!(!draft_profile.join("session.bin").exists());
+        assert!(draft_profile.join("browser-profile-marker").exists());
+        assert!(!discard_unverified_account(&catalogue, StoreProvider::Booth, established).unwrap());
+        assert!(established_profile.join("session.bin").exists());
+        assert!(other_provider.join("session.bin").exists());
+        drop(catalogue);
+        crate::storage::validate_library_path(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn jinxxy_languages_use_exact_hosts_and_only_the_language_preference() {

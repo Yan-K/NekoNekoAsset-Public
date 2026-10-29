@@ -3,6 +3,9 @@ import { t } from './i18n';
 import type { Locale } from './model';
 import { nativeErrorText } from './error-i18n';
 const words:Record<string,string[]>={
+ ai_settings_write_failed:['Could not save provider settings on this device','この端末にプロバイダー設定を保存できません','이 기기에 공급자 설정을 저장할 수 없습니다','无法在此设备保存提供商设置','無法在此裝置儲存供應商設定'],
+ resetInProgress:['Resetting library…','ライブラリを初期化しています…','라이브러리 초기화 중…','正在重置资产库…','正在重設資產庫…'],
+ restoreBackupMessage:['Replace the current catalogue with this backup? Changes made since the backup will be replaced.','このバックアップで現在のカタログを置き換えますか？バックアップ後の変更は置き換えられます。','이 백업으로 현재 카탈로그를 교체할까요? 백업 이후의 변경 사항은 교체됩니다.','用此备份替换当前目录？备份后的更改将被替换。','以此備份取代目前目錄？備份後的變更將被取代。'],
  openLibrary:['Open library','ライブラリを開く','라이브러리 열기','打开资产库','開啟資產庫'],
  openingLibrary:['Opening library…','ライブラリを開いています…','라이브러리 여는 중…','正在打开资产库…','正在開啟資產庫…'],
  libraryUnavailable:['Library unavailable','ライブラリを利用できません','라이브러리를 사용할 수 없습니다','资产库不可用','資產庫無法使用'],

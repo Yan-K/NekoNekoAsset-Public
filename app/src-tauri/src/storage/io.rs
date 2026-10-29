@@ -1,10 +1,14 @@
 use anyhow::{bail, ensure, Result};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        LazyLock, Mutex,
+    },
 };
 
 pub fn hash_file(path: &Path) -> Result<(String, u64)> {
@@ -66,15 +70,32 @@ pub fn unused_relative(root: &Path, base: &str) -> Result<String> {
 /// This guard owns only the exact per-file temporary, never published content.
 pub struct PartialGuard {
     path: PathBuf,
+    parent_key: Option<PathBuf>,
 }
+static PARTIAL_PARENTS: LazyLock<Mutex<BTreeMap<PathBuf, usize>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 impl PartialGuard {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        let parent_key = path.parent().and_then(|parent| {
+            // Callers share the same checked root/path spelling. Keep the key
+            // stable even when the parent has not been created yet.
+            let key = parent.to_path_buf();
+            let mut parents = PARTIAL_PARENTS.lock().ok()?;
+            *parents.entry(key.clone()).or_default() += 1;
+            Some(key)
+        });
+        Self { path, parent_key }
     }
 }
 pub struct EmptyDirectoryGuard(pub PathBuf);
 impl Drop for EmptyDirectoryGuard {
     fn drop(&mut self) {
+        let Ok(parents) = PARTIAL_PARENTS.lock() else {
+            return;
+        };
+        if parents.contains_key(&self.0) {
+            return;
+        }
         if super::archive::validate_no_links(&self.0).is_ok() {
             let _ = fs::remove_dir(&self.0);
         }
@@ -87,9 +108,20 @@ impl Drop for PartialGuard {
         {
             let _ = fs::remove_file(&self.path);
         }
-        if let Some(parent) = self.path.parent() {
-            if super::archive::validate_no_links(parent).is_ok() {
-                let _ = fs::remove_dir(parent);
+        if let Some(key) = &self.parent_key {
+            if let Ok(mut parents) = PARTIAL_PARENTS.lock() {
+                let Some(count) = parents.get_mut(key) else {
+                    return;
+                };
+                *count -= 1;
+                if *count == 0 {
+                    parents.remove(key);
+                    if let Some(parent) = self.path.parent() {
+                        if super::archive::validate_no_links(parent).is_ok() {
+                            let _ = fs::remove_dir(parent);
+                        }
+                    }
+                }
             }
         }
     }
@@ -412,6 +444,30 @@ fn windows_shell_path(path: &str) -> Result<String> {
 #[cfg(test)]
 mod launch_path_tests {
     use super::*;
+    #[test]
+    fn completed_file_does_not_remove_a_waiting_transfers_shared_parent() {
+        let root =
+            std::env::temp_dir().join(format!("nna-partial-parent-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let parent = root.join(".nna-partials");
+        fs::create_dir(&parent).unwrap();
+        {
+            let _job = EmptyDirectoryGuard(parent.clone());
+            let first = parent.join("first.part");
+            let second = parent.join("second.part");
+            let pending = PartialGuard::new(second.clone());
+            fs::write(&first, b"completed authored bytes").unwrap();
+            drop(PartialGuard::new(first.clone()));
+            assert!(!first.exists());
+            assert!(parent.is_dir());
+            fs::write(&second, b"later authored bytes").unwrap();
+            drop(pending);
+            assert!(!second.exists());
+            assert!(!parent.exists());
+        }
+        assert!(!parent.exists());
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn provider_identity_and_missing_file_errors_preserve_existing_action_codes() {

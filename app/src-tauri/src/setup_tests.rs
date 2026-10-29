@@ -23,14 +23,14 @@ impl Fixture {
             root,
             host: LibraryHost {
                 device_dir,
-                status: LibraryStatus {
+                status: Mutex::new(LibraryStatus {
                     state: "setup".into(),
                     path: None,
                     default_path: None,
                     error_code: None,
                     locale: "en".into(),
                     missing_credentials: vec![],
-                },
+                }),
                 services: Mutex::new(None),
                 setup: Mutex::new(Some(setup)),
                 opening: AtomicBool::new(false),
@@ -90,6 +90,26 @@ fn finish_args() -> Value {
 }
 
 #[test]
+fn partial_setup_and_missing_lock_markers_remain_recoverable() {
+    let f = Fixture::new();
+    let root = f.root.join("partial-library");
+    std::fs::create_dir_all(root.join(".nna/data")).unwrap();
+    std::fs::write(root.join(".nna/data/catalogue.sqlite3"), b"").unwrap();
+    assert!(Catalogue::probe_setup_preferences(&root).unwrap().is_none());
+    let catalogue = Catalogue::open_bound(&root, &f.host.device_dir).unwrap();
+    catalogue
+        .command("preferences", json!({"patch":{"setupComplete":true}}))
+        .unwrap();
+    drop(catalogue);
+    std::fs::remove_file(root.join(".nna-library.lock")).unwrap();
+    assert_eq!(
+        Catalogue::probe_setup_preferences(&root).unwrap().unwrap()["setupComplete"],
+        true
+    );
+    f.finish();
+}
+
+#[test]
 fn library_errors_retain_typed_causes_and_expose_only_actionable_codes() {
     for (kind, expected) in [
         (
@@ -146,6 +166,15 @@ fn library_errors_retain_typed_causes_and_expose_only_actionable_codes() {
     assert_eq!(
         UiError::from_library_error(&anyhow::anyhow!("authored raw OS error /private/path")).code,
         "library_create_failed"
+    );
+    let locator_failure = anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "authored device path",
+    ))
+    .context("library_preferences_write_failed");
+    assert_eq!(
+        UiError::from_library_error(&locator_failure).code,
+        "library_preferences_write_failed"
     );
 }
 
@@ -571,6 +600,85 @@ fn finish_locator_and_sql_failures_roll_back_existing_records_and_retry_staged_a
 }
 
 #[test]
+fn open_existing_library_rejects_unrelated_folders_without_writes() {
+    let fixture = Fixture::new();
+    for populated in [false, true] {
+        let path = fixture.root.join(if populated {
+            "unrelated-files"
+        } else {
+            "empty"
+        });
+        std::fs::create_dir(&path).unwrap();
+        let original = path.join("keep.txt");
+        if populated {
+            std::fs::write(&original, b"unrelated authored bytes").unwrap();
+        }
+        let error =
+            open_selected_catalogue(path.clone(), fixture.host.device_dir.clone(), None, false)
+                .err()
+                .expect("Open must not initialize a folder without a catalogue");
+        assert_eq!(error.to_string(), "library_database_unavailable");
+        assert!(!path.join(".nna").exists());
+        assert_eq!(
+            std::fs::read_dir(&path).unwrap().count(),
+            usize::from(populated)
+        );
+        if populated {
+            assert_eq!(
+                std::fs::read(&original).unwrap(),
+                b"unrelated authored bytes"
+            );
+        }
+    }
+    assert!(profile::selected_library(&fixture.host.device_dir)
+        .unwrap()
+        .is_none());
+    fixture.finish();
+}
+
+#[test]
+fn blocked_parent_selection_retries_the_child_without_adopting_the_parent() {
+    let fixture = Fixture::new();
+    let occupied = fixture.target("shared-parent");
+    let root = occupied.library_root().unwrap().to_path_buf();
+    let parent = root.parent().unwrap().to_path_buf();
+    let unrelated = parent.join("keep.txt");
+    std::fs::write(&unrelated, b"unrelated authored bytes").unwrap();
+    let database = occupied.data_dir().join("catalogue.sqlite3");
+    let original = std::fs::read(&database).unwrap();
+    for new_library in [true, false, true] {
+        assert!(open_selected_catalogue(
+            parent.clone(),
+            fixture.host.device_dir.clone(),
+            None,
+            new_library,
+        )
+        .is_err());
+        assert!(!parent.join(".nna").exists());
+        assert_eq!(std::fs::read(&database).unwrap(), original);
+        assert_eq!(
+            std::fs::read(&unrelated).unwrap(),
+            b"unrelated authored bytes"
+        );
+        assert!(profile::selected_library(&fixture.host.device_dir)
+            .unwrap()
+            .is_none());
+    }
+    drop(occupied);
+    let reopened =
+        open_selected_catalogue(parent.clone(), fixture.host.device_dir.clone(), None, true)
+            .unwrap();
+    assert_eq!(reopened.library_root().unwrap(), root);
+    assert!(!parent.join(".nna").exists());
+    assert_eq!(
+        std::fs::read(&unrelated).unwrap(),
+        b"unrelated authored bytes"
+    );
+    drop(reopened);
+    fixture.finish();
+}
+
+#[test]
 fn finish_materializes_the_exact_custom_candidate_without_appending_again() {
     let fixture = Fixture::new();
     let setup = fixture.setup();
@@ -588,4 +696,39 @@ fn finish_materializes_the_exact_custom_candidate_without_appending_again() {
     drop(target);
     drop(setup);
     fixture.finish();
+}
+
+#[test]
+fn staged_session_cleanup_rearms_proven_rollback_but_retains_committed_accounts() {
+    for fail in [true, false] {
+        let fixture = Fixture::new();
+        let setup = fixture.setup();
+        let staged = account("BOOTH", "Authored Setup ownership fixture");
+        let id = staged["id"].as_str().unwrap();
+        setup.catalogue.put("account", id, staged.clone()).unwrap();
+        setup.sessions.arm(stores::StoreProvider::Booth, id).unwrap();
+        let profile = stores::session::profile_path(&fixture.host.device_dir, stores::StoreProvider::Booth, id).unwrap();
+        std::fs::create_dir_all(profile.join("WebView/Cache")).unwrap();
+        std::fs::write(profile.join("session.bin"), b"authored protected bytes").unwrap();
+        std::fs::write(profile.join("WebView/Cache/authored"), b"authored browser bytes").unwrap();
+        let patch = setup_finish_patch(&setup, &finish_args()).unwrap();
+        if fail {
+            std::fs::create_dir(fixture.host.device_dir.join("library.json.pending")).unwrap();
+            assert!(materialize_setup(&setup, &fixture.host.device_dir, patch).is_err());
+            std::fs::remove_dir(fixture.host.device_dir.join("library.json.pending")).unwrap();
+        } else {
+            let (target, _) = materialize_setup(&setup, &fixture.host.device_dir, patch).unwrap();
+            assert_eq!(target.get("account", id).unwrap(), Some(staged.clone()));
+            // Even an explicit rearm attempt cannot claim an account proven
+            // present in target SQL after a successful/uncertain commit.
+            rearm_unpublished_setup_sessions(&setup, &target, &[staged.clone()]);
+            drop(target);
+        }
+        fixture.host.setup.lock().unwrap().take();
+        drop(setup); // Model a closed/crashed Setup: release every lifetime lease.
+        setup_sessions::cleanup_abandoned(&fixture.host.device_dir).unwrap();
+        assert_eq!(profile.exists(), !fail);
+        if !fail { assert_eq!(std::fs::read(profile.join("session.bin")).unwrap(), b"authored protected bytes"); }
+        fixture.finish();
+    }
 }

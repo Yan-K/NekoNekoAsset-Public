@@ -62,6 +62,7 @@ obj/
 # Internal instructions, first-party drafts and verification tools stay local.
 /AGENTS.md
 /AgentDocs/
+/Claude outputs/
 /.agents/
 /.codex/
 /README.md

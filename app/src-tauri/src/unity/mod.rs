@@ -463,7 +463,7 @@ impl UnityService {
             .await
             .get(id)
             .is_some_and(|flag| flag.load(Ordering::Acquire));
-        record.phase = if record.bytes_started {
+        let phase: String = if record.bytes_started {
             "unresolved"
         } else if cancelled {
             "cancelled"
@@ -471,11 +471,16 @@ impl UnityService {
             "failed"
         }
         .into();
-        record.error_code = if cancelled && !record.bytes_started {
+        let error_code = if cancelled && !record.bytes_started {
             None
         } else {
             Some(error_code(error))
         };
+        if record.phase == phase && record.error_code == error_code {
+            return Ok(());
+        }
+        record.phase = phase;
+        record.error_code = error_code;
         record.updated_at = now();
         let can_clean = !record.bytes_started;
         self.save_and_clean(&mut record, can_clean)?;
@@ -517,7 +522,8 @@ impl UnityService {
         record.receipt = Some(value);
         record.error_code = None;
         record.updated_at = now();
-        self.save_and_clean(&mut record, receipt.staged)?;
+        let can_clean = record.snapshot_cleanup_proved();
+        self.save_and_clean(&mut record, can_clean)?;
         emit(app);
         Ok(())
     }

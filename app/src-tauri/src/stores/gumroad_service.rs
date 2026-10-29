@@ -342,9 +342,7 @@ impl GumroadService {
                 self.inner
                     .catalogue
                     .put("job", field(&job, "id")?, job.clone())?;
-                self.inner
-                    .catalogue
-                    .discard_unverified_account(field(&job, "accountId")?)?;
+                session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Gumroad, field(&job, "accountId")?)?;
             } else if let Err(error) = self.spawn(app.clone(), job) {
                 if safe_code(&error) != "ACCOUNT_BUSY" {
                     return Err(error);
@@ -380,7 +378,7 @@ impl GumroadService {
                 )
                 .await;
                 if let Err(error) = opening {
-                    self.inner.catalogue.discard_unverified_account(account)?;
+                    session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Gumroad, account)?;
                     return Err(error);
                 }
                 if let Some(job) = active {
@@ -550,14 +548,19 @@ impl GumroadService {
                     .filter(|job| job["store"] == "Gumroad")
                     .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
                 if action == "cancel_sync" {
-                    if matches!(job["state"].as_str(), Some("running" | "queued")) {
-                        job["state"] = json!("cancelled");
-                        job["errorCode"] = json!("CANCELLED");
-                        job["completedAt"] = json!(now());
-                        job["progress"]["stage"] = json!("cancelled");
+                    for attempt in 0..4 {
+                        let mut batch = RecordBatch::new(&self.inner.catalogue);
+                        let mut latest = batch.get("job", id)?.ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) { break; }
+                        latest["state"] = json!("cancelled");
+                        latest["errorCode"] = json!("CANCELLED");
+                        latest["completedAt"] = json!(now());
+                        latest["progress"]["stage"] = json!("cancelled");
+                        latest["updatedAt"] = json!(now());
+                        batch.stage("job", id, latest)?;
+                        if batch.try_commit()?.is_some() { break; }
+                        ensure!(attempt < 3, "CONCURRENT_UPDATE");
                     }
-                    job["updatedAt"] = json!(now());
-                    self.inner.catalogue.put("job", id, job)?;
                 } else {
                     ensure!(
                         matches!(
@@ -676,7 +679,7 @@ impl GumroadService {
         let service = self.clone();
         tauri::async_runtime::spawn(async move {
             let _work = work;
-            let _execution = service.inner.execution.lock().await;
+            let _execution = if job["type"] == "gumroadLogin" { None } else { Some(service.inner.execution.lock().await) };
             let result = service.execute(&app, &mut job).await;
             let error = result.as_ref().err().map(safe_code);
             if let Err(error) = service.finish_job(&job, error.as_deref()) {
@@ -701,7 +704,7 @@ impl GumroadService {
                 {
                     eprintln!("Gumroad login window close failed: {}", safe_code(&error));
                 }
-                if let Err(error) = service.inner.catalogue.discard_unverified_account(&account) {
+                if let Err(error) = session::discard_unverified_account(&service.inner.catalogue, StoreProvider::Gumroad, &account) {
                     eprintln!("Gumroad login cleanup failed: {}", safe_code(&error));
                 }
                 let _ = app.emit("nna:changed", if verified {
@@ -1162,6 +1165,18 @@ impl GumroadService {
         if let Some(saved) = row["identityHash"].as_str() {
             ensure!(saved == identity, "ACCOUNT_IDENTITY_MISMATCH");
         }
+        let unverified = row["identityVerified"] != true
+            && row["authenticatedAt"].as_str().is_none_or(str::is_empty)
+            && row["identityHash"].as_str().is_none_or(str::is_empty);
+        if login_job.is_some() {
+            let window = session::existing_window(app, StoreProvider::Gumroad, account)?
+                .ok_or_else(|| anyhow::anyhow!("CANCELLED"))?;
+            session::remember(window, &self.inner.catalogue.device_dir(), StoreProvider::Gumroad, account).await?;
+            if session::existing_window(app, StoreProvider::Gumroad, account)?.is_none() {
+                if unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Gumroad, account)?; }
+                bail!("CANCELLED");
+            }
+        }
         row["identityHash"] = json!(identity);
         row["identityVerified"] = json!(true);
         row["disconnected"] = json!(false);
@@ -1170,17 +1185,13 @@ impl GumroadService {
         row["updatedAt"] = json!(now());
         row["authenticatedAt"] = json!(now());
         batch.stage("account", account, row)?;
-        ensure!(batch.try_commit()?.is_some(), "CONCURRENT_UPDATE");
-        if login_job.is_some() {
-            let window = session::existing_window(app, StoreProvider::Gumroad, account)?
-                .ok_or_else(|| anyhow::anyhow!("CANCELLED"))?;
-            session::remember(
-                window,
-                &self.inner.catalogue.device_dir(),
-                StoreProvider::Gumroad,
-                account,
-            )
-            .await?;
+        match batch.try_commit() {
+            Ok(Some(_)) => {}
+            result => {
+                if login_job.is_some() && unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Gumroad, account)?; }
+                result?;
+                bail!("CONCURRENT_UPDATE");
+            }
         }
         let _ = app.emit("nna:changed", json!({"scope":"booth"}));
         Ok(page)
@@ -1399,6 +1410,7 @@ impl GumroadService {
         let saved = self.inner.catalogue.get("checkpoint", &checkpoint_id)?;
         let mut checkpoint = saved.filter(|row| selected.is_none() && row["publicationVersion"] == 1 && row["jobId"] == job["id"] && row["headSignatures"] == json!(signatures) && row["unresolvedRows"].as_u64() == Some(0))
             .unwrap_or_else(|| json!({"id":checkpoint_id,"publicationVersion":1,"journalIds":[],"publishedProducts":[],"store":"Gumroad","accountId":account,"jobId":job["id"],"headSignatures":signatures,"nextPages":[1,1],"seenPurchaseIds":[],"productIds":[],"unresolvedRows":0,"pages":0,"complete":false}));
+        self.inner.catalogue.prune_store_checkpoints("Gumroad", account)?;
         let mut seen: BTreeSet<String> = checkpoint["seenPurchaseIds"]
             .as_array()
             .into_iter()
@@ -2233,7 +2245,7 @@ impl GumroadService {
                 provider: StoreProvider::Gumroad,
                 expected_origin: None,
                 url: location,
-                client: session.client,
+                client: http::build_download_client(StoreProvider::Gumroad, session.jar.clone())?,
                 expected_size: offered.size_bytes,
             })
         }

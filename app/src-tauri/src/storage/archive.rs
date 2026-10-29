@@ -1,5 +1,8 @@
 //! Archive extraction is a prepare operation: sources are never deleted here.
 //! The caller must publish and durably record the returned inventory before cleanup.
+#[cfg(windows)]
+#[path = "archive_process.rs"]
+mod process;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +24,8 @@ use std::{
 const MAX_LISTING_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 500_000;
 const BUFFER_SIZE: usize = 128 * 1024;
+const WORKSPACE_MARKER: &str = ".nna-archive-owner";
+const WORKSPACE_OWNER: &str = "NNA-ARCHIVE-WORKSPACE-V1\n";
 const CRC_TABLE: [u32; 256] = {
     let mut table = [0u32; 256];
     let mut index = 0;
@@ -70,6 +75,7 @@ struct WorkspaceGuard {
     root: PathBuf,
     parent: PathBuf,
     armed: bool,
+    owner: Option<File>,
 }
 
 impl Drop for WorkspaceGuard {
@@ -77,9 +83,94 @@ impl Drop for WorkspaceGuard {
         // This exact, fresh UUID child was created by this invocation. Never
         // derive a deletion target from archive member names or caller records.
         if self.armed && self.root.parent() == Some(self.parent.as_path()) {
-            let _ = remove_private_tree(&self.root);
+            self.owner.take();
+            let _ = remove_workspace(&self.root);
         }
     }
+}
+
+/// Recover only workspaces durably marked by this helper whose lifetime lock
+/// has been released. Legacy, foreign, linked and active children remain untouched.
+pub(super) fn recover_workspaces(staging_parent: &Path) -> Result<usize> {
+    if !staging_parent.is_dir() || validate_no_links(staging_parent).is_err() {
+        return Ok(0);
+    }
+    let parent = staging_parent
+        .canonicalize()
+        .context("storage_staging_cleanup_failed")?;
+    let mut removed = 0;
+    for child in fs::read_dir(&parent).context("storage_staging_cleanup_failed")? {
+        let Ok(child) = child else {
+            continue;
+        };
+        let name = child.file_name();
+        let Some(identity) = name.to_str().and_then(|name| name.strip_prefix("archive-")) else {
+            continue;
+        };
+        let Ok(id) = uuid::Uuid::parse_str(identity) else {
+            continue;
+        };
+        if id.to_string() != identity {
+            continue;
+        }
+        let workspace = child.path();
+        if workspace.parent() != Some(parent.as_path())
+            || validate_no_links(&workspace).is_err()
+            || !workspace.is_dir()
+        {
+            continue;
+        }
+        let marker = workspace.join(WORKSPACE_MARKER);
+        if validate_no_links(&marker).is_err() {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&marker) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > 128 {
+            continue;
+        }
+        let Ok(mut owner) = OpenOptions::new().read(true).write(true).open(&marker) else {
+            continue;
+        };
+        if fs2::FileExt::try_lock_exclusive(&owner).is_err() {
+            continue;
+        }
+        let mut body = Vec::new();
+        if (&mut owner).take(129).read_to_end(&mut body).is_err()
+            || body != format!("{WORKSPACE_OWNER}{id}\n").as_bytes()
+        {
+            continue;
+        }
+        // The UUID child, matching durable owner marker and released OS lock
+        // prove ownership before this exact bounded deletion is attempted.
+        drop(owner);
+        if remove_workspace(&workspace).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn remove_workspace(workspace: &Path) -> Result<()> {
+    validate_no_links(workspace)?;
+    for child in fs::read_dir(workspace).context("storage_staging_cleanup_failed")? {
+        let child = child.context("storage_staging_cleanup_failed")?;
+        if child.file_name() != WORKSPACE_MARKER {
+            remove_private_tree(&child.path())?;
+        }
+    }
+    // Retain ownership proof until every payload child has been removed, so a
+    // locked file can be retried at the next startup without guessing ownership.
+    let marker = workspace.join(WORKSPACE_MARKER);
+    if marker
+        .try_exists()
+        .context("storage_staging_cleanup_failed")?
+    {
+        fs::remove_file(marker).context("storage_staging_cleanup_failed")?;
+    }
+    fs::remove_dir(workspace).context("storage_staging_cleanup_failed")?;
+    Ok(())
 }
 
 /// Remove only a helper-owned workspace. Reparse entries are unlinked, never
@@ -358,6 +449,12 @@ pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
         .split("\n\n")
         .filter(|block| !block.trim().is_empty())
     {
+        // Successful technical listings can append this summary after the
+        // member records (for example, a ZIP with harmless trailing bytes).
+        if let Some(count) = block.trim().strip_prefix("Warnings: ") {
+            ensure!(count.parse::<u64>().is_ok(), "archive_listing_invalid");
+            continue;
+        }
         let mut fields = BTreeMap::new();
         for line in block.lines() {
             let (key, value) = line.split_once(" = ").context("archive_listing_invalid")?;
@@ -493,13 +590,21 @@ fn run_7zip(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
+    let child_job = process::ChildJob::new()?;
+    #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        command.creation_flags(0x08000004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
     }
     let mut child = command
         .spawn()
         .map_err(|_| anyhow::anyhow!("archive_tool_unavailable"))?;
+    #[cfg(windows)]
+    if let Err(error) = child_job.attach_and_resume(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
     let overflow = Arc::new(AtomicBool::new(false));
     let out_pipe = child.stdout.take().context("archive_process_io")?;
     let err_pipe = child.stderr.take().context("archive_process_io")?;
@@ -848,13 +953,27 @@ pub fn extract_archive(
             >= 16 * 1024 * 1024,
         "storage_low_space"
     );
-    let workspace = staging_parent.join(format!("archive-{}", uuid::Uuid::new_v4()));
+    let workspace_id = uuid::Uuid::new_v4();
+    let workspace = staging_parent.join(format!("archive-{workspace_id}"));
     fs::create_dir(&workspace).context("storage_write_failed")?;
-    let guard = WorkspaceGuard {
+    let mut guard = WorkspaceGuard {
         root: workspace.clone(),
         parent: staging_parent,
         armed: true,
+        owner: None,
     };
+    let mut owner = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(workspace.join(WORKSPACE_MARKER))
+        .context("storage_write_failed")?;
+    fs2::FileExt::try_lock_exclusive(&owner).context("storage_write_failed")?;
+    owner
+        .write_all(format!("{WORKSPACE_OWNER}{workspace_id}\n").as_bytes())
+        .context("storage_write_failed")?;
+    owner.sync_all().context("storage_write_failed")?;
+    guard.owner = Some(owner);
     let inputs = workspace.join("sources");
     let content = workspace.join("content");
     fs::create_dir(&content).context("storage_write_failed")?;
@@ -939,7 +1058,9 @@ pub fn extract_archive(
             fs::create_dir_all(content.join(validate_relative_path(&entry.relative_path)?))
                 .context("storage_write_failed")?;
         } else {
-            writeln!(names, "{}", entry.relative_path).context("storage_write_failed")?;
+            // 7-Zip trims unquoted listfile lines. Quotes retain a leading
+            // space in a literal member name; validated paths cannot contain quotes.
+            writeln!(names, "\"{}\"", entry.relative_path).context("storage_write_failed")?;
             file_count += 1;
         }
     }
@@ -990,6 +1111,85 @@ pub fn extract_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandoned_workspace_recovery_requires_marker_identity_and_released_lock() {
+        let root =
+            std::env::temp_dir().join(format!("nna-archive-recovery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let active_id = uuid::Uuid::new_v4();
+        let active = root.join(format!("archive-{active_id}"));
+        fs::create_dir(&active).unwrap();
+        let marker = active.join(WORKSPACE_MARKER);
+        let mut owner = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&marker)
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&owner).unwrap();
+        owner
+            .write_all(format!("{WORKSPACE_OWNER}{active_id}\n").as_bytes())
+            .unwrap();
+        owner.sync_all().unwrap();
+        fs::create_dir(active.join("content")).unwrap();
+        fs::write(
+            active.join("content/authored.bin"),
+            b"authored uncommitted bytes",
+        )
+        .unwrap();
+        let legacy = root.join(format!("archive-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&legacy).unwrap();
+        fs::write(legacy.join("human.bin"), b"unmarked bytes").unwrap();
+        let invalid = root.join(format!("archive-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&invalid).unwrap();
+        fs::write(
+            invalid.join(WORKSPACE_MARKER),
+            format!("{WORKSPACE_OWNER}{}\n", uuid::Uuid::new_v4()),
+        )
+        .unwrap();
+        assert_eq!(recover_workspaces(&root).unwrap(), 0);
+        assert!(active.join("content/authored.bin").exists());
+        drop(owner);
+        assert_eq!(recover_workspaces(&root).unwrap(), 1);
+        assert!(!active.exists());
+        assert!(legacy.join("human.bin").exists());
+        assert!(invalid.join(WORKSPACE_MARKER).exists());
+        fs::remove_file(legacy.join("human.bin")).unwrap();
+        fs::remove_dir(legacy).unwrap();
+        fs::remove_file(invalid.join(WORKSPACE_MARKER)).unwrap();
+        fs::remove_dir(invalid).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_workspace_payload_retains_ownership_proof_for_the_next_recovery() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root =
+            std::env::temp_dir().join(format!("nna-archive-locked-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let workspace = root.join(format!("archive-{id}"));
+        fs::create_dir(&workspace).unwrap();
+        fs::write(
+            workspace.join(WORKSPACE_MARKER),
+            format!("{WORKSPACE_OWNER}{id}\n"),
+        )
+        .unwrap();
+        let payload = workspace.join("authored.bin");
+        fs::write(&payload, b"authored locked bytes").unwrap();
+        let handle = File::options()
+            .read(true)
+            .share_mode(3)
+            .open(&payload)
+            .unwrap();
+        assert_eq!(recover_workspaces(&root).unwrap(), 0);
+        assert!(workspace.join(WORKSPACE_MARKER).exists());
+        drop(handle);
+        assert_eq!(recover_workspaces(&root).unwrap(), 1);
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn portable_paths_reject_escape_and_windows_aliases() {
@@ -1064,6 +1264,19 @@ mod tests {
         output.extend_from_slice(payload);
         block(&mut output, &[5, 0, u8::from(part == Some(0))]);
         output
+    }
+
+    #[test]
+    fn listing_accepts_warning_counts_but_never_error_or_malformed_summaries() {
+        let members = "Path = normal.txt\nSize = 3\nCRC = 352441C2";
+        let normal = parse_listing(&listing(members)).unwrap();
+        assert_eq!(
+            parse_listing(&listing(&format!("{members}\n\n\nWarnings: 1"))).unwrap(),
+            normal
+        );
+        for summary in ["Errors: 1", "Warnings: unknown", "Warnings: 1\nErrors: 1"] {
+            assert!(parse_listing(&listing(&format!("{members}\n\n{summary}"))).is_err());
+        }
     }
 
     #[test]

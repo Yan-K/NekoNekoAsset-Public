@@ -14,8 +14,8 @@ pub(super) fn device_id(profile: &Path) -> Result<String> {
 }
 
 impl Catalogue {
-    /// Inspect a current library without initialization, reconciliation or writes.
-    /// Existing current libraries already own a stable lock-file identity.
+    /// Inspect without initializing or reconciling SQL. Recreate a missing
+    /// lifetime-lock marker so a partially initialized library stays retryable.
     pub(crate) fn probe_setup_preferences(root: &Path) -> Result<Option<Value>> {
         let root = crate::storage::checked_library_root(root)?;
         let database = root.join(".nna/data/catalogue.sqlite3");
@@ -23,7 +23,7 @@ impl Catalogue {
         if !database.exists() {
             return Ok(None);
         }
-        let _lock = LibraryLock::acquire_existing(&root)?;
+        let _lock = LibraryLock::acquire(&root)?;
         ensure!(
             !root.join(crate::app_reset::DELETE_MARKER).exists(),
             "reset_pending"
@@ -36,6 +36,12 @@ impl Catalogue {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version == 0 {
+            let tables: i64 =
+                conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))?;
+            ensure!(tables == 0, "catalogue.newer_schema");
+            return Ok(None);
+        }
         ensure!(version == 1, "catalogue.newer_schema");
         conn.prepare("SELECT summary,in_all FROM products LIMIT 0")?;
         conn.prepare("SELECT seq,kind,id,before_json,after_json FROM sync_outbox LIMIT 0")?;

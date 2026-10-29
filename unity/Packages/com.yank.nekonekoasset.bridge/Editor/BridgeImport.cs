@@ -297,8 +297,7 @@ namespace NekoNekoAsset.Bridge
                 request.appliedFailed = true;
                 request.receipt.error = "Import interrupted; applied entries remain and backups are retained.";
                 request.receipt.stage = "interrupted";
-                Save(request);
-                if (active == request) active = null;
+                SaveTerminal(request);
             }
             finally
             {
@@ -378,28 +377,39 @@ namespace NekoNekoAsset.Bridge
                     if (!string.IsNullOrEmpty(output.guid) && !string.Equals(GuidUtility.ExtractGuidFromMeta(File.ReadAllBytes(path + ".meta")), output.guid, StringComparison.OrdinalIgnoreCase))
                         throw new IOException("Imported GUID changed during refresh.");
                 }
-                foreach (BridgeOwnedWrite write in request.ownedWrites)
-                    if (write.generatedMeta)
-                    {
-                        string meta = BridgeFiles.Under(registry.projectRoot, write.path) + ".meta";
-                        if (File.Exists(meta))
-                            using (var hash = BridgeSha256.Create())
-                                write.metaHash = Convert.ToBase64String(hash.ComputeHash(File.ReadAllBytes(meta)));
-                    }
                 request.receipt.stage = request.appliedFailed ? "failed" : "completed";
-                Save(request);
             }
             catch (Exception)
             {
                 request.receipt.stage = "failed";
                 request.receipt.error = "Could not refresh or verify imported outputs; applied files and backups remain.";
-                Save(request);
             }
-            if (active == request) active = null;
+            // Record only Unity-recognized metadata for unchanged new loose outputs,
+            // even when another output made refresh/verification fail.
+            foreach (BridgeOwnedWrite write in request.ownedWrites)
+                if (write.generatedMeta && string.IsNullOrEmpty(write.metaHash))
+                {
+                    try
+                    {
+                        string path = BridgeFiles.Under(registry.projectRoot, write.path);
+                        string meta = path + ".meta";
+                        BridgeFiles.RejectLinks(meta);
+                        string guid = AssetDatabase.AssetPathToGUID(write.path);
+                        if (!string.IsNullOrEmpty(guid) && File.Exists(meta) && File.Exists(path)
+                            && BridgeFiles.HashFile(path) == BridgeFiles.Hex(Convert.FromBase64String(write.assetHash))
+                            && string.Equals(GuidUtility.ExtractGuidFromMeta(File.ReadAllBytes(meta)), guid, StringComparison.OrdinalIgnoreCase))
+                            using (var hash = BridgeSha256.Create())
+                                write.metaHash = Convert.ToBase64String(hash.ComputeHash(File.ReadAllBytes(meta)));
+                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+            SaveTerminal(request);
         }
 
         private static void FinishImportResult(StoredBridgeRequest request)
         {
+            if (PendingTerminalSaves.Contains(request.receipt.requestId)) { Publish(); return; }
             // Temp cleanup failures cannot change an already durable verified terminal result.
             if (request.receipt.stage == "completed")
             {

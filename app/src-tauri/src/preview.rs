@@ -22,24 +22,44 @@ const MAX_FILES: usize = 2048;
 const PREFIX: &str = "nna-preview-";
 const EXTENSIONS: [&str; 4] = ["png", "jpg", "gif", "webp"];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CacheUsage {
+    bytes: u64,
+    files: usize,
+}
+impl CacheUsage {
+    fn needs_reservation(&self) -> bool {
+        self.bytes > MAX_BYTES - 2 * MAX_FILE || self.files > MAX_FILES - 2
+    }
+    fn reserve(&mut self, root: &Path) -> Result<()> {
+        if self.needs_reservation() {
+            *self = trim(root, MAX_BYTES - 2 * MAX_FILE, MAX_FILES - 2, None)?;
+        }
+        Ok(())
+    }
+    fn published(&mut self, bytes: u64) {
+        // This is an upper bound between scans. A rescan may already have
+        // counted part of an active stream, or an existing matching destination.
+        // Counting it again only causes earlier maintenance; it cannot consume
+        // the space reserved for the other bounded stream.
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.files = self.files.saturating_add(1);
+    }
+}
+
 pub struct PreviewCache {
     root: PathBuf,
     client: reqwest::Client,
     slots: Semaphore,
     keys: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
-    disk: Arc<Mutex<()>>,
+    disk: Arc<Mutex<Option<CacheUsage>>>,
 }
 
 impl PreviewCache {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         ensure!(data_dir.is_absolute(), "preview_path_refused");
         let root = data_dir.join("cache").join("previews");
-        no_links(&root)?;
-        fs::create_dir_all(&root).context("preview_cache_io")?;
-        no_links(&root)?;
-        // Startup is local maintenance only. Recent partials may still belong to a
-        // request in another cache instance; only hour-old abandoned partials go.
-        trim(&root, MAX_BYTES, MAX_FILES, None)?;
+        // Cache failures belong to preview requests, not application startup.
         let client = reqwest::Client::builder()
             .cookie_store(false)
             .referer(false)
@@ -58,7 +78,7 @@ impl PreviewCache {
             client,
             slots: Semaphore::new(2),
             keys: Mutex::new(HashMap::new()),
-            disk: Arc::new(Mutex::new(())),
+            disk: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -84,7 +104,15 @@ impl PreviewCache {
         let lookup_key = key.clone();
         let disk = self.disk.clone();
         let cached = tokio::task::spawn_blocking(move || {
-            let _guard = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
+            let mut usage = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
+            if usage.is_none() {
+                no_links(&root)?;
+                fs::create_dir_all(&root).context("preview_cache_io")?;
+                no_links(&root)?;
+                // Recent partials may still belong to another request. Only
+                // hour-old abandoned partials are eligible for maintenance.
+                *usage = Some(trim(&root, MAX_BYTES, MAX_FILES, None)?);
+            }
             find_cached(&root, &lookup_key)
         })
         .await
@@ -101,9 +129,9 @@ impl PreviewCache {
         let root = self.root.clone();
         let disk = self.disk.clone();
         tokio::task::spawn_blocking(move || {
-            let _guard = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
+            let mut usage = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
             // Reserve room for both bounded streams, including their partials.
-            trim(&root, MAX_BYTES - 2 * MAX_FILE, MAX_FILES - 2, None)
+            usage.as_mut().ok_or_else(|| anyhow!("preview_cache_lock"))?.reserve(&root)
         })
         .await
         .map_err(|_| anyhow!("preview_cache_worker"))??;
@@ -111,7 +139,7 @@ impl PreviewCache {
             .root
             .join(format!("{PREFIX}{key}-{}.part", uuid::Uuid::new_v4()));
         let mut guard = PartialGuard(PathBuf::new());
-        let extension = tokio::time::timeout(
+        let (extension, bytes) = tokio::time::timeout(
             Duration::from_secs(30),
             self.fetch(url, &temporary, &mut guard),
         )
@@ -121,9 +149,11 @@ impl PreviewCache {
         let disk = self.disk.clone();
         let temp = temporary.clone();
         let path = tokio::task::spawn_blocking(move || {
-            let _guard = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
+            let mut usage = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
             let path = publish(&root, &temp, &key, extension)?;
-            trim(&root, MAX_BYTES, MAX_FILES, Some(&path))?;
+            // The pre-fetch reservation covers both bounded concurrent streams;
+            // publishing their bytes cannot exceed it, so no second scan is needed.
+            usage.as_mut().ok_or_else(|| anyhow!("preview_cache_lock"))?.published(bytes);
             Ok::<_, anyhow::Error>(path)
         })
         .await
@@ -137,7 +167,7 @@ impl PreviewCache {
         url: Url,
         temporary: &Path,
         guard: &mut PartialGuard,
-    ) -> Result<&'static str> {
+    ) -> Result<(&'static str, u64)> {
         no_links(&self.root)?;
         let response = self
             .client
@@ -172,7 +202,7 @@ impl PreviewCache {
         output.flush().await.context("preview_cache_io")?;
         output.sync_all().await.context("preview_cache_io")?;
         drop(output); // Windows rename must happen after the writer is closed.
-        Ok(extension)
+        Ok((extension, total))
     }
 }
 
@@ -383,7 +413,7 @@ fn publish(root: &Path, temporary: &Path, key: &str, extension: &str) -> Result<
     Ok(destination)
 }
 
-fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) -> Result<()> {
+fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) -> Result<CacheUsage> {
     no_links(root)?;
     let mut files = Vec::new();
     let mut total = 0u64;
@@ -396,7 +426,9 @@ fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) 
         if !managed_name(&name) && !partial_name(&name) {
             continue;
         }
-        let metadata = fs::symlink_metadata(&path).context("preview_cache_io")?;
+        // DirEntry metadata does not follow links and reuses the Windows
+        // directory enumeration data instead of another stat for each file.
+        let metadata = entry.metadata().context("preview_cache_io")?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             continue;
         }
@@ -413,8 +445,9 @@ fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) 
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|age| age >= Duration::from_secs(3600))
+                && fs::remove_file(&path).is_ok()
             {
-                fs::remove_file(&path).context("preview_cache_io")?;
+                continue;
             } else {
                 total = total.saturating_add(metadata.len());
                 partials += 1;
@@ -438,7 +471,9 @@ fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) 
             continue;
         }
         no_links(&path)?;
-        fs::remove_file(path).context("preview_cache_io")?;
+        if fs::remove_file(path).is_err() {
+            continue;
+        }
         total = total.saturating_sub(size);
         count -= 1;
     }
@@ -446,7 +481,7 @@ fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) 
         total <= budget && count <= count_limit,
         "preview_cache_full"
     );
-    Ok(())
+    Ok(CacheUsage { bytes: total, files: count })
 }
 
 struct PartialGuard(PathBuf);
@@ -485,6 +520,106 @@ mod tests {
         let path = root.join(format!("{PREFIX}{}.png", hash(n)));
         fs::write(&path, png()).unwrap();
         path
+    }
+
+    #[test]
+    fn quota_reserves_two_maximum_streams_before_another_fetch() {
+        let mut usage = CacheUsage { bytes: MAX_BYTES - 2 * MAX_FILE, files: MAX_FILES - 2 };
+        assert!(!usage.needs_reservation());
+        let mut over_bytes = usage;
+        over_bytes.bytes += 1;
+        assert!(over_bytes.needs_reservation());
+        let mut over_files = usage;
+        over_files.files += 1;
+        assert!(over_files.needs_reservation());
+        // Both slots may finish before the next reservation. Their maximum
+        // combined payload still fits the bytes and entry-count bounds.
+        usage.published(MAX_FILE);
+        usage.published(MAX_FILE);
+        assert_eq!(usage, CacheUsage { bytes: MAX_BYTES, files: MAX_FILES });
+        assert!(usage.needs_reservation());
+    }
+
+    #[test]
+    fn quota_keeps_safe_overcounts_until_maintenance_and_reclaims_stale_partials() {
+        let fixture = Fixture::new();
+        cache_file(&fixture.0, 1);
+        let corrupt = cache_file(&fixture.0, 2);
+        fs::write(&corrupt, b"authored invalid raster").unwrap();
+        let mut usage = trim(&fixture.0, MAX_BYTES, MAX_FILES, None).unwrap();
+        assert_eq!(usage.files, 2);
+        assert!(find_cached(&fixture.0, &hash(2)).unwrap().is_none());
+        let before = usage;
+        usage.reserve(&fixture.0).unwrap();
+        // Ordinary misses do not scan the directory: an already removed
+        // corrupt entry remains an upper-bound count until quota maintenance.
+        assert_eq!(usage, before);
+
+        let key = hash(3);
+        let partial = fixture.0.join(format!("{PREFIX}{key}-{}.part", uuid::Uuid::new_v4()));
+        fs::write(&partial, png()).unwrap();
+        usage = trim(&fixture.0, MAX_BYTES, MAX_FILES, None).unwrap();
+        assert_eq!(usage.files, 2); // Includes the active partial.
+        let destination = publish(&fixture.0, &partial, &key, "png").unwrap();
+        usage.published(png().len() as u64);
+        assert_eq!(usage.files, 3);
+        // A matching cached destination is harmless to count again as well.
+        fs::write(&partial, png()).unwrap();
+        assert_eq!(publish(&fixture.0, &partial, &key, "png").unwrap(), destination);
+        usage.published(png().len() as u64);
+        assert_eq!(usage.files, 4);
+
+        let abandoned = fixture.0.join(format!("{PREFIX}{}-{}.part", hash(4), uuid::Uuid::new_v4()));
+        fs::write(&abandoned, png()).unwrap();
+        File::options().write(true).open(&abandoned).unwrap()
+            .set_times(FileTimes::new().set_modified(SystemTime::UNIX_EPOCH)).unwrap();
+        usage.bytes = MAX_BYTES;
+        usage.reserve(&fixture.0).unwrap();
+        assert_eq!(usage, CacheUsage { bytes: 2 * png().len() as u64, files: 2 });
+        assert!(!abandoned.exists());
+        assert!(destination.exists());
+    }
+
+    #[tokio::test]
+    async fn optional_cache_initializes_on_demand_and_retries_before_network() {
+        let fixture = Fixture::new();
+        let parent = fixture.0.join("cache");
+        fs::write(&parent, b"authored path blocker").unwrap();
+        let cache = PreviewCache::new(fixture.0.clone()).unwrap();
+        let url = "https://booth.pximg.net/authored-preview.png";
+        assert!(cache.get(url.into()).await.is_err());
+        assert_eq!(fs::read(&parent).unwrap(), b"authored path blocker");
+        fs::remove_file(&parent).unwrap();
+        let root = parent.join("previews");
+        fs::create_dir_all(&root).unwrap();
+        let key = hex::encode(Sha256::digest(url.as_bytes()));
+        let image = root.join(format!("{PREFIX}{key}.png"));
+        fs::write(&image, png()).unwrap();
+        assert_eq!(cache.get(url.into()).await.unwrap(), image);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn eviction_skips_locked_files_when_other_entries_can_meet_the_budget() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let fixture = Fixture::new();
+        let locked = cache_file(&fixture.0, 1);
+        File::options()
+            .write(true)
+            .open(&locked)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        // Permit reads/metadata, but keep Windows deletion sharing disabled.
+        let _handle = File::options()
+            .read(true)
+            .share_mode(3)
+            .open(&locked)
+            .unwrap();
+        let removable = cache_file(&fixture.0, 2);
+        trim(&fixture.0, MAX_BYTES, 1, None).unwrap();
+        assert!(locked.exists());
+        assert!(!removable.exists());
     }
 
     #[test]

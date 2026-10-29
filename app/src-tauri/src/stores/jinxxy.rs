@@ -732,7 +732,16 @@ fn stage_observed_group(
             Ok((entitlement.clone(), batch.get("entitlement", &entitlement)?))
         })
         .collect::<Result<_>>()?;
-    let product = stage_complete_group(batch, account, details)?;
+    let product = if details.iter().all(|(detail, _, _)| detail.inventory_complete) {
+        stage_complete_group(batch, account, details)?
+    } else {
+        let first = details.first().ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
+        ensure!(details.iter().all(|(detail, _, _)| detail.product_id == first.0.product_id), "JINXXY_PRODUCT_BINDING_UNPROVEN");
+        for (detail, acquired, payment) in details {
+            stage_detail(batch, account, detail, *acquired, payment.as_ref())?;
+        }
+        format!("jinxxy:{}", first.0.product_id)
+    };
     for (entitlement, previous) in previous_memberships {
         let mut value = batch
             .get("entitlement", &entitlement)?
@@ -1070,6 +1079,8 @@ struct Inner {
     http: MetadataHttp,
     started: AtomicBool,
     enqueue_gate: std::sync::Mutex<()>,
+    running: std::sync::Mutex<BTreeSet<String>>,
+    execution: tokio::sync::Mutex<()>,
     downloads: std::sync::Mutex<BTreeMap<String, DownloadSession>>,
 }
 #[derive(Clone)]
@@ -1169,6 +1180,8 @@ impl JinxxyService {
                 http: MetadataHttp::new(StoreProvider::Jinxxy),
                 started: AtomicBool::new(false),
                 enqueue_gate: std::sync::Mutex::new(()),
+                running: std::sync::Mutex::new(BTreeSet::new()),
+                execution: tokio::sync::Mutex::new(()),
                 downloads: std::sync::Mutex::new(BTreeMap::new()),
             }),
         })
@@ -1199,9 +1212,7 @@ impl JinxxyService {
                 }
                 if job["type"] == "jinxxyLogin" {
                     self.finish_job(&mut job, "needsAction", Some("RETRY_REQUIRED"))?;
-                    self.inner
-                        .catalogue
-                        .discard_unverified_account(&account_arg(&job)?)?;
+                    session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Jinxxy, &account_arg(&job)?)?;
                     continue;
                 } else {
                     job["state"] = json!("queued");
@@ -1215,6 +1226,10 @@ impl JinxxyService {
         tauri::async_runtime::spawn(async move {
             loop {
                 if let Some((service, mut job, _work)) = Self::next_worker_job(&owner) {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                    let _work = _work;
+                    let _execution = if job["type"] == "jinxxyLogin" { None } else { Some(service.inner.execution.lock().await) };
                     let result = service.execute(&app, &mut job).await;
                     if let Err(error) = result {
                         let code = fixed_error(&error);
@@ -1270,7 +1285,7 @@ impl JinxxyService {
                                 );
                             }
                             if let Err(error) =
-                                service.inner.catalogue.discard_unverified_account(&account)
+                                session::discard_unverified_account(&service.inner.catalogue, StoreProvider::Jinxxy, &account)
                             {
                                 eprintln!("Jinxxy login cleanup failed: {}", fixed_error(&error));
                             }
@@ -1284,6 +1299,10 @@ impl JinxxyService {
                             );
                         }
                     }
+                    if let Ok(mut running) = service.inner.running.lock() {
+                        running.remove(&Self::worker_key(&job));
+                    }
+                    });
                 }
                 // Idle workers must not retain an old Setup library after its
                 // services are replaced. Active jobs keep the service and permit
@@ -1305,14 +1324,22 @@ impl JinxxyService {
         // Acquire before selection so switching cannot leave a previously
         // selected job running against a catalogue that has been replaced.
         let work = service.inner.catalogue.begin_catalogue_work().ok()?;
+        let mut running = service.inner.running.lock().ok()?;
         let job = service
             .inner
             .catalogue
             .list("job")
             .ok()?
             .into_iter()
-            .find(|job| job["store"] == "Jinxxy" && job["state"] == "queued")?;
+            .filter(|job| job["store"] == "Jinxxy" && job["state"] == "queued" && !running.contains(&Self::worker_key(job)))
+            .min_by_key(|job| u8::from(job["type"] != "jinxxyLogin"))?;
+        running.insert(Self::worker_key(&job));
+        drop(running);
         Some((service, job, work))
+    }
+    fn worker_key(job: &Value) -> String {
+        job["accountId"].as_str().map(|account| format!("account:{account}"))
+            .unwrap_or_else(|| format!("job:{}", job["id"].as_str().unwrap_or("")))
     }
     fn account(&self, id: &str) -> Result<Value> {
         let account = self
@@ -1712,6 +1739,16 @@ impl JinxxyService {
                 .is_none_or(|previous| previous == subject),
             "STORE_IDENTITY_CHANGED"
         );
+        let unverified = record["identityVerified"] != true
+            && record["authenticatedAt"].as_str().is_none_or(str::is_empty)
+            && record["identityHash"].as_str().is_none_or(str::is_empty);
+        if login_job.is_some() {
+            session::remember(window.clone(), &self.inner.catalogue.device_dir(), StoreProvider::Jinxxy, account).await?;
+            if session::existing_window(app, StoreProvider::Jinxxy, account)?.is_none() {
+                if unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Jinxxy, account)?; }
+                anyhow::bail!("CANCELLED");
+            }
+        }
         record["identityHash"] = json!(subject);
         record["identityVerified"] = json!(true);
         record["disconnected"] = json!(false);
@@ -1722,17 +1759,15 @@ impl JinxxyService {
         }
         if record != previous {
             batch.stage("account", account, record)?;
-            ensure!(batch.try_commit()?.is_some(), "CONCURRENT_UPDATE");
+            match batch.try_commit() {
+                Ok(Some(_)) => {}
+                result => {
+                    if login_job.is_some() && unverified { session::forget(&self.inner.catalogue.device_dir(), StoreProvider::Jinxxy, account)?; }
+                    result?;
+                    anyhow::bail!("CONCURRENT_UPDATE");
+                }
+            }
             let _ = app.emit("nna:changed", json!({"scope":"booth"}));
-        }
-        if login_job.is_some() {
-            session::remember(
-                window.clone(),
-                &self.inner.catalogue.device_dir(),
-                StoreProvider::Jinxxy,
-                account,
-            )
-            .await?;
         }
         Ok((client, data, jar, origin))
     }
@@ -1763,7 +1798,7 @@ impl JinxxyService {
                 )
                 .await;
                 if let Err(error) = opening {
-                    self.inner.catalogue.discard_unverified_account(&account)?;
+                    session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Jinxxy, &account)?;
                     return Err(error);
                 }
                 self.enqueue(app, &account, "jinxxyLogin", None)
@@ -1793,17 +1828,25 @@ impl JinxxyService {
                     .ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
                 ensure!(job["store"] == "Jinxxy", "STORE_ACCOUNT_MISMATCH");
                 if action == "cancel_sync" {
-                    job["cancelRequested"] = json!(true);
-                    let state = if job["state"] == "running" {
-                        "running"
-                    } else {
-                        "cancelled"
-                    };
-                    self.save_job(app, &mut job, state, None)?;
-                    if state == "cancelled" && job["type"] == "jinxxyLogin" {
+                    let mut cancelled_queued = false;
+                    for attempt in 0..4 {
+                        let mut batch = crate::booth::RecordBatch::new(&self.inner.catalogue);
+                        let mut latest = batch.get("job", id)?.ok_or_else(|| anyhow::anyhow!("JOB_UNAVAILABLE"))?;
+                        if !matches!(latest["state"].as_str(), Some("queued" | "running")) { break; }
+                        let queued = latest["state"] == "queued";
+                        latest["cancelRequested"] = json!(true);
+                        latest["updatedAt"] = json!(Utc::now().to_rfc3339());
+                        if queued { latest["state"] = json!("cancelled"); }
+                        batch.stage("job", id, latest.clone())?;
+                        if batch.try_commit()?.is_some() { job = latest; cancelled_queued = queued; break; }
+                        ensure!(attempt < 3, "CONCURRENT_UPDATE");
+                    }
+                    if cancelled_queued { self.save_job(app, &mut job, "cancelled", Some("CANCELLED"))?; }
+                    let _ = app.emit("nna:changed", json!({"scope":"jobs"}));
+                    if cancelled_queued && job["type"] == "jinxxyLogin" {
                         let account = account_arg(&job)?;
                         session::finish_login(app, StoreProvider::Jinxxy, &account, false).await?;
-                        self.inner.catalogue.discard_unverified_account(&account)?;
+                        session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Jinxxy, &account)?;
                         let _ = app.emit("nna:changed", json!({"scope":"booth"}));
                     }
                 } else {
@@ -2031,6 +2074,7 @@ impl JinxxyService {
         let mut observed = BTreeSet::new();
         let mut product_keys = BTreeSet::new();
         let mut completed_products = BTreeSet::new();
+        let mut incomplete_products = BTreeSet::new();
         let mut finished: BTreeSet<String> = self
             .inner
             .catalogue
@@ -2132,9 +2176,11 @@ impl JinxxyService {
                             .is_none_or(|(a, b)| a == b),
                         "JINXXY_PRODUCT_BINDING_UNPROVEN"
                     );
-                    // Publish only this fully observed grant; other grants retain their
-                    // own entitlements and merge when their detail is available.
-                    ensure!(detail.inventory_complete, "JINXXY_MANIFEST_INCOMPLETE");
+                    // Incomplete grants publish known facts additively without
+                    // certifying membership or blocking the remaining inventory.
+                    if !detail.inventory_complete {
+                        incomplete_products.insert(detail.product_id.clone());
+                    }
                     let payment =
                         if let Some(order) = detail.order_id.as_ref().or(entry.order_id.as_ref()) {
                             let result = async {
@@ -2241,6 +2287,7 @@ impl JinxxyService {
                         .chain(
                             details
                                 .iter()
+                                .filter(|(detail, _, _)| detail.inventory_complete)
                                 .map(|(detail, _, _)| detail.inventory_id.clone()),
                         )
                         .collect();
@@ -2338,6 +2385,7 @@ impl JinxxyService {
         // Each product's current owned grants change atomically, with cancellation
         // checked in the same expected-row transaction as the certification.
         for product in &completed_products {
+            if incomplete_products.contains(product) { continue; }
             self.certify_product_membership(
                 job,
                 &account,
@@ -2356,6 +2404,7 @@ impl JinxxyService {
         job["progress"]["stage"] = json!("finalizing");
         self.save_job(app, job, "running", None)?;
         self.check_cancelled(&id)?;
+        ensure!(incomplete_products.is_empty(), "JINXXY_MANIFEST_INCOMPLETE");
         self.save_job(app, job, "completed", None)
     }
     fn certify_product_membership(
@@ -2573,7 +2622,7 @@ impl JinxxyService {
         Ok(DownloadTicket {
             provider: StoreProvider::Jinxxy,
             url,
-            client: session.client,
+            client: super::http::build_download_client(StoreProvider::Jinxxy, session.jar.clone())?,
             expected_size: offered.size_bytes,
             expected_origin: None,
         })
@@ -2611,6 +2660,69 @@ pub fn validate_download_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queued_login_is_selected_independently_and_accounts_are_reserved_once() {
+        let fixture = WorkerFixture::new();
+        let service = fixture.service();
+        let first = "d0140000-0000-4000-8000-000000000001";
+        let second = "d0140000-0000-4000-8000-000000000002";
+        for (id, kind, account) in [("authored-metadata", "jinxxySync", first), ("authored-login", "jinxxyLogin", second), ("authored-same-account", "jinxxyUpdate", first)] {
+            service.inner.catalogue.put("job", id, json!({"id":id,"type":kind,"store":"Jinxxy","accountId":account,"state":"queued"})).unwrap();
+        }
+        let metadata_busy = service.inner.execution.try_lock().unwrap();
+        let owner = Arc::downgrade(&service.inner);
+        let (login_owner, login, login_work) = JinxxyService::next_worker_job(&owner).unwrap();
+        assert_eq!(login["type"], "jinxxyLogin");
+        let (metadata_owner, metadata, metadata_work) = JinxxyService::next_worker_job(&owner).unwrap();
+        assert_eq!(metadata["accountId"], first);
+        assert!(JinxxyService::next_worker_job(&owner).is_none());
+        assert_eq!(service.inner.running.lock().unwrap().len(), 2);
+        drop(login_work);
+        drop(metadata_work);
+        drop(login_owner);
+        drop(metadata_owner);
+        drop(metadata_busy);
+        drop(service);
+        assert!(owner.upgrade().is_none());
+        fixture.finish();
+    }
+    #[test]
+    fn incomplete_inventory_grant_keeps_known_files_and_does_not_block_healthy_publication() {
+        let path = std::env::temp_dir().join(format!("nna-jinxxy-partial-grants-{}", uuid::Uuid::new_v4()));
+        let catalogue = Catalogue::open(&path).unwrap();
+        let service = JinxxyService::new(catalogue.clone()).unwrap();
+        let account = "d0140000-0000-4000-8000-000000000001";
+        let partial_inventory = "1234567890123456701";
+        let healthy_inventory = "1234567890123456702";
+        let partial_product = "1234567890123456711";
+        let healthy_product = "1234567890123456712";
+        catalogue.put("account", account, json!({"id":account,"store":"Jinxxy"})).unwrap();
+        let partial_entitlement = format!("jinxxy:{account}:{partial_inventory}");
+        catalogue.put("entitlement", &partial_entitlement, json!({"id":partial_entitlement,"accountId":account,"productId":format!("jinxxy:{partial_product}"),"inventoryId":partial_inventory,"source":"library","fileIds":["retained-file"],"manifestComplete":false})).unwrap();
+        let partial = parse_detail(&[json!({"inventory_item":{"id":partial_inventory,"item":{"id":partial_product,"name":"Authored incomplete","files":[]}}})], partial_inventory, Some(partial_product)).unwrap();
+        let healthy = parse_detail(&[json!({"inventory_item":{"id":healthy_inventory,"item":{"id":healthy_product,"name":"Authored healthy","files":[{"id":"1234567890123456721","file_name":"healthy.txt","size":1}]}}})], healthy_inventory, Some(healthy_product)).unwrap();
+        assert!(!partial.inventory_complete);
+        assert!(healthy.inventory_complete);
+        for detail in [partial, healthy] {
+            let mut batch = crate::booth::RecordBatch::new(&catalogue);
+            stage_observed_group(&mut batch, account, &[(detail, None, None)]).unwrap();
+            batch.commit().unwrap();
+        }
+        assert_eq!(catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap()["fileIds"], json!(["retained-file"]));
+        let mut job = json!({"id":"authored-partial-job","type":"jinxxySync","store":"Jinxxy","accountId":account,"state":"running","completedProducts":2});
+        catalogue.put("job", "authored-partial-job", job.clone()).unwrap();
+        service.certify_product_membership(&job, account, &format!("jinxxy:{healthy_product}"), &BTreeSet::from([healthy_inventory.to_owned()])).unwrap();
+        assert_eq!(catalogue.get("entitlement", &format!("jinxxy:{account}:{healthy_inventory}")).unwrap().unwrap()["manifestComplete"], true);
+        assert_eq!(catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap()["manifestComplete"], false);
+        service.finish_job(&mut job, "needsAction", Some("JINXXY_MANIFEST_INCOMPLETE")).unwrap();
+        assert_eq!(job["state"], "needsAction");
+        assert_eq!(catalogue.related("acquisition", &format!("jinxxy:{healthy_product}")).unwrap().len(), 1);
+        assert_eq!(catalogue.get("source_coverage", &format!("jinxxy:{account}:inventory")).unwrap().unwrap()["coverageComplete"], false);
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     struct WorkerFixture(std::path::PathBuf);
     impl WorkerFixture {
         fn new() -> Self {

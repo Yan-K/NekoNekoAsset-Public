@@ -23,7 +23,12 @@ pub fn metadata_destination(provider: StoreProvider, url: &Url) -> bool {
 }
 
 pub fn build_client(provider: StoreProvider, jar: Arc<reqwest::cookie::Jar>) -> Result<Client> {
-    build_provider_client(provider, jar, false)
+    build_provider_client(provider, jar, false, false)
+}
+
+/// Large payloads have an inactivity bound, never a whole-transfer deadline.
+pub fn build_download_client(provider: StoreProvider, jar: Arc<reqwest::cookie::Jar>) -> Result<Client> {
+    build_provider_client(provider, jar, false, true)
 }
 
 /// HEAD returns the source Location unchanged: its capability is signed for a later GET.
@@ -31,13 +36,14 @@ pub fn build_head_client(
     provider: StoreProvider,
     jar: Arc<reqwest::cookie::Jar>,
 ) -> Result<Client> {
-    build_provider_client(provider, jar, true)
+    build_provider_client(provider, jar, true, false)
 }
 
 fn build_provider_client(
     provider: StoreProvider,
     jar: Arc<reqwest::cookie::Jar>,
     head: bool,
+    download: bool,
 ) -> Result<Client> {
     let mut headers = reqwest::header::HeaderMap::new();
     if provider == StoreProvider::Jinxxy {
@@ -46,7 +52,7 @@ fn build_provider_client(
             reqwest::header::HeaderValue::from_static("en-US"),
         );
     }
-    Client::builder()
+    let builder = Client::builder()
         .cookie_provider(jar)
         .default_headers(headers)
         .redirect(if head {
@@ -78,9 +84,9 @@ fn build_provider_client(
                 }
             })
         })
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(45))
-        .user_agent(concat!(
+        .connect_timeout(Duration::from_secs(20));
+    let builder = if download { builder.read_timeout(Duration::from_secs(60)) } else { builder.timeout(Duration::from_secs(45)) };
+    builder.user_agent(concat!(
             "NekoNekoAsset/",
             env!("CARGO_PKG_VERSION"),
             " (private asset manager)"
@@ -375,14 +381,14 @@ impl MetadataHttp {
                         .get(reqwest::header::RETRY_AFTER)
                         .and_then(|value| value.to_str().ok()),
                 );
+                self.defer(wait.max(Duration::from_secs(1 << (attempt + 1))))
+                    .await;
                 if attempt == 2 || wait > Duration::from_secs(120) {
                     if response.status() == StatusCode::TOO_MANY_REQUESTS {
                         bail!("RATE_LIMITED");
                     }
                     bail!("NETWORK_UNAVAILABLE");
                 }
-                self.defer(wait.max(Duration::from_secs(1 << (attempt + 1))))
-                    .await;
                 continue;
             }
             return Ok(response);
@@ -529,6 +535,27 @@ fn retry_after(value: Option<&str>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn terminal_rate_limit_defers_other_requests_without_waiting_to_return() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            socket.read(&mut bytes).await.unwrap();
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        let mut transport = MetadataHttp::new(StoreProvider::Gumroad);
+        transport.authored_origin = Some(origin.clone());
+        let began = Instant::now();
+        let error = transport.get(&Client::builder().no_proxy().build().unwrap(), origin).await.unwrap_err();
+        assert_eq!(error.to_string(), "RATE_LIMITED");
+        assert!(began.elapsed() < Duration::from_secs(5));
+        assert!(transport.pace.lock().await.saturating_duration_since(Instant::now()) >= Duration::from_secs(599));
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn authored_gumroad_http_measures_serial_and_full_product_pipeline() {
         use futures_util::StreamExt;

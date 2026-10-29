@@ -289,6 +289,92 @@ fn account(catalogue: &Catalogue, id: &str, disconnected: bool) {
 }
 const A: &str = "10000000-0000-4000-8000-000000000001";
 const B: &str = "10000000-0000-4000-8000-000000000002";
+#[test]
+fn selected_update_scopes_bind_accounts_and_keep_public_reads_independent() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    account(catalogue, A, false);
+    account(catalogue, B, false);
+    for (key, owner, product) in [("one", A, "900001"), ("two", B, "900002")] {
+        catalogue.put("entitlement", key, json!({"id":key,"accountId":owner,"productId":product,"source":"library"})).unwrap();
+    }
+    catalogue.put("acquisition", "free", json!({"id":"free","accountId":B,"productId":"900001","source":"free"})).unwrap();
+    let scopes = fixture.service.update_scopes(&BTreeSet::from(["900001".into(), "900002".into(), "900003".into()])).unwrap();
+    assert_eq!(scopes, vec![
+        json!({"accountId":A,"productIds":["900001"]}),
+        json!({"accountId":B,"productIds":["900001","900002"]}),
+        json!({"productIds":["900003"],"publicOnly":true}),
+    ]);
+    for scope in scopes {
+        let job = fixture.service.make_job("boothUpdate", scope).unwrap();
+        if let Some(owner) = job["accountId"].as_str() {
+            assert_eq!(catalogue.require_account_idle(owner).unwrap_err().to_string(), "ACCOUNT_BUSY");
+            assert_eq!(catalogue.remove_account(owner, true).unwrap_err().to_string(), "ACCOUNT_BUSY");
+            catalogue.delete("job", job["id"].as_str().unwrap()).unwrap();
+        } else {
+            catalogue.put("entitlement", "later", json!({"id":"later","accountId":B,"productId":"900003","source":"library"})).unwrap();
+            catalogue.require_account_idle(A).unwrap();
+            catalogue.require_account_idle(B).unwrap();
+        }
+    }
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn legacy_selected_update_keeps_its_owning_account_busy() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    account(catalogue, A, false);
+    account(catalogue, B, false);
+    catalogue.put("entitlement", "owned", json!({"id":"owned","accountId":A,"productId":"900001"})).unwrap();
+    catalogue.put("job", "legacy-update", json!({"id":"legacy-update","type":"boothUpdate","state":"running","args":{"productIds":["900001"]}})).unwrap();
+    assert_eq!(catalogue.remove_account(A, true).unwrap_err().to_string(), "ACCOUNT_BUSY");
+    catalogue.require_account_idle(B).unwrap();
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn store_journal_pruning_retains_current_sources_and_running_gumroad_runs() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    let checkpoints = [
+        json!({"id":format!("booth:{A}:library"),"accountId":A,"source":"library","runId":"current-library","journalIds":["booth-page:current-library:1"]}),
+        json!({"id":format!("booth:{A}:purchase"),"accountId":A,"source":"purchase","runId":"current-purchase"}),
+        json!({"id":"booth-page:current-library:1","accountId":A,"source":"library","runId":"current-library"}),
+        json!({"id":"booth-product:current-purchase:1","accountId":A,"source":"purchase","runId":"current-purchase"}),
+        json!({"id":"booth-page:obsolete:1","accountId":A,"source":"library","runId":"obsolete"}),
+        json!({"id":"booth-product:obsolete:1","accountId":A,"source":"purchase","runId":"obsolete"}),
+        json!({"id":"booth-page:other:1","accountId":B,"source":"library","runId":"other"}),
+        json!({"id":format!("gumroad:{A}:library"),"store":"Gumroad","accountId":A,"jobId":"latest"}),
+        json!({"id":format!("gumroad:{A}:latest:0:1"),"store":"Gumroad","accountId":A,"runId":"latest"}),
+        json!({"id":format!("gumroad:{A}:active:0:1"),"store":"Gumroad","accountId":A,"runId":"active"}),
+        json!({"id":format!("gumroad:{A}:obsolete:0:1"),"store":"Gumroad","accountId":A,"runId":"obsolete"}),
+        json!({"id":format!("gumroad:{A}:selected:obsolete"),"store":"Gumroad","accountId":A,"jobId":"obsolete"}),
+        json!({"id":"local-import:keep","accountId":A,"runId":"obsolete"}),
+    ];
+    for checkpoint in checkpoints {
+        catalogue.put("checkpoint", checkpoint["id"].as_str().unwrap(), checkpoint.clone()).unwrap();
+    }
+    catalogue.put("job", "active", json!({"id":"active","type":"gumroadSync","store":"Gumroad","accountId":A,"state":"running"})).unwrap();
+    assert_eq!(catalogue.prune_store_checkpoints("BOOTH", A).unwrap(), 2);
+    assert_eq!(catalogue.prune_store_checkpoints("Gumroad", A).unwrap(), 2);
+    assert_eq!(catalogue.prune_store_checkpoints("BOOTH", A).unwrap(), 0);
+    assert_eq!(catalogue.prune_store_checkpoints("Gumroad", A).unwrap(), 0);
+    assert!(catalogue.get("checkpoint", "booth-page:current-library:1").unwrap().is_some());
+    assert!(catalogue.get("checkpoint", "booth-product:current-purchase:1").unwrap().is_some());
+    assert!(catalogue.get("checkpoint", "booth-page:other:1").unwrap().is_some());
+    assert!(catalogue.get("checkpoint", &format!("gumroad:{A}:latest:0:1")).unwrap().is_some());
+    assert!(catalogue.get("checkpoint", &format!("gumroad:{A}:active:0:1")).unwrap().is_some());
+    assert!(catalogue.get("checkpoint", "local-import:keep").unwrap().is_some());
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[tokio::test]
 async fn library_and_purchase_publish_and_queue_ten_files_in_either_arrival_order() {
     let mut controls = String::new();

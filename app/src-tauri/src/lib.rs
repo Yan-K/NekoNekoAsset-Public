@@ -11,6 +11,7 @@ mod library_lock;
 mod native;
 mod preview;
 mod profile;
+mod setup_sessions;
 #[cfg(test)]
 mod setup_tests;
 mod storage;
@@ -116,7 +117,7 @@ struct LibraryStatus {
 
 struct LibraryHost {
     device_dir: PathBuf,
-    status: LibraryStatus,
+    status: Mutex<LibraryStatus>,
     services: Mutex<Option<Services>>,
     setup: Mutex<Option<SetupState>>,
     opening: AtomicBool,
@@ -131,11 +132,13 @@ struct SetupState {
     stores: Arc<StoreService>,
     candidate: Arc<Mutex<PathBuf>>,
     initial_preferences: Value,
+    sessions: Arc<setup_sessions::SetupSessions>,
 }
 
 impl SetupState {
     fn new(device_dir: &std::path::Path, candidate: PathBuf, locale: &str) -> anyhow::Result<Self> {
         let catalogue = Catalogue::open_setup(device_dir)?;
+        let sessions = Arc::new(setup_sessions::SetupSessions::new(device_dir)?);
         catalogue.command("preferences", json!({"patch":{"locale":locale}}))?;
         let initial_preferences = catalogue
             .get("preferences", "app")?
@@ -149,6 +152,7 @@ impl SetupState {
             stores,
             candidate: Arc::new(Mutex::new(candidate)),
             initial_preferences,
+            sessions,
         })
     }
 
@@ -163,6 +167,14 @@ impl SetupState {
 }
 
 impl LibraryHost {
+    fn status_snapshot(&self) -> Result<LibraryStatus, UiError> {
+        self.status
+            .lock()
+            .map(|status| status.clone())
+            .map_err(|_| UiError {
+                code: "library_unavailable".into(),
+            })
+    }
     fn begin_opening(&self) -> Result<(), UiError> {
         if self.opening.swap(true, Ordering::AcqRel) {
             return Err(UiError {
@@ -198,9 +210,9 @@ impl LibraryHost {
         }
         self.active_services()?.ok_or_else(|| UiError {
             code: self
-                .status
-                .error_code
-                .clone()
+                .status_snapshot()
+                .ok()
+                .and_then(|status| status.error_code)
                 .unwrap_or_else(|| "library_not_open".into()),
         })
     }
@@ -214,14 +226,23 @@ impl UiError {
     /// Library setup exposes a cause and recovery action, without raw OS/SQLite
     /// messages or paths. Inspect typed sources before falling back to stable codes.
     fn from_library_error(error: &anyhow::Error) -> Self {
-        let io_code = error.downcast_ref::<std::io::Error>().and_then(|source| {
-            match source.kind() {
-                std::io::ErrorKind::PermissionDenied => Some("library_permission_denied"),
-                std::io::ErrorKind::StorageFull => Some("library_disk_full"),
-                std::io::ErrorKind::NotADirectory => Some("library_path_not_directory"),
-                _ => None,
-            }
-        });
+        if error
+            .chain()
+            .any(|cause| cause.to_string() == "library_preferences_write_failed")
+        {
+            return Self {
+                code: "library_preferences_write_failed".into(),
+            };
+        }
+        let io_code =
+            error
+                .downcast_ref::<std::io::Error>()
+                .and_then(|source| match source.kind() {
+                    std::io::ErrorKind::PermissionDenied => Some("library_permission_denied"),
+                    std::io::ErrorKind::StorageFull => Some("library_disk_full"),
+                    std::io::ErrorKind::NotADirectory => Some("library_path_not_directory"),
+                    _ => None,
+                });
         let sqlite_code = error
             .downcast_ref::<rusqlite::Error>()
             .map(|source| match source {
@@ -275,10 +296,19 @@ fn trusted_access(window: &tauri::WebviewWindow) -> Result<(), UiError> {
         })
     }
 }
-fn trusted(window: &tauri::WebviewWindow) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, UiError> {
+fn trusted(
+    window: &tauri::WebviewWindow,
+) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, UiError> {
     trusted_access(window)?;
-    window.app_handle().state::<NativeOperationGate>().0.clone().try_read_owned()
-        .map_err(|_| UiError { code: "updates_busy".into() })
+    window
+        .app_handle()
+        .state::<NativeOperationGate>()
+        .0
+        .clone()
+        .try_read_owned()
+        .map_err(|_| UiError {
+            code: "updates_busy".into(),
+        })
 }
 fn changed(app: &tauri::AppHandle, scope: &str) {
     let _ = app.emit("nna:changed", json!({"scope":scope}));
@@ -443,11 +473,12 @@ async fn catalogue_action(
         }
         return Ok(result);
     }
-    if services.status.state == "unconfigured"
+    let status = services.status_snapshot()?;
+    if status.state == "unconfigured"
         && services.active_services()?.is_none()
         && matches!(action.as_str(), "bootstrap" | "state")
     {
-        let locale = services.status.locale.clone();
+        let locale = status.locale;
         return Ok(
             json!({"version":1,"products":[],"accounts":[],"roots":[],"jobs":[],"preferences":{"locale":locale,"setupComplete":false,"autoDownloadAll":false},"collections":[],"savedSearches":[],"sourceCoverage":[],"conflicts":[],"avatarOptions":[],"ownedBaseOptions":[],"tagOptions":[],"total":0,"counts":{"all":0,"downloaded":0,"attention":0}}),
         );
@@ -610,6 +641,23 @@ async fn booth_action(
                 });
             }
         }
+        if matches!(action.as_str(), "account_login" | "login" | "retry_sync") {
+            let account_id = if action == "retry_sync" {
+                setup.catalogue.get("job", args["jobId"].as_str().unwrap_or(""))
+                    .map_err(UiError::from_error)?
+                    .and_then(|job| job["accountId"].as_str().map(str::to_owned))
+            } else { args["accountId"].as_str().map(str::to_owned) };
+            if let Some(account_id) = account_id {
+                let provider = setup.stores.provider_for_account(&account_id).map_err(UiError::from_error)?;
+                if let Err(error) = setup.sessions.arm(provider, &account_id) {
+                    // No native login/profile write has begun. Discard only the
+                    // unused memory account; an existing unmarked profile stays.
+                    let _ = setup.catalogue.discard_unverified_account(&account_id);
+                    changed(&app, "booth");
+                    return Err(UiError::from_error(error));
+                }
+            }
+        }
         let result = setup
             .stores
             .command(&app, &action, args)
@@ -724,18 +772,18 @@ async fn storage_action(
             code: "worker_failed".into(),
         })?
         .map_err(UiError::from_error)?;
-        let path = result["libraryPath"].as_str().ok_or_else(|| UiError {
-            code: "library_unavailable".into(),
-        })?;
-        let locale = services
-            .catalogue
-            .get("preferences", "app")
-            .map_err(UiError::from_error)?
-            .unwrap_or(json!({}))["locale"]
-            .as_str()
-            .unwrap_or("en")
-            .to_owned();
-        if let Err(error) = profile::prepare_restart_handoff().and_then(|_| {
+        let handoff = (|| -> anyhow::Result<()> {
+            let path = result["libraryPath"]
+                .as_str()
+                .context("library_unavailable")?;
+            let locale = services
+                .catalogue
+                .get("preferences", "app")?
+                .unwrap_or(json!({}))["locale"]
+                .as_str()
+                .unwrap_or("en")
+                .to_owned();
+            profile::prepare_restart_handoff()?;
             profile::select_library(
                 &device_dir,
                 &profile::LibrarySelection {
@@ -743,7 +791,8 @@ async fn storage_action(
                     locale,
                 },
             )
-        }) {
+        })();
+        if let Err(error) = handoff {
             services
                 .catalogue
                 .release_move_hold()
@@ -882,7 +931,13 @@ fn library_status(
 }
 
 fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {
-    let mut status = host.status.clone();
+    let mut status = host.status_snapshot()?;
+    if status.error_code.as_deref() == Some("reset_incomplete")
+        && host.opening.load(Ordering::Acquire)
+    {
+        status.error_code = Some("reset_in_progress".into());
+        return Ok(status);
+    }
     if let Some(setup) = host.active_setup()? {
         status.state = "setup".into();
         status.path = Some(setup.candidate()?);
@@ -1043,8 +1098,12 @@ fn materialize_setup(
         return Ok((target, preferences));
     }
     let accounts = setup.catalogue.list("account")?;
+    if let Err(error) = setup.sessions.release(&accounts) {
+        rearm_unpublished_setup_sessions(setup, &target, &accounts);
+        return Err(error);
+    }
     let mut selected = false;
-    let result = target.commit_setup(patch.clone(), accounts, || {
+    let result = target.commit_setup(patch.clone(), accounts.clone(), || {
         profile::select_library(
             device_dir,
             &profile::LibrarySelection {
@@ -1055,6 +1114,9 @@ fn materialize_setup(
         selected = true;
         Ok(())
     });
+    if result.is_err() {
+        rearm_unpublished_setup_sessions(setup, &target, &accounts);
+    }
     if result.is_err() && selected {
         // SQL commit failed after the locator write. Restore only this exact
         // device locator; the target transaction rolls back without publication.
@@ -1068,6 +1130,17 @@ fn materialize_setup(
         }
     }
     Ok((target, result?))
+}
+
+fn rearm_unpublished_setup_sessions(setup: &SetupState, target: &Catalogue, accounts: &[Value]) {
+    let unpublished: Vec<_> = accounts.iter().filter(|account| {
+        let Some(id) = account["id"].as_str() else { return false };
+        // Any uncertainty retains the released marker. In particular, an SQL
+        // commit error is never authority to delete a possibly committed login.
+        matches!(target.get("account", id), Ok(None))
+            && setup.catalogue.get("account", id).is_ok_and(|current| current.as_ref() == Some(*account))
+    }).cloned().collect();
+    let _ = setup.sessions.rearm(&unpublished);
 }
 
 async fn finish_staged_setup(
@@ -1169,7 +1242,13 @@ fn open_selected_catalogue(
         }
         destination
     } else {
-        path
+        // Open/Retry must never adopt an unrelated folder as a new library.
+        // Initialization belongs to an explicit new-library choice or Finish.
+        let root = storage::checked_library_root(&path)?;
+        let database = root.join(".nna/data/catalogue.sqlite3");
+        storage::validate_library_path(&database)?;
+        anyhow::ensure!(database.is_file(), "library_database_unavailable");
+        root
     };
     if let Some(current) = current {
         if std::fs::canonicalize(&path).ok().as_deref() == current.library_root() {
@@ -1200,8 +1279,9 @@ async fn library_open(
     let _operation = trusted(&window)?;
     host.begin_opening()?;
     let result = async {
+        let status = host.status_snapshot()?;
         if app_reset::pending(&host.device_dir) {
-            if host.status.path.as_ref() != Some(&path) {
+            if status.path.as_ref() != Some(&path) {
                 return Err(UiError {
                     code: "reset_pending".into(),
                 });
@@ -1213,13 +1293,18 @@ async fn library_open(
                     code: "worker_failed".into(),
                 })?
                 .map_err(UiError::from_error)?;
-            profile::prepare_restart_handoff().map_err(UiError::from_error)?;
-            restart_for_library(app);
-            return Ok(json!({"restarting":true}));
+            let mut reset_status = host.status.lock().map_err(|_| UiError { code: "library_unavailable".into() })?;
+            reset_status.state = "unconfigured".into();
+            reset_status.path = None;
+            reset_status.error_code = None;
+            drop(reset_status);
+            host.opening.store(false, Ordering::Release);
+            changed(&app, "library");
+            return Ok(json!({"restarting":false}));
         }
         let setup = match host.active_setup()? {
             Some(setup) => Some(setup),
-            None if host.active_services()?.is_none() && host.status.state == "unconfigured" => {
+            None if host.active_services()?.is_none() && status.state == "unconfigured" => {
                 let candidate = validate_setup_candidate(path.clone(), new_library == Some(true))
                     .map_err(|error| UiError::from_library_error(&error))?;
                 let existing = if candidate.exists() {
@@ -1347,23 +1432,35 @@ async fn updates_install(
 ) -> Result<(), UiError> {
     trusted_access(&window)?;
     let _install = state.begin_install().map_err(UiError::from_error)?;
-    let _commands = gate.0.clone().try_write_owned()
-        .map_err(|_| UiError { code: "updates_busy".into() })?;
+    let _commands = gate.0.clone().try_write_owned().map_err(|_| UiError {
+        code: "updates_busy".into(),
+    })?;
     if host.opening.load(Ordering::Acquire) || host.active_setup()?.is_some() {
-        return Err(UiError { code: "updates_busy".into() });
+        return Err(UiError {
+            code: "updates_busy".into(),
+        });
     }
     let services = host.services()?;
     if services.setup_only {
-        return Err(UiError { code: "updates_busy".into() });
+        return Err(UiError {
+            code: "updates_busy".into(),
+        });
     }
     // The catalogue's existing gate atomically rejects live and queued work.
     // Keep the library's OS lock until updater installation exits this process.
     let _idle = services.catalogue.begin_restore_work().map_err(|error| {
         if error.to_string() == "storage_busy" {
-            UiError { code: "updates_busy".into() }
-        } else { UiError::from_error(error) }
+            UiError {
+                code: "updates_busy".into(),
+            }
+        } else {
+            UiError::from_error(error)
+        }
     })?;
-    state.install(&app, &version).await.map_err(UiError::from_error)
+    state
+        .install(&app, &version)
+        .await
+        .map_err(UiError::from_error)
 }
 
 pub fn run() {
@@ -1371,10 +1468,20 @@ pub fn run() {
     profile::configure(&mut context).expect("NekoNekoAsset profile could not be selected");
     // Apply remembered bounds before revealing the main window. Authored hidden
     // verification windows keep their configured visibility and never gain focus.
-    let main_visible = context.config().app.windows.iter()
-        .find(|window| window.label == "main").is_some_and(|window| window.visible);
-    if let Some(window) = context.config_mut().app.windows.iter_mut()
-        .find(|window| window.label == "main") {
+    let main_visible = context
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .is_some_and(|window| window.visible);
+    if let Some(window) = context
+        .config_mut()
+        .app
+        .windows
+        .iter_mut()
+        .find(|window| window.label == "main")
+    {
         window.visible = false;
     }
     tauri::Builder::default()
@@ -1409,6 +1516,47 @@ pub fn run() {
             };
             std::fs::create_dir_all(&data_dir)?;
             window_state::initialize(app, &data_dir, main_visible);
+            setup_sessions::schedule_cleanup(&data_dir);
+            if app_reset::pending(&data_dir) {
+                app.manage(LibraryHost {
+                    device_dir: data_dir.clone(),
+                    status: Mutex::new(LibraryStatus {
+                        state: "blocked".into(),
+                        path: app_reset::pending_library(&data_dir),
+                        default_path: None,
+                        error_code: Some("reset_incomplete".into()),
+                        locale: profile::selected_library(&data_dir)
+                            .ok()
+                            .flatten()
+                            .map(|selection| selection.locale)
+                            .unwrap_or_else(|| "en".into()),
+                        missing_credentials: vec![],
+                    }),
+                    services: Mutex::new(None),
+                    setup: Mutex::new(None),
+                    opening: AtomicBool::new(true),
+                    next_catalogue: Mutex::new(None),
+                    switching: Mutex::new(None),
+                });
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        app_reset::apply_pending(&data_dir)
+                    })
+                    .await;
+                    let host = handle.state::<LibraryHost>();
+                    if matches!(result, Ok(Ok(()))) {
+                        if let Ok(mut status) = host.status.lock() {
+                            status.state = "unconfigured".into();
+                            status.path = None;
+                            status.error_code = None;
+                        }
+                    }
+                    host.opening.store(false, Ordering::Release);
+                    let _ = handle.emit("nna:changed", json!({"scope":"library"}));
+                });
+                return Ok(());
+            }
             // Explicit reset retains its unconfigured fallback; no unrelated
             // completed default is opened or changed while returning to setup.
             let applying_reset = app_reset::pending(&data_dir);
@@ -1460,21 +1608,37 @@ pub fn run() {
                         .as_ref()
                         .ok_or_else(|| anyhow::anyhow!("library_unavailable"))
                         .and_then(|path| validate_setup_candidate(path.clone(), false))
-                        .and_then(|path| SetupState::new(&data_dir, path, "en"));
+                        .and_then(|path| {
+                            if path.exists()
+                                && Catalogue::probe_setup_preferences(&path)?
+                                    .is_some_and(|preferences| preferences["setupComplete"] == true)
+                            {
+                                Catalogue::open_bound(&path, &data_dir).map(Some)
+                            } else {
+                                setup = Some(SetupState::new(&data_dir, path, "en")?);
+                                Ok(None)
+                            }
+                        });
                     let error = opened
                         .as_ref()
                         .err()
                         .map(|error| UiError::from_library_error(error).code);
-                    let path = opened
+                    let path = setup
                         .as_ref()
-                        .ok()
-                        .and_then(|setup| setup.candidate().ok());
-                    setup = opened.ok();
+                        .and_then(|setup| setup.candidate().ok())
+                        .or_else(|| default_path.clone());
+                    let catalogue = opened.ok().flatten();
                     (
-                        None,
+                        catalogue.clone(),
                         LibraryStatus {
                             state: if error.is_some() {
-                                "unconfigured"
+                                if default_path.as_ref().is_some_and(|path| path.join(".nna/data/catalogue.sqlite3").is_file()) {
+                                    "blocked"
+                                } else {
+                                    "unconfigured"
+                                }
+                            } else if catalogue.is_some() {
+                                "ready"
                             } else {
                                 "setup"
                             }
@@ -1517,7 +1681,7 @@ pub fn run() {
             let Some(catalogue) = catalogue else {
                 app.manage(LibraryHost {
                     device_dir: data_dir,
-                    status,
+                    status: Mutex::new(status),
                     services: Mutex::new(None),
                     setup: Mutex::new(setup),
                     opening: AtomicBool::new(false),
@@ -1526,24 +1690,47 @@ pub fn run() {
                 });
                 return Ok(());
             };
-            if let Some(preferences) = catalogue.get("preferences", "app")? {
-                if let Some(locale) = preferences["locale"].as_str() {
-                    status.locale = locale.into();
+            let prepared = (|| -> anyhow::Result<Services> {
+                if let Some(preferences) = catalogue.get("preferences", "app")? {
+                    if let Some(locale) = preferences["locale"].as_str() {
+                        status.locale = locale.into();
+                    }
                 }
-            }
-            let services = Services::new(catalogue.clone(), &data_dir)?;
+                let services = Services::new(catalogue.clone(), &data_dir)?;
+                app.asset_protocol_scope()
+                    .allow_directory(catalogue.data_dir().join("media"), true)?;
+                app.asset_protocol_scope()
+                    .allow_directory(catalogue.data_dir().join("cache").join("previews"), true)?;
+                if !services.setup_only {
+                    catalogue.start_sync_worker()?;
+                }
+                Ok(services)
+            })();
+            let services = match prepared {
+                Ok(services) => services,
+                Err(error) => {
+                    status.state = "blocked".into();
+                    status.error_code = Some(UiError::from_library_error(&error).code);
+                    app.manage(LibraryHost {
+                        device_dir: data_dir,
+                        status: Mutex::new(status),
+                        services: Mutex::new(None),
+                        setup: Mutex::new(None),
+                        opening: AtomicBool::new(false),
+                        next_catalogue: Mutex::new(None),
+                        switching: Mutex::new(None),
+                    });
+                    return Ok(());
+                }
+            };
             let setup_only = services.setup_only;
             let stores = services.stores.clone();
             let storage = services.storage.clone();
             let ai_jobs = services.ai_jobs.clone();
             let unity = services.unity.clone();
-            app.asset_protocol_scope()
-                .allow_directory(catalogue.data_dir().join("media"), true)?;
-            app.asset_protocol_scope()
-                .allow_directory(catalogue.data_dir().join("cache").join("previews"), true)?;
             app.manage(LibraryHost {
                 device_dir: data_dir,
-                status,
+                status: Mutex::new(status),
                 services: Mutex::new(Some(services)),
                 setup: Mutex::new(None),
                 opening: AtomicBool::new(false),
@@ -1556,7 +1743,6 @@ pub fn run() {
             if setup_only {
                 return Ok(());
             }
-            catalogue.start_sync_worker()?;
             let automatic_storage = storage.clone();
             app.listen("nna:changed", move |event| {
                 let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {

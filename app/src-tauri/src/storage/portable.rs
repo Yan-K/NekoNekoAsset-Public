@@ -354,22 +354,30 @@ pub(super) fn copy_into_locked_root(
     let inventory = inspect_sources(payload, cancel)?;
     require_space(&destination, inventory_total(&inventory)?)?;
     let mut owned: Vec<&InventoryEntry> = Vec::new();
+    let mut created_directories = Vec::new();
     let copied = (|| -> Result<()> {
         for (input, entry) in payload.iter().zip(&inventory) {
             cancelled(cancel)?;
             let target = destination.join(&entry.relative_path);
+            let mut directory = if entry.is_directory { Some(target.as_path()) } else { target.parent() };
+            while let Some(path) = directory {
+                if path == destination { break; }
+                if !path.exists() { created_directories.push(path.to_path_buf()); }
+                directory = path.parent();
+            }
             if entry.is_directory {
                 create_parents(&destination, &target.join("placeholder"))?;
                 owned.push(entry);
                 continue;
             }
             create_parents(&destination, &target)?;
+            let temporary = target.with_file_name(format!(".nna-move-{}.part", Uuid::new_v4()));
             let output = OpenOptions::new()
                 .create_new(true)
                 .write(true)
-                .open(&target)
+                .open(&temporary)
                 .context("storage.migration_create_failed")?;
-            let mut partial = Temporary::file(target.clone());
+            let mut partial = Temporary::file(temporary.clone());
             // Rust drops in reverse declaration order. Close the Windows file
             // before the partial guard tries to remove it on any failed copy.
             let mut output = output;
@@ -383,7 +391,8 @@ pub(super) fn copy_into_locked_root(
                 .sync_all()
                 .context("storage.migration_flush_failed")?;
             drop(output);
-            verify_disk(&target, entry, cancel)?;
+            verify_disk(&temporary, entry, cancel)?;
+            publish_file_exclusive(&temporary, &target)?;
             partial.disarm();
             owned.push(entry);
         }
@@ -409,6 +418,13 @@ pub(super) fn copy_into_locked_root(
                 }
                 parent = path.parent();
             }
+        }
+        // The failed current entry may have created parents before any file
+        // completed. Only remove the empty directories this call introduced.
+        created_directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        created_directories.dedup();
+        for path in created_directories {
+            let _ = fs::remove_dir(path);
         }
         return Err(error);
     }

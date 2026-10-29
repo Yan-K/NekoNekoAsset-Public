@@ -1,4 +1,4 @@
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, io::Write, path::Path};
@@ -339,7 +339,7 @@ fn write_settings(path: &Path, settings: Settings) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|_| anyhow!("ai_config_invalid"))?;
+        .context("ai_settings_write_failed")?;
     let result = (|| -> Result<()> {
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -350,7 +350,7 @@ fn write_settings(path: &Path, settings: Settings) -> Result<()> {
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.map_err(|_| anyhow!("ai_config_invalid"))
+    result.context("ai_settings_write_failed")
 }
 #[cfg(windows)]
 pub(crate) fn replace_file(source: &Path, target: &Path) -> Result<()> {
@@ -363,7 +363,7 @@ pub(crate) fn replace_file(source: &Path, target: &Path) -> Result<()> {
     let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 1 | 8) } == 0 {
         return Err(
-            anyhow::Error::new(std::io::Error::last_os_error()).context("ai_config_invalid")
+            anyhow::Error::new(std::io::Error::last_os_error()).context("file_replace_failed")
         );
     }
     Ok(())

@@ -87,9 +87,25 @@ impl StorageService {
         products: Option<&HashSet<String>>,
         usable_only: bool,
     ) -> Result<Vec<PayloadSource>> {
+        self.payload_records(
+            &self.catalogue.list("artifact")?,
+            &self.catalogue.list("product")?,
+            root_filter,
+            products,
+            usable_only,
+        )
+    }
+    fn payload_records(
+        &self,
+        artifacts: &[Value],
+        product_records: &[Value],
+        root_filter: Option<&str>,
+        products: Option<&HashSet<String>>,
+        usable_only: bool,
+    ) -> Result<Vec<PayloadSource>> {
         let mut result = Vec::new();
         let mut seen = HashSet::new();
-        for a in self.catalogue.list("artifact")? {
+        for a in artifacts {
             let root_id = io::required_string(&a, "rootId")?;
             if root_filter.is_some_and(|id| id != root_id) {
                 continue;
@@ -154,7 +170,7 @@ impl StorageService {
             }
         }
         // Imported folder trees include empty directories independently of archive extraction.
-        for product in self.catalogue.list("product")? {
+        for product in product_records {
             if product["provider"] != "local"
                 || products
                     .is_some_and(|ids| !product["id"].as_str().is_some_and(|id| ids.contains(id)))
@@ -162,8 +178,7 @@ impl StorageService {
                 continue;
             }
             let id = io::required_string(&product, "id")?;
-            let artifacts = self.catalogue.related("artifact", id)?;
-            let Some(artifact) = artifacts.first() else {
+            let Some(artifact) = artifacts.iter().find(|a| a["productId"] == id) else {
                 continue;
             };
             let root_id = io::required_string(artifact, "rootId")?;
@@ -186,6 +201,65 @@ impl StorageService {
             }
         }
         Ok(result)
+    }
+    pub(super) fn backup_payload(&self, manifest: &Value) -> Result<Vec<PayloadSource>> {
+        let artifacts = manifest["records"]["artifact"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+        let products = manifest["records"]["product"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+        for artifact in artifacts {
+            ensure!(artifact["status"] != "ready" || artifact["originalAvailable"] == true
+                || artifact["extractedPath"].is_string(), "backup_payload_missing");
+        }
+        // Derive bytes from the exact captured records, rather than reading a
+        // newer artifact list after an account or product was removed.
+        let mut payload = self.payload_records(artifacts, products, None, None, false)?;
+        let by_path: HashMap<_, _> = payload.iter()
+            .map(|source| ((source.root_id.as_str(), source.relative_path.as_str()), source)).collect();
+        let roots: HashSet<_> = manifest["records"]["root"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?
+            .iter().filter_map(|root| root["id"].as_str()).collect();
+        let require = |root: &str, relative: &str, hash: &str, size: u64, directory: bool| -> Result<()> {
+            let source = by_path.get(&(root, relative))
+                .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+            ensure!(source.is_directory == directory
+                && if directory { hash.is_empty() && size == 0 }
+                   else { source.expected_hash.as_deref() == Some(hash)
+                       && std::fs::metadata(&source.source_path)?.len() == size },
+                "backup_payload_missing");
+            Ok(())
+        };
+        for artifact in artifacts {
+            let root = io::required_string(artifact, "rootId")?;
+            ensure!(roots.contains(root), "backup_payload_missing");
+            if artifact["originalAvailable"] == true {
+                require(root, io::required_string(artifact, "relativePath")?,
+                    io::required_string(artifact, "hash")?,
+                    artifact["sizeBytes"].as_u64().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?, false)?;
+            }
+            if let Some(base) = artifact["extractedPath"].as_str() {
+                let entries = artifact["extractedInventory"].as_array()
+                    .filter(|entries| !entries.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+                for entry in entries {
+                    require(root, &format!("{base}/{}", io::required_string(entry, "relativePath")?),
+                        entry["hash"].as_str().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
+                        entry["sizeBytes"].as_u64().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?,
+                        entry["isDirectory"] == true)?;
+                }
+            } else if matches!(artifact["status"].as_str(), Some("ready" | "downloaded" | "extractionFailed")) {
+                ensure!(artifact["originalAvailable"] == true, "backup_payload_missing");
+            }
+        }
+        let media = self.media_payload()?;
+        let media_paths: HashSet<_> = media.iter().map(|source| source.relative_path.as_str()).collect();
+        for relative in manifest["media"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))? {
+            let relative = relative.as_str().ok_or_else(|| anyhow::anyhow!("backup_payload_missing"))?;
+            ensure!(media_paths.contains(relative), "backup_payload_missing");
+        }
+        payload.extend(media);
+        Ok(payload)
     }
     fn media_payload(&self) -> Result<Vec<PayloadSource>> {
         let mut result = Vec::new();
@@ -232,8 +306,7 @@ impl StorageService {
             "export_backup" => {
                 let path = Path::new(io::required_string(args, "path")?);
                 let catalogue = self.catalogue.manifest()?;
-                let mut payload = self.payload(None, None, false)?;
-                payload.extend(self.media_payload()?);
+                let payload = self.backup_payload(&catalogue)?;
                 let result = portable::create_backup(path, catalogue, &payload, cancel)?;
                 Ok(json!({"fileCount":result.file_count,"totalBytes":result.total_bytes}))
             }
@@ -515,6 +588,15 @@ impl StorageService {
         Ok(base)
     }
     pub(super) fn reconcile_archive_cleanup(&self) -> Result<()> {
+        for root in self.catalogue.list("root")? {
+            if let Ok(path) = self.root_path(&root) {
+                if let Ok(staging) = io::safe_join(&path, ".nna-staging") {
+                    // Optional leftover cleanup cannot block ordinary library
+                    // use; unavailable/locked workspaces retain their marker.
+                    let _ = archive::recover_workspaces(&staging);
+                }
+            }
+        }
         let mut changes = Vec::new();
         for mut artifact in self.catalogue.list("artifact")? {
             if artifact["status"] == "downloading" && artifact["originalAvailable"] != true {
