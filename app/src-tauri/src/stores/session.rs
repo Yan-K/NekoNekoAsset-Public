@@ -8,6 +8,10 @@ use std::{
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use url::Url;
 
+#[cfg(windows)]
+#[path = "native_cookies.rs"]
+mod native_cookies;
+
 // The deployed first-party language switch declares these hosts explicitly.
 pub const JINXXY_HOSTS: &[&str] = &[
     "jinxxy.com",
@@ -77,6 +81,14 @@ pub fn profile_path(data_dir: &Path, provider: StoreProvider, account: &str) -> 
         .join(account_id(account)?))
 }
 
+/// Build request cookies without widening the native browser's host-only scope.
+pub(crate) fn cookies_for_request(window: &WebviewWindow, url: &Url) -> Result<Vec<tauri::webview::Cookie<'static>>> {
+    #[cfg(windows)]
+    { Ok(native_cookies::for_url(window, url.as_str())?.into_iter().map(super::session_cache::ScopedCookie::request_cookie).collect()) }
+    #[cfg(not(windows))]
+    { window.cookies_for_url(url.clone()).map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED")) }
+}
+
 /// Save only verified first-party cookies, outside catalogue, IPC and backups.
 pub async fn remember(
     window: WebviewWindow,
@@ -87,17 +99,20 @@ pub async fn remember(
     let profile = profile_path(data_dir, provider, account)?;
     let account = account_id(account)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let cookies = window
-            .cookies()
-            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+        #[cfg(windows)]
+        let cookies = native_cookies::list(&window)?;
+        #[cfg(not(windows))]
+        let cookies = window.cookies().map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+            .into_iter().map(super::session_cache::ScopedCookie::from).collect::<Vec<_>>();
+        let cookies = cookies
             .into_iter()
-            .filter(|cookie| {
-                cookie
-                    .domain()
+            .filter(|scoped| {
+                scoped
+                    .domain.as_deref()
                     .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
             })
             .collect();
-        super::session_cache::save(&profile, provider, &account, cookies)
+        super::session_cache::save_scoped(&profile, provider, &account, cookies)
     })
     .await
     .map_err(|_| anyhow::anyhow!("AUTH_SESSION_STORAGE_FAILED"))?
@@ -113,24 +128,28 @@ pub async fn restore(
     let profile = profile_path(data_dir, provider, account)?;
     let account = account_id(account)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let saved = super::session_cache::load(&profile, provider, &account).unwrap_or_default();
-        let current = window
-            .cookies()
-            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?;
-        for cookie in saved {
-            if !cookie
-                .domain()
+        let saved = super::session_cache::load_scoped(&profile, provider, &account).unwrap_or_default();
+        #[cfg(windows)]
+        let current = native_cookies::list(&window)?;
+        #[cfg(not(windows))]
+        let current = window.cookies().map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+            .into_iter().map(super::session_cache::ScopedCookie::from).collect::<Vec<_>>();
+        let missing = saved.into_iter().filter(|scoped| {
+            scoped
+                .domain.as_deref()
                 .is_some_and(|domain| cookie_host(provider, domain.trim_start_matches('.')))
-                || current.iter().any(|existing| {
-                    existing.name() == cookie.name()
-                        && existing.domain() == cookie.domain()
-                        && existing.path() == cookie.path()
+                && !current.iter().any(|existing| {
+                    existing.cookie.name() == scoped.cookie.name()
+                        && existing.domain == scoped.domain
+                        && existing.cookie.path() == scoped.cookie.path()
                 })
-            {
-                continue;
-            }
+        }).collect::<Vec<_>>();
+        #[cfg(windows)]
+        native_cookies::set(&window, missing)?;
+        #[cfg(not(windows))]
+        for cookie in missing {
             window
-                .set_cookie(cookie)
+                .set_cookie(cookie.cookie)
                 .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?;
         }
         Ok(())
@@ -309,10 +328,7 @@ pub async fn jar(
         let jar = Arc::new(reqwest::cookie::Jar::default());
         let mut count = 0;
         for url in origins {
-            for cookie in window
-                .cookies_for_url(url.clone())
-                .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
-            {
+            for cookie in cookies_for_request(&window, &url)? {
                 if cookie.name().is_empty()
                     || cookie.domain().is_some_and(|domain| {
                         !cookie_host(provider, domain.trim_start_matches('.'))

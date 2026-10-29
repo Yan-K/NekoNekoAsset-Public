@@ -22,6 +22,21 @@ pub fn metadata_destination(provider: StoreProvider, url: &Url) -> bool {
         })
 }
 
+fn login_path(url: &Url) -> bool {
+    matches!(url.path(), "/login" | "/two-factor" | "/sign_in")
+}
+
+fn resolver_login_redirect(provider: StoreProvider, response: &Response) -> bool {
+    if provider != StoreProvider::Gumroad || !response.status().is_redirection() {
+        return false;
+    }
+    response.headers().get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| response.url().join(value).ok())
+        .is_some_and(|url| metadata_destination(provider, &url)
+            && url.host_str() == Some("gumroad.com") && login_path(&url))
+}
+
 pub fn build_client(provider: StoreProvider, jar: Arc<reqwest::cookie::Jar>) -> Result<Client> {
     build_provider_client(provider, jar, false, false)
 }
@@ -364,10 +379,16 @@ impl MetadataHttp {
                 }
             });
             ensure!(destination(response.url()), "UNSAFE_REDIRECT");
-            if matches!(response.url().path(), "/login" | "/two-factor" | "/sign_in")
-                || response.status() == StatusCode::UNAUTHORIZED
+            if login_path(response.url())
+                || (resolver && resolver_login_redirect(self.provider, &response))
+                || (!resolver && response.status() == StatusCode::UNAUTHORIZED)
             {
                 bail!("AUTH_REQUIRED");
+            }
+            if response.status() == StatusCode::UNAUTHORIZED {
+                // A single file capability can be denied independently of the
+                // buyer session. Only account metadata/login evidence expires it.
+                bail!("DOWNLOAD_RESOLVER_FAILED");
             }
             if response.status() == StatusCode::FORBIDDEN {
                 bail!("PERMISSION_DENIED");
@@ -538,6 +559,39 @@ fn retry_after(value: Option<&str>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn resolver_denial_does_not_claim_account_expiry_without_login_evidence() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (status, location, resolver, expected) in [
+            ("401 Unauthorized", None, true, Some("DOWNLOAD_RESOLVER_FAILED")),
+            ("401 Unauthorized", None, false, Some("AUTH_REQUIRED")),
+            ("302 Found", Some("https://gumroad.com/login?next=%2Flibrary"), true, Some("AUTH_REQUIRED")),
+            ("302 Found", Some("https://gumroad.com/two-factor"), true, Some("AUTH_REQUIRED")),
+            ("302 Found", Some("https://gumroad.com.evil.invalid/login"), true, None),
+            ("302 Found", Some("http://gumroad.com/login"), true, None),
+            ("302 Found", Some("https://files.gumroad.com/login"), true, None),
+            ("302 Found", Some("https://gumroad.com/r/authored/product_files"), true, None),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let response = format!("HTTP/1.1 {status}\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n", location.map(|value| format!("Location: {value}\r\n")).unwrap_or_default());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                socket.read(&mut bytes).await.unwrap();
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let client = Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+            let mut transport = MetadataHttp::new(StoreProvider::Gumroad);
+            transport.authored_origin = Some(origin.clone());
+            let result = transport.request(&client, origin, resolver, if resolver { Method::HEAD } else { Method::GET }, None, None).await;
+            match expected {
+                Some(code) => assert_eq!(result.unwrap_err().to_string(), code),
+                None => assert_eq!(result.unwrap().status(), StatusCode::FOUND),
+            }
+            server.await.unwrap();
+        }
+    }
     #[test]
     fn retry_after_rejects_unrepresentable_delays() {
         assert_eq!(retry_after(Some("18446744073709551615")), Duration::from_secs(5));

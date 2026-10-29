@@ -376,7 +376,7 @@ fn capture_summary(job: &Value, available: bool) -> Value {
     let execution_version = if execution_version == env!("CARGO_PKG_VERSION") {
         env!("CARGO_PKG_VERSION")
     } else {
-        closed!(execution_version, "unknown"; "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4")
+        closed!(execution_version, "unknown"; "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4", "0.2.5")
     };
     let status = if available { "available" }
         else if job["supportDiagnostics"].is_object() { "unsupportedCapture" }
@@ -531,6 +531,8 @@ mod tests {
         assert_eq!(value["capture"]["executionAppVersion"], "0.2.4");
         assert_eq!(value["capture"]["attemptState"], "finished");
         assert_eq!(value["capture"]["status"], "available");
+        job["supportCapture"]["executionAppVersion"] = json!("0.2.5");
+        assert_eq!(parsed(&job, &[], &[])["capture"]["executionAppVersion"], "0.2.5");
         job["supportCapture"]["executionAppVersion"] = json!("0.2.4-PRIVATE_SESSION_VERSION");
         assert_eq!(parsed(&job, &[], &[])["capture"]["executionAppVersion"], "unknown");
         assert!(!report(&job, &[], &[]).contains("PRIVATE"));

@@ -1,7 +1,7 @@
 {
   "format": "NekoNekoAsset.ThirdPartyLicenseLedger",
   "formatVersion": 1,
-  "cargoLockSha256": "e86bcabac3145f2597ed90ccf99134e95fbee35477a91a26d2f9e9be04e4d84c",
+  "cargoLockSha256": "ffcb941a7fa8c0718b5a18974100683f1a1d8781991dc6bfba80fdea813d4ba4",
   "pnpmLockSha256": "c3c923b5060281c3d6eb667b33530a772baac9eeae0246ead7bddcab9b213ff8",
   "scopeNotes": [
     "Rust entries conservatively cover every exact current Cargo.lock package, including build-only and conditional-platform crates, and retain previously recorded original legal documents; they are not a claim that every entry ships in the Windows executable.",
@@ -22541,7 +22541,7 @@
     "provenance": "Original standard-library copyright document from the installed rustup component identified by its local official distribution manifest; the binary component archive was not downloaded or revalidated in this notice task.",
     "scope": "Attribution for the Rust standard library linked into the application, not redistribution of Rust compiler, cargo or other toolchain executables."
   },
-  "supplementalIndexSha256": "71cccd0b9bbd58c38cb5642da9165bc8350977aeddc7a2b85efa10a247a120e4",
+  "supplementalIndexSha256": "0ce6eae218fa87432661622a4da4ba317df4af5b7105e988ddb70f0aca4c28bb",
   "supplementalProvenanceLimits": [
     {
       "name": "fxhash",

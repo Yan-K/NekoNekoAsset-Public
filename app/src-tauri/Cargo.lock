@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "nekonekoasset"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "automerge",
@@ -2628,6 +2628,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+ "webview2-com",
  "windows",
  "zip",
 ]

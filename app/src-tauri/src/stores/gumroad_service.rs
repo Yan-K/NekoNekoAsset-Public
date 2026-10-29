@@ -2223,7 +2223,7 @@ impl GumroadService {
                 .clone();
             let response = self.inner.http.resolve_head(&head_client, url).await?;
             match response.status().as_u16() {
-                401 => bail!("AUTH_REQUIRED"),
+                401 => bail!("DOWNLOAD_RESOLVER_FAILED"),
                 403 => bail!("SIGNED_LINK_EXPIRED"),
                 404 | 410 => bail!("FILE_UNAVAILABLE"),
                 _ => ensure!(

@@ -107,9 +107,7 @@ pub async fn jar(window: WebviewWindow) -> Result<Arc<reqwest::cookie::Jar>> {
         let mut count = 0;
         for origin in ["https://accounts.booth.pm/", "https://booth.pm/"] {
             let url = url::Url::parse(origin).unwrap();
-            let cookies = window
-                .cookies_for_url(url.clone())
-                .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?;
+            let cookies = crate::stores::session::cookies_for_request(&window, &url)?;
             for cookie in cookies {
                 // The jar enforces scope on subsequent redirects; never set Cookie headers globally.
                 if cookie

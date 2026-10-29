@@ -1,6 +1,6 @@
 {
   "name": "com.yank.nekonekoasset.bridge",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "displayName": "NekoNekoAsset Bridge",
   "description": "Receive selected assets from NekoNekoAsset and review imports in Unity.",
   "unity": "2022.3",

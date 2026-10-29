@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "version": "0.2.5",
-  "sourceSha256": "ffe537a496f4954ae3a443cf8d18c8a536ac7f9a87c0b1ee89f37359b1f58bc1",
-  "verifiedAt": "2026-10-15T20:27:50.167442Z",
+  "version": "0.2.6",
+  "sourceSha256": "c3c4cae1f54d8f296ec8526e95451f336d1ba8cce50aa07527b7b9201c232714",
+  "verifiedAt": "2026-10-29T18:19:01.502946Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -28,63 +28,15 @@
     }
   },
   "aggregateEvidence": {
-    "products": 172,
-    "attachedFiles": 1206,
-    "decodedThumbnails": 164,
-    "firstPublicationObservedBounds": {
-      "jinxxy": {
-        "lowerSeconds": 34.265,
-        "upperSeconds": 39.696
-      },
-      "booth": {
-        "lowerSeconds": 60.375,
-        "upperSeconds": 65.542
-      },
-      "gumroad": {
-        "lowerSeconds": 81.072,
-        "upperSeconds": 86.313
-      }
-    },
-    "storeElapsedSeconds": {
-      "booth": 263.211,
-      "gumroad": 233.023,
-      "jinxxy": 40.043
-    },
-    "storeRequestCounts": {
-      "booth": 137,
-      "gumroad": 211,
-      "jinxxy": null
-    },
-    "authoredUnityFiles": 2,
-    "authoredUnityBytes": 1048920,
-    "unityFullRestartReceiptMatched": true,
-    "nativeUnityCoreAssertions": 76,
-    "verifierExecutableSha256": "6373bed3f2870a6c32c287ebc338b20351fa0f9cff76b4f7d90d6721cb774e88",
-    "frozenPublicBuildInputs": 378,
+    "products": 174,
+    "attachedFiles": 1250,
+    "decodedThumbnails": 166,
+    "verifierExecutableSha256": "0dfdc1f2ec41539e72c46d93475fe732e00e299dc88e11de2cc919da36208472",
+    "frozenPublicBuildInputs": 385,
     "actualNativeStoreAppVersionVerified": true,
     "metadataNormalSetupRestartVerified": true,
     "metadataAppClosedNormally": true,
-    "realBoothLocalesVerified": [
-      "ja",
-      "en",
-      "ko",
-      "zh-cn",
-      "zh-tw"
-    ],
-    "realBoothLocaleMatrixEntries": 25,
-    "realBoothSameReceiptPaidDateAndFilesVerified": true,
-    "realBoothLocaleMatrixSha256": "dc579d1819157522b2ef6fbeb4cae14d158d54dc28a0cf840a82769a411b2459",
-    "realBoothLocaleBuildProofSha256": "d900d0bde9ffb06a7de3939d9a1b34be582649e079f84106fab5cfc86768a537",
-    "realBoothLocaleParserExecutableSha256": "d23aad56295a616d86ae998c350113ebe21bb6ba3ebdb48e1abc9dbde982bfc0",
-    "realBoothDiagnosticsChecked": true,
-    "realBoothDiagnosticReportBytes": 5475,
-    "realBoothDiagnosticSources": 4,
-    "realBoothDiagnosticsSha256": "a80e3cb5d9a359879252ac1ce3d185649f27477ab39c381a8d30dc09834f0020",
-    "authoredNativeDiagnosticChecks": 27,
-    "authoredNativeDiagnosticUiChecks": 4,
-    "authoredNativeDiagnosticsReadOnly": true,
-    "operatingSystemClipboardUsed": false,
-    "nativeWindowMemoryPassed": true,
-    "nativeVisibleMaximizationVerified": false
+    "aiLiveApiVerified": false,
+    "aiKeysDeclinedByOwner": true
   }
 }

@@ -4,6 +4,36 @@ use anyhow::{anyhow, Result};
 use std::path::Path;
 use tauri::webview::Cookie;
 
+/// Cookie::domain() normalizes away the native parent-domain scope prefix.
+/// Keep that original domain within the existing encrypted snapshot field.
+pub(crate) struct ScopedCookie {
+    pub cookie: Cookie<'static>,
+    pub domain: Option<String>,
+}
+impl From<Cookie<'static>> for ScopedCookie {
+    fn from(cookie: Cookie<'static>) -> Self {
+        Self {
+            domain: cookie.domain().map(str::to_owned),
+            cookie,
+        }
+    }
+}
+impl ScopedCookie {
+    #[cfg(windows)]
+    pub(crate) fn request_cookie(mut self) -> Cookie<'static> {
+        // An HTTP Domain attribute means subdomain scope even without a dot.
+        // Omit it for exact-host native cookies rather than widening their scope.
+        if !self
+            .domain
+            .as_deref()
+            .is_some_and(|domain| domain.starts_with('.'))
+        {
+            self.cookie.unset_domain();
+        }
+        self.cookie
+    }
+}
+
 #[cfg(windows)]
 mod platform {
     use super::*;
@@ -238,13 +268,14 @@ mod platform {
         profile: &Path,
         provider: StoreProvider,
         account: &str,
-        cookies: Vec<Cookie<'static>>,
+        cookies: Vec<ScopedCookie>,
     ) -> Result<()> {
         ensure!(cookies.len() <= MAX_COOKIES, "SESSION_CACHE_INVALID");
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let mut stored = Vec::new();
-        for cookie in cookies {
-            let cookie = StoredCookie::capture(cookie, now);
+        for scoped in cookies {
+            let mut cookie = StoredCookie::capture(scoped.cookie, now);
+            cookie.domain = scoped.domain;
             cookie.validate(provider)?;
             if cookie.expires.is_none_or(|expires| expires > now) {
                 stored.push(cookie);
@@ -284,7 +315,7 @@ mod platform {
         profile: &Path,
         provider: StoreProvider,
         account: &str,
-    ) -> Result<Vec<Cookie<'static>>> {
+    ) -> Result<Vec<ScopedCookie>> {
         let mut binding = entropy(provider, account)?;
         let target = profile.join("session.bin");
         reject_links(&target)?;
@@ -316,7 +347,11 @@ mod platform {
         for cookie in stored {
             cookie.validate(provider)?;
             if cookie.expires.is_none_or(|expires| expires > now) {
-                cookies.push(cookie.restore()?);
+                let domain = cookie.domain.clone();
+                cookies.push(ScopedCookie {
+                    cookie: cookie.restore()?,
+                    domain,
+                });
             }
         }
         Ok(cookies)
@@ -339,6 +374,20 @@ pub fn save(
     account: &str,
     cookies: Vec<Cookie<'static>>,
 ) -> Result<()> {
+    save_scoped(
+        profile,
+        provider,
+        account,
+        cookies.into_iter().map(Into::into).collect(),
+    )
+}
+
+pub(crate) fn save_scoped(
+    profile: &Path,
+    provider: StoreProvider,
+    account: &str,
+    cookies: Vec<ScopedCookie>,
+) -> Result<()> {
     #[cfg(windows)]
     {
         platform::save(profile, provider, account, cookies)
@@ -355,6 +404,17 @@ pub fn load(
     provider: StoreProvider,
     account: &str,
 ) -> Result<Vec<Cookie<'static>>> {
+    Ok(load_scoped(profile, provider, account)?
+        .into_iter()
+        .map(|scoped| scoped.cookie)
+        .collect())
+}
+
+pub(crate) fn load_scoped(
+    profile: &Path,
+    provider: StoreProvider,
+    account: &str,
+) -> Result<Vec<ScopedCookie>> {
     #[cfg(windows)]
     {
         platform::load(profile, provider, account)
@@ -388,6 +448,91 @@ mod tests {
         time::{Duration, OffsetDateTime},
         SameSite,
     };
+
+    #[test]
+    fn protected_snapshot_keeps_native_domain_scope_and_reads_legacy_dotless_scope() {
+        let profile = std::env::temp_dir().join(format!(
+            "nna-authored-cookie-scope-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let account = "11111111-1111-4111-8111-111111111111";
+        let cookie = Cookie::build(("authored_scope", "AUTHORED_SCOPE_VALUE"))
+            .domain("booth.pm")
+            .path("/")
+            .secure(true)
+            .http_only(true)
+            .build();
+        save_scoped(
+            &profile,
+            StoreProvider::Booth,
+            account,
+            vec![
+                ScopedCookie {
+                    cookie: cookie.clone(),
+                    domain: Some(".booth.pm".into()),
+                },
+                ScopedCookie {
+                    cookie: cookie.clone(),
+                    domain: Some("booth.pm".into()),
+                },
+            ],
+        )
+        .unwrap();
+        let loaded = load_scoped(&profile, StoreProvider::Booth, account).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].domain.as_deref(), Some(".booth.pm"));
+        assert_eq!(loaded[1].domain.as_deref(), Some("booth.pm"));
+        assert_eq!(loaded[0].cookie.name(), loaded[1].cookie.name());
+        assert_eq!(loaded[0].cookie.path(), loaded[1].cookie.path());
+        // This is the exact prior field layout: a legacy dotless snapshot stays exact-host.
+        save(&profile, StoreProvider::Booth, account, vec![cookie]).unwrap();
+        assert_eq!(
+            load_scoped(&profile, StoreProvider::Booth, account).unwrap()[0]
+                .domain
+                .as_deref(),
+            Some("booth.pm")
+        );
+        clear(&profile).unwrap();
+        std::fs::remove_dir(profile).unwrap();
+    }
+
+    #[test]
+    fn request_cookie_jar_preserves_host_domain_path_and_secure_scope() {
+        use reqwest::cookie::CookieStore;
+        let jar = reqwest::cookie::Jar::default();
+        let origin = url::Url::parse("https://booth.pm/").unwrap();
+        for (name, domain, path) in [
+            ("authored_host", "booth.pm", "/"),
+            ("authored_domain", ".booth.pm", "/"),
+            ("authored_path", ".booth.pm", "/private"),
+        ] {
+            let scoped = ScopedCookie {
+                cookie: Cookie::build((name, "AUTHORED_VALUE"))
+                    .domain(domain)
+                    .path(path)
+                    .secure(true)
+                    .http_only(true)
+                    .build(),
+                domain: Some(domain.into()),
+            };
+            jar.add_cookie_str(&scoped.request_cookie().to_string(), &origin);
+        }
+        let header = |url: &str| {
+            jar.cookies(&url::Url::parse(url).unwrap())
+                .map(|value| value.to_str().unwrap().to_owned())
+                .unwrap_or_default()
+        };
+        let apex = header("https://booth.pm/");
+        assert!(apex.contains("authored_host="));
+        assert!(apex.contains("authored_domain="));
+        assert!(!apex.contains("authored_path="));
+        let child = header("https://accounts.booth.pm/private/item");
+        assert!(!child.contains("authored_host="));
+        assert!(child.contains("authored_domain="));
+        assert!(child.contains("authored_path="));
+        assert!(header("http://booth.pm/private/item").is_empty());
+        assert!(header("https://unrelated.invalid/private/item").is_empty());
+    }
 
     #[test]
     fn protected_cookie_snapshot_preserves_attributes_binding_expiry_and_clear() {

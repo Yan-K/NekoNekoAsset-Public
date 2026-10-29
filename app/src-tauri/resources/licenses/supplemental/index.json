@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "scope": "Exact Cargo.lock packages lacking recursively discoverable standalone legal files in the published public crate cache. This index does not claim target inclusion.",
   "generatedDate": "2026-10-09",
-  "cargoLockSha256": "e86bcabac3145f2597ed90ccf99134e95fbee35477a91a26d2f9e9be04e4d84c",
+  "cargoLockSha256": "ffcb941a7fa8c0718b5a18974100683f1a1d8781991dc6bfba80fdea813d4ba4",
   "packages": [
     {
       "name": "alloc-stdlib",

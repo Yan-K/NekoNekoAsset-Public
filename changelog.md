@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.6 Beta - 2026-10-30
+
+### Fixed
+
+- Startup and library recovery keep the selected location and setup drafts, show actionable storage errors, and prevent Retry from initializing the wrong folder. New installed profiles use a writable user-local default library location.
+- Backup replacement, collection, saved-search and custom-theme deletion require confirmation. Editors and pending actions retain their captured targets, drafts and focus; tag edits preserve tags that were outside the edited scope.
+- Store synchronization and batch local import continue past independent failed items. Forced updates bypass unused broken checkpoints, complete observed BOOTH grants can publish while public metadata is pending, and successful synchronization restores account status. Sync all continues after an account fails to start.
+- Cancellation and Retry preserve newer job state and prevent duplicated execution. Worker polling and product status queries avoid decoding unrelated job history; obsolete source work and undo history stay bounded.
+- Large downloads use connection and idle timeouts without a total-body deadline. Archive handling preserves verified outputs and originals on failure, reuses proven extracted files, and reads unmarked ZIP filenames as Japanese CP932 while honoring explicit UTF-8.
+- Moving a library preserves additional user files and empty folders, validates its database snapshot, and excludes concurrent preview writes. Pending reset deletion can recover a hot SQLite journal under the library lock.
+- Windows protected-session restore preserves parent-domain cookie scope. BOOTH sign-in allows the required Google, Apple and X authorization hosts; a file resolver's isolated authorization failure no longer discards an otherwise valid session.
+- Base-avatar pins respect R-18 Hide and Only filters. Storage, archive and Unity errors retain actionable translations across all five languages.
+- Unity import results reflect file import outcomes, independently of unrelated compiler errors. Interrupted transfers recover through the same durable request ID; proven snapshot cleanup, unreadable-request isolation and trusted-root checks preserve request evidence and user files.
+- Optional preview and AI chat storage initialize on demand and handle trusted linked ancestors. Gemini structured requests use the documented JSON output enum without relaxing native result validation.
+
+### Release notes
+
+- App and Unity Bridge share version 0.2.6 Beta. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage. AI provider/model APIs were not called during this release's verification.
+
 ## 0.2.5 Beta - 2026-10-16
 
 ### Fixed

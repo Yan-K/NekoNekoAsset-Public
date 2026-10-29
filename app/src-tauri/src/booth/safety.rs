@@ -26,7 +26,8 @@ pub fn auth_navigation(url: &Url) -> bool {
     secure(url)
         && url
             .host_str()
-            .is_some_and(|h| booth_host(h) || h == "pixiv.net" || h.ends_with(".pixiv.net"))
+            .is_some_and(|h| booth_host(h) || h == "pixiv.net" || h.ends_with(".pixiv.net")
+                || matches!(h, "accounts.google.com" | "appleid.apple.com" | "api.twitter.com"))
         && ![
             "/downloadables/",
             "/gifts/",
@@ -231,6 +232,34 @@ pub fn short(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observed_social_login_origins_do_not_expand_download_or_metadata_scope() {
+        for value in [
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://accounts.google.com/v3/signin/identifier",
+            "https://appleid.apple.com/auth/authorize",
+            "https://api.twitter.com/oauth/authorize",
+        ] {
+            let url = Url::parse(value).unwrap();
+            assert!(auth_navigation(&url));
+            assert!(!download_destination(&url));
+            assert!(!booth_host(url.host_str().unwrap()));
+        }
+        for value in [
+            "http://accounts.google.com/o/oauth2/v2/auth",
+            "https://accounts.google.com.evil.invalid/o/oauth2/v2/auth",
+            "https://evil.accounts.google.com/o/oauth2/v2/auth",
+            "https://accounts.google.com@evil.invalid/o/oauth2/v2/auth",
+            "https://accounts.google.com:444/o/oauth2/v2/auth",
+            "https://appleid.apple.com.evil.invalid/auth/authorize",
+            "https://www.appleid.apple.com/auth/authorize",
+            "https://api.twitter.com.evil.invalid/oauth/authorize",
+            "https://x.com/oauth/authorize",
+            "https://accounts.google.com/downloadables/700001",
+        ] {
+            assert!(!auth_navigation(&Url::parse(value).unwrap()), "{value}");
+        }
+    }
     #[test]
     fn observed_deeplink_retains_only_canonical_file_and_variant_identity() {
         let canonical = observed_resolver("https://booth.pm/downloadables/700001?variation_id=800001").unwrap();
