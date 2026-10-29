@@ -6,6 +6,8 @@ mod avatars;
 mod dynamic_tag_tests;
 #[cfg(test)]
 mod hide_tests;
+#[cfg(test)]
+mod job_query_tests;
 mod local_delete;
 mod portable;
 mod projection;
@@ -1421,6 +1423,17 @@ pub(super) fn rows(conn: &Connection, kind: &str) -> Result<Vec<Value>> {
         .map(|s| serde_json::from_str(&s).map_err(Into::into))
         .collect()
 }
+fn queued_jobs(conn: &Connection, job_type: Option<&str>, store: Option<&str>) -> Result<Vec<Value>> {
+    // Keep terminal history out of worker polling results and Rust JSON decoding.
+    // This deliberately reuses the existing schema; SQLite still filters job rows.
+    let mut stmt = conn.prepare("SELECT body FROM entities WHERE kind='job' AND json_extract(body,'$.state')='queued' AND (?1 IS NULL OR json_extract(body,'$.type')=?1) AND (?2 IS NULL OR json_extract(body,'$.store')=?2) ORDER BY id")?;
+    let data = stmt
+        .query_map(params![job_type, store], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    data.into_iter()
+        .map(|body| serde_json::from_str(&body).map_err(Into::into))
+        .collect()
+}
 pub(super) fn related(conn: &Connection, kind: &str, product: &str) -> Result<Vec<Value>> {
     let mut stmt =
         conn.prepare("SELECT body FROM entities WHERE kind=?1 AND product_id=?2 ORDER BY id")?;
@@ -1623,13 +1636,20 @@ impl Catalogue {
         library_lock: Option<Arc<crate::library_lock::LibraryLock>>,
     ) -> Result<Self> {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
-        conn.execute_batch(if library_root.is_some() {
-            "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;"
-        } else {
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;"
-        })?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        ensure!(version <= 1, "catalogue.newer_schema");
+        ensure!(matches!(version, 0 | 1), "catalogue.newer_schema");
+        // Refuse unsupported formats before changing their persistent journal mode.
+        let mode: String = conn.query_row(if library_root.is_some() {
+            "PRAGMA journal_mode=DELETE"
+        } else {
+            "PRAGMA journal_mode=WAL"
+        }, [], |row| row.get(0))?;
+        ensure!(if library_root.is_some() {
+            mode.eq_ignore_ascii_case("delete")
+        } else {
+            mode.eq_ignore_ascii_case("wal") || mode.eq_ignore_ascii_case("memory")
+        }, "catalogue.journal_mode_unavailable");
+        conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
         if version == 0 {
             let tx = conn.transaction()?;
             tx.execute_batch("CREATE TABLE entities(kind TEXT NOT NULL,id TEXT NOT NULL,product_id TEXT NOT NULL DEFAULT '',body TEXT NOT NULL CHECK(json_valid(body)),PRIMARY KEY(kind,id)); CREATE INDEX entities_product ON entities(kind,product_id);
@@ -2155,6 +2175,20 @@ impl Catalogue {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             kind,
+        )
+    }
+    pub(crate) fn queued_jobs(
+        &self,
+        job_type: Option<&str>,
+        store: Option<&str>,
+    ) -> Result<Vec<Value>> {
+        queued_jobs(
+            &*self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+            job_type,
+            store,
         )
     }
     pub fn related(&self, kind: &str, product_id: &str) -> Result<Vec<Value>> {

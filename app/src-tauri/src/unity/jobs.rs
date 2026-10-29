@@ -331,38 +331,46 @@ impl RequestStore {
             .get(KIND, id)?
             .map(RequestRecord::from_stored)
             .transpose()
+            .context("UNITY_REQUEST_INVALID")
+    }
+
+    fn readable_records(&self) -> Result<Vec<RequestRecord>> {
+        let mut records = vec![];
+        for raw in self.catalogue.list(KIND)? {
+            match RequestRecord::from_stored(raw.clone()) {
+                Ok(record) => records.push(record),
+                Err(_) => {
+                    // Keep unknown/corrupt dedupe evidence intact. It must neither
+                    // authorize cleanup/replay nor disable unrelated requests.
+                    let Some(id) = raw["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok()) else { continue };
+                    for _ in 0..3 {
+                        if self.catalogue.get(KIND, id)?.as_ref() != Some(&raw) { break; }
+                        let Some(before) = self.catalogue.get("job", id)? else { break };
+                        if before["type"] != "unity:import" || !matches!(before["state"].as_str(), Some("queued" | "running")) { break; }
+                        let mut job = before.clone();
+                        job["state"] = json!("needsAction");
+                        job["errorCode"] = json!("UNITY_REQUEST_INVALID");
+                        if self.catalogue.put_many_if_unchanged(
+                            vec![("job".into(), id.into(), job)],
+                            vec![(KIND.into(), id.into(), Some(raw.clone())), ("job".into(), id.into(), Some(before))],
+                        )? { break; }
+                    }
+                }
+            }
+        }
+        Ok(records)
     }
 
     pub fn pending(&self) -> Result<Vec<RequestRecord>> {
-        self.catalogue
-            .list(KIND)?
-            .into_iter()
-            .map(RequestRecord::from_stored)
-            .filter_map(|record| match record {
-                Ok(record) if terminal(&record.phase) => None,
-                other => Some(other),
-            })
-            .collect()
+        Ok(self.readable_records()?.into_iter().filter(|record| !terminal(&record.phase)).collect())
     }
 
     /// Startup-only cleanup candidates; terminal receipts remain eligible.
     /// The caller owns filesystem cleanup and persists snapshot_removed after success.
     pub fn cleanup_pending(&self) -> Result<Vec<RequestRecord>> {
-        self.catalogue
-            .list(KIND)?
-            .into_iter()
-            .map(RequestRecord::from_stored)
-            .filter_map(|record| match record {
-                Ok(record)
-                    if !self.is_local(&record)
-                        || record.snapshot_removed
-                        || !record.snapshot_cleanup_proved() =>
-                {
-                    None
-                }
-                other => Some(other),
-            })
-            .collect()
+        Ok(self.readable_records()?.into_iter().filter(|record|
+            self.is_local(record) && !record.snapshot_removed && record.snapshot_cleanup_proved()
+        ).collect())
     }
 
     pub fn update(&self, record: &RequestRecord) -> Result<()> {
@@ -472,6 +480,34 @@ mod tests {
         json!({"requestId":record.request_id,"fingerprint":record.fingerprint,
             "instanceId":record.instance_id,"sessionId":record.session_id,"stage":stage,
             "staged":true,"writesStarted":true,"results":[{"entryId":"entry","path":"Assets/Example.txt","state":"applied","message":""}],"compileErrors":[]})
+    }
+
+    #[test]
+    fn unreadable_request_is_preserved_without_blocking_other_requests() {
+        let fixture = Fixture::new();
+        let c = fixture.open();
+        let store = RequestStore::new(c.clone());
+        let valid = record();
+        store.create(&valid).unwrap();
+        let mut invalid = record();
+        invalid.request_id = Uuid::new_v4().to_string();
+        store.create(&invalid).unwrap();
+        let mut raw = c.get(KIND, &invalid.request_id).unwrap().unwrap();
+        raw["futureField"] = json!(true);
+        c.put(KIND, &invalid.request_id, raw.clone()).unwrap();
+        let pending = store.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, valid.request_id);
+        assert_eq!(store.cleanup_pending().unwrap().len(), 1);
+        assert_eq!(c.get(KIND, &invalid.request_id).unwrap(), Some(raw));
+        let job = c.get("job", &invalid.request_id).unwrap().unwrap();
+        assert_eq!(job["state"], "needsAction");
+        assert_eq!(job["errorCode"], "UNITY_REQUEST_INVALID");
+        store.pending().unwrap();
+        assert_eq!(c.get("job", &invalid.request_id).unwrap(), Some(job));
+        assert!(format!("{:#}", store.get(&invalid.request_id).err().unwrap()).contains("UNITY_REQUEST_INVALID"));
+        store.create(&record()).unwrap();
+        assert_eq!(store.pending().unwrap().len(), 2);
     }
 
     #[test]

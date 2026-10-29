@@ -207,7 +207,7 @@ impl BoothService {
             }
             *recovering = true;
         }
-        for mut job in self.inner.catalogue.list("job")? {
+        for job in self.inner.catalogue.list("job")? {
             if !matches!(
                 job["type"].as_str(),
                 Some("boothSync" | "boothUpdate" | "boothLogin")
@@ -215,7 +215,16 @@ impl BoothService {
             {
                 continue;
             }
-            let id = field(&job, "id")?.to_owned();
+            let Some(job) = self.prepare_recovered_job(job)? else { continue };
+            if let Err(error) = self.spawn_job(app.clone(), job) {
+                if code(&error) != "ACCOUNT_BUSY" { return Err(error); }
+            }
+        }
+        Ok(())
+    }
+    fn prepare_recovered_job(&self, mut job: Value) -> Result<Option<Value>> {
+        let id = field(&job, "id")?.to_owned();
+        let result = (|| -> Result<Option<Value>> {
             if self.inner.catalogue.library_root().is_some()
                 && job["originDeviceId"] != self.inner.catalogue.device_id()
             {
@@ -223,7 +232,7 @@ impl BoothService {
                 job["errorCode"] = json!("RETRY_REQUIRED");
                 job["updatedAt"] = json!(now());
                 self.inner.catalogue.put("job", &id, job)?;
-                continue;
+                return Ok(None);
             }
             if job["type"] == "boothLogin" {
                 job["state"] = json!("needsAction");
@@ -233,7 +242,7 @@ impl BoothService {
                 if let Some(account) = job["accountId"].as_str() {
                     crate::stores::session::discard_unverified_account(&self.inner.catalogue, crate::stores::StoreProvider::Booth, account)?;
                 }
-                continue;
+                return Ok(None);
             }
             if let Some(account) = job["accountId"].as_str() {
                 let record = self.known_account(account)?;
@@ -242,12 +251,29 @@ impl BoothService {
                     job["errorCode"] = json!("AUTH_REQUIRED");
                     job["updatedAt"] = json!(now());
                     self.inner.catalogue.put("job", &id, job)?;
-                    continue;
+                    return Ok(None);
                 }
             }
-            self.spawn_job(app.clone(), job)?;
+            Ok(Some(job))
+        })();
+        match result {
+            Ok(job) => Ok(job),
+            Err(error) => {
+                if let Some(before) = self.inner.catalogue.get("job", &id)?
+                    .filter(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
+                {
+                    let mut failed = before.clone();
+                    failed["state"] = json!("needsAction");
+                    failed["errorCode"] = json!(code(&error));
+                    failed["updatedAt"] = json!(now());
+                    self.inner.catalogue.put_many_if_unchanged(
+                        vec![("job".into(), id.clone(), failed)],
+                        vec![("job".into(), id, Some(before))],
+                    )?;
+                }
+                Ok(None)
+            }
         }
-        Ok(())
     }
     pub async fn command(&self, app: &AppHandle, action: &str, args: Value) -> Result<Value> {
         let _work = if matches!(
@@ -482,7 +508,7 @@ impl BoothService {
             }
             "retry_sync" => {
                 let id = field(&args, "jobId")?;
-                let mut job = self
+                let job = self
                     .inner
                     .catalogue
                     .get("job", id)?
@@ -517,13 +543,7 @@ impl BoothService {
                     self.known_account(account)?;
                     auth::window(app, &self.inner.catalogue.device_dir(), account, true).await?;
                 }
-                crate::support::reset_attempt(&mut job);
-                job["state"] = json!("queued");
-                job["errorCode"] = Value::Null;
-                job["completedAt"] = Value::Null;
-                job["updatedAt"] = json!(now());
-                job["originDeviceId"] = json!(self.inner.catalogue.device_id());
-                self.inner.catalogue.put("job", id, job.clone())?;
+                let job = self.requeue_job(&job)?;
                 self.spawn_job(app.clone(), job)?;
                 Ok(json!({"jobId":id}))
             }
@@ -718,6 +738,24 @@ impl BoothService {
         });
         Ok(())
     }
+    fn requeue_job(&self, previous: &Value) -> Result<Value> {
+        let id = field(previous, "id")?;
+        ensure!(matches!(previous["state"].as_str(), Some("failed" | "needsAction" | "cancelled")), "JOB_BUSY");
+        let mut job = previous.clone();
+        crate::support::reset_attempt(&mut job);
+        job["state"] = json!("queued");
+        job["errorCode"] = Value::Null;
+        job["completedAt"] = Value::Null;
+        job["updatedAt"] = json!(now());
+        job["originDeviceId"] = json!(self.inner.catalogue.device_id());
+        // Login may await a native window. A second Retry must not overwrite
+        // the attempt another caller has queued or started in the meantime.
+        ensure!(self.inner.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.into(), job.clone())],
+            vec![("job".into(), id.into(), Some(previous.clone()))],
+        )?, "JOB_BUSY");
+        Ok(job)
+    }
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
         let id = field(job, "id")?;
         if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
@@ -779,6 +817,10 @@ impl BoothService {
                         if error.is_none() {
                             account["lastSync"] = terminal["completedAt"].clone();
                             account["lastSyncAt"] = terminal["completedAt"].clone();
+                            if account["disconnected"] != true && account["identityVerified"] == true {
+                                account["state"] = json!("connected");
+                                account["status"] = json!("connected");
+                            }
                         }
                         account["syncState"] = json!(if error.is_none() {
                             "complete"

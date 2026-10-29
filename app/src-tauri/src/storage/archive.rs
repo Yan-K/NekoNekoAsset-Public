@@ -707,7 +707,7 @@ fn classify_process_error(exit: Option<i32>, stdout: &[u8], stderr: &[u8]) -> &'
 }
 
 fn cli_args(operation: &str, archive: &Path) -> Vec<OsString> {
-    [
+    let mut args: Vec<OsString> = [
         OsString::from(operation),
         "-y".into(),
         "-bd".into(),
@@ -718,7 +718,25 @@ fn cli_args(operation: &str, archive: &Path) -> Vec<OsString> {
         "--".into(),
         archive.as_os_str().to_owned(),
     ]
-    .into()
+    .into();
+    let name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let zip = name.ends_with(".zip")
+        || name.rsplit_once('.').is_some_and(|(base, suffix)| {
+            base.ends_with(".zip")
+                && suffix.len() >= 3
+                && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    if zip {
+        // Unlabelled BOOTH ZIP names intentionally prefer Japanese Windows
+        // encoding. 7-Zip still honors explicit UTF-8/Unicode ZIP name metadata.
+        // Keep listing and extraction on the same decoding policy.
+        args.insert(1, "-mcp=932".into());
+    }
+    args
 }
 
 fn hash_file(path: &Path, cancelled: &AtomicBool) -> Result<(u64, String, u32)> {
@@ -1395,6 +1413,100 @@ mod tests {
         .unwrap();
         assert!(verify_extracted_inventory(&root, &entries, &AtomicBool::new(false)).is_err());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn zip_cli_uses_japanese_legacy_names_for_listing_and_extraction_only() {
+        for operation in ["l", "x"] {
+            for archive in ["source.zip", "source.ZIP", "source.zip.001"] {
+                assert!(
+                    cli_args(operation, Path::new(archive)).contains(&OsString::from("-mcp=932"))
+                );
+            }
+            for archive in ["source.7z", "source.rar", "source.7z.001"] {
+                assert!(
+                    !cli_args(operation, Path::new(archive)).contains(&OsString::from("-mcp=932"))
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_zip_roundtrip_preserves_cp932_utf8_and_ascii_names() {
+        let executable =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/tools/7zip/7z.exe");
+        let root =
+            std::env::temp_dir().join(format!("nna-authored-zip-names-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("staging")).unwrap();
+        let names: &[(&[u8], bool)] = &[
+            (b"\x83\x7c.txt", false),
+            (b"\x95\x5c.txt", false),
+            (b"\x83\x5c.txt", false),
+            (b"Readme.txt", false),
+            ("髪.txt".as_bytes(), true),
+        ];
+        let mut zip = Vec::new();
+        let mut central = Vec::new();
+        for (name, utf8) in names {
+            let offset = zip.len() as u32;
+            let flags: u16 = if *utf8 { 0x800 } else { 0 };
+            zip.extend_from_slice(&0x04034b50u32.to_le_bytes());
+            for value in [20, flags, 0, 0, 0] {
+                zip.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [0x352441c2u32, 3, 3] {
+                zip.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [name.len() as u16, 0] {
+                zip.extend_from_slice(&value.to_le_bytes());
+            }
+            zip.extend_from_slice(name);
+            zip.extend_from_slice(b"abc");
+            central.extend_from_slice(&0x02014b50u32.to_le_bytes());
+            for value in [20, 20, flags, 0, 0, 0] {
+                central.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [0x352441c2u32, 3, 3] {
+                central.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [name.len() as u16, 0, 0, 0, 0] {
+                central.extend_from_slice(&value.to_le_bytes());
+            }
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name);
+        }
+        let central_offset = zip.len() as u32;
+        zip.extend_from_slice(&central);
+        zip.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        for value in [0, 0, names.len() as u16, names.len() as u16] {
+            zip.extend_from_slice(&value.to_le_bytes());
+        }
+        zip.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        zip.extend_from_slice(&central_offset.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        let archive = root.join("authored.zip");
+        fs::write(&archive, &zip).unwrap();
+        let extracted = extract_archive(
+            &executable,
+            &archive,
+            &[],
+            &root.join("staging"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(extracted.inventory.len(), names.len());
+        for name in ["ポ.txt", "表.txt", "ソ.txt", "Readme.txt", "髪.txt"] {
+            assert!(extracted
+                .inventory
+                .iter()
+                .any(|entry| entry.relative_path == name));
+            assert_eq!(fs::read(extracted.staging_path.join(name)).unwrap(), b"abc");
+        }
+        assert_eq!(fs::read(archive).unwrap(), zip);
+        drop(extracted);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

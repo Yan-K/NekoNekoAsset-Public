@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     ops::{Deref, DerefMut},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Mutex, MutexGuard},
 };
 
@@ -86,20 +86,19 @@ pub struct ChatMessage {
     pub response: Option<Value>,
 }
 pub struct ChatStore {
-    path: PathBuf,
+    owner: crate::preview::path_safety::PinnedRoot,
     connection: Mutex<Option<Connection>>,
 }
 impl ChatStore {
     pub fn new(profile: &Path) -> Result<Self> {
         // Optional chat storage must not prevent the asset library from opening.
         Ok(Self {
-            path: profile.join("ai-chat.sqlite3"),
+            owner: crate::preview::path_safety::PinnedRoot::new(profile.to_owned()),
             connection: Mutex::new(None),
         })
     }
-    fn open(&self) -> Result<Connection> {
-        crate::preview::no_links(&self.path)?;
-        let conn = Connection::open(&self.path).context("ai_chat_storage")?;
+    fn open(&self, path: &Path) -> Result<Connection> {
+        let conn = Connection::open(path).context("ai_chat_storage")?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,preset_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,system_prompt TEXT NOT NULL,title_edited INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS messages(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,request_id TEXT NOT NULL,body TEXT NOT NULL);
@@ -112,12 +111,16 @@ impl ChatStore {
         Ok(conn)
     }
     fn lock(&self) -> Result<ChatConnection<'_>> {
+        let path = self
+            .owner
+            .resolve("ai-chat.sqlite3")
+            .context("ai_chat_storage")?;
         let mut connection = self
             .connection
             .lock()
             .map_err(|_| anyhow!("ai_chat_storage"))?;
         if connection.is_none() {
-            *connection = Some(self.open()?);
+            *connection = Some(self.open(&path)?);
         }
         Ok(ChatConnection(connection))
     }

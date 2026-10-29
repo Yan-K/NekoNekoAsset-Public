@@ -195,9 +195,12 @@ impl StoreService {
 
     pub async fn start(&self, app: AppHandle) -> Result<()> {
         let _gate = self.command_gate.lock().await;
-        self.booth.start(app.clone()).await?;
-        self.gumroad.start(&app).await?;
-        self.jinxxy.start(&app).await
+        let booth = self.booth.start(app.clone()).await;
+        let gumroad = self.gumroad.start(&app).await;
+        let jinxxy = self.jinxxy.start(&app).await;
+        // A provider's failed recovery cannot prevent independent workers from
+        // starting. Report the first real service error after trying all three.
+        booth.and(gumroad).and(jinxxy)
     }
 
     pub fn provider_for_account(&self, account_id: &str) -> Result<StoreProvider> {

@@ -16,6 +16,9 @@ use tokio::{
 };
 use url::Url;
 
+#[path = "path_safety.rs"]
+pub(crate) mod path_safety;
+
 const MAX_FILE: u64 = 16 * 1024 * 1024;
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILES: usize = 2048;
@@ -48,7 +51,7 @@ impl CacheUsage {
 }
 
 pub struct PreviewCache {
-    root: PathBuf,
+    owner: path_safety::PinnedRoot,
     client: reqwest::Client,
     slots: Semaphore,
     keys: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
@@ -58,7 +61,6 @@ pub struct PreviewCache {
 impl PreviewCache {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         ensure!(data_dir.is_absolute(), "preview_path_refused");
-        let root = data_dir.join("cache").join("previews");
         // Cache failures belong to preview requests, not application startup.
         let client = reqwest::Client::builder()
             .cookie_store(false)
@@ -74,7 +76,7 @@ impl PreviewCache {
             .build()
             .map_err(|_| anyhow!("preview_client_failed"))?;
         Ok(Self {
-            root,
+            owner: path_safety::PinnedRoot::new(data_dir),
             client,
             slots: Semaphore::new(2),
             keys: Mutex::new(HashMap::new()),
@@ -100,10 +102,12 @@ impl PreviewCache {
             }
         };
         let _key_guard = key_lock.lock().await;
-        let root = self.root.clone();
+        let root = self.owner.resolve("cache/previews").map_err(path_error)?;
+        let lookup_root = root.clone();
         let lookup_key = key.clone();
         let disk = self.disk.clone();
         let cached = tokio::task::spawn_blocking(move || {
+            let root = lookup_root;
             let mut usage = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
             if usage.is_none() {
                 no_links(&root)?;
@@ -126,26 +130,27 @@ impl PreviewCache {
             .acquire()
             .await
             .map_err(|_| anyhow!("preview_cache_closed"))?;
-        let root = self.root.clone();
+        let reservation_root = root.clone();
         let disk = self.disk.clone();
         tokio::task::spawn_blocking(move || {
+            let root = reservation_root;
             let mut usage = disk.lock().map_err(|_| anyhow!("preview_cache_lock"))?;
             // Reserve room for both bounded streams, including their partials.
-            usage.as_mut().ok_or_else(|| anyhow!("preview_cache_lock"))?.reserve(&root)
+            usage
+                .as_mut()
+                .ok_or_else(|| anyhow!("preview_cache_lock"))?
+                .reserve(&root)
         })
         .await
         .map_err(|_| anyhow!("preview_cache_worker"))??;
-        let temporary = self
-            .root
-            .join(format!("{PREFIX}{key}-{}.part", uuid::Uuid::new_v4()));
+        let temporary = root.join(format!("{PREFIX}{key}-{}.part", uuid::Uuid::new_v4()));
         let mut guard = PartialGuard(PathBuf::new());
         let (extension, bytes) = tokio::time::timeout(
             Duration::from_secs(30),
-            self.fetch(url, &temporary, &mut guard),
+            self.fetch(&root, url, &temporary, &mut guard),
         )
         .await
         .map_err(|_| anyhow!("preview_timeout"))??;
-        let root = self.root.clone();
         let disk = self.disk.clone();
         let temp = temporary.clone();
         let path = tokio::task::spawn_blocking(move || {
@@ -153,7 +158,10 @@ impl PreviewCache {
             let path = publish(&root, &temp, &key, extension)?;
             // The pre-fetch reservation covers both bounded concurrent streams;
             // publishing their bytes cannot exceed it, so no second scan is needed.
-            usage.as_mut().ok_or_else(|| anyhow!("preview_cache_lock"))?.published(bytes);
+            usage
+                .as_mut()
+                .ok_or_else(|| anyhow!("preview_cache_lock"))?
+                .published(bytes);
             Ok::<_, anyhow::Error>(path)
         })
         .await
@@ -164,11 +172,12 @@ impl PreviewCache {
 
     async fn fetch(
         &self,
+        root: &Path,
         url: Url,
         temporary: &Path,
         guard: &mut PartialGuard,
     ) -> Result<(&'static str, u64)> {
-        no_links(&self.root)?;
+        no_links(root)?;
         let response = self
             .client
             .get(url)
@@ -277,27 +286,15 @@ fn raster_extension(header: &[u8]) -> Option<&'static str> {
 }
 
 pub(crate) fn no_links(path: &Path) -> Result<()> {
-    for ancestor in path.ancestors() {
-        if ancestor.as_os_str().is_empty() {
-            continue;
-        }
-        match fs::symlink_metadata(ancestor) {
-            Ok(metadata) => {
-                ensure!(!metadata.file_type().is_symlink(), "preview_path_refused");
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::MetadataExt;
-                    ensure!(
-                        metadata.file_attributes() & 0x400 == 0,
-                        "preview_path_refused"
-                    );
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(_) => return Err(anyhow!("preview_cache_io")),
-        }
+    path_safety::no_links(path).map_err(path_error)
+}
+
+fn path_error(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<std::io::Error>().is_some() {
+        anyhow!("preview_cache_io")
+    } else {
+        anyhow!("preview_path_refused")
     }
-    Ok(())
 }
 
 fn managed_name(name: &str) -> bool {
@@ -413,7 +410,12 @@ fn publish(root: &Path, temporary: &Path, key: &str, extension: &str) -> Result<
     Ok(destination)
 }
 
-fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) -> Result<CacheUsage> {
+fn trim(
+    root: &Path,
+    budget: u64,
+    count_limit: usize,
+    protected: Option<&Path>,
+) -> Result<CacheUsage> {
     no_links(root)?;
     let mut files = Vec::new();
     let mut total = 0u64;
@@ -481,7 +483,10 @@ fn trim(root: &Path, budget: u64, count_limit: usize, protected: Option<&Path>) 
         total <= budget && count <= count_limit,
         "preview_cache_full"
     );
-    Ok(CacheUsage { bytes: total, files: count })
+    Ok(CacheUsage {
+        bytes: total,
+        files: count,
+    })
 }
 
 struct PartialGuard(PathBuf);
@@ -524,7 +529,10 @@ mod tests {
 
     #[test]
     fn quota_reserves_two_maximum_streams_before_another_fetch() {
-        let mut usage = CacheUsage { bytes: MAX_BYTES - 2 * MAX_FILE, files: MAX_FILES - 2 };
+        let mut usage = CacheUsage {
+            bytes: MAX_BYTES - 2 * MAX_FILE,
+            files: MAX_FILES - 2,
+        };
         assert!(!usage.needs_reservation());
         let mut over_bytes = usage;
         over_bytes.bytes += 1;
@@ -536,7 +544,13 @@ mod tests {
         // combined payload still fits the bytes and entry-count bounds.
         usage.published(MAX_FILE);
         usage.published(MAX_FILE);
-        assert_eq!(usage, CacheUsage { bytes: MAX_BYTES, files: MAX_FILES });
+        assert_eq!(
+            usage,
+            CacheUsage {
+                bytes: MAX_BYTES,
+                files: MAX_FILES
+            }
+        );
         assert!(usage.needs_reservation());
     }
 
@@ -556,7 +570,9 @@ mod tests {
         assert_eq!(usage, before);
 
         let key = hash(3);
-        let partial = fixture.0.join(format!("{PREFIX}{key}-{}.part", uuid::Uuid::new_v4()));
+        let partial = fixture
+            .0
+            .join(format!("{PREFIX}{key}-{}.part", uuid::Uuid::new_v4()));
         fs::write(&partial, png()).unwrap();
         usage = trim(&fixture.0, MAX_BYTES, MAX_FILES, None).unwrap();
         assert_eq!(usage.files, 2); // Includes the active partial.
@@ -565,17 +581,33 @@ mod tests {
         assert_eq!(usage.files, 3);
         // A matching cached destination is harmless to count again as well.
         fs::write(&partial, png()).unwrap();
-        assert_eq!(publish(&fixture.0, &partial, &key, "png").unwrap(), destination);
+        assert_eq!(
+            publish(&fixture.0, &partial, &key, "png").unwrap(),
+            destination
+        );
         usage.published(png().len() as u64);
         assert_eq!(usage.files, 4);
 
-        let abandoned = fixture.0.join(format!("{PREFIX}{}-{}.part", hash(4), uuid::Uuid::new_v4()));
+        let abandoned =
+            fixture
+                .0
+                .join(format!("{PREFIX}{}-{}.part", hash(4), uuid::Uuid::new_v4()));
         fs::write(&abandoned, png()).unwrap();
-        File::options().write(true).open(&abandoned).unwrap()
-            .set_times(FileTimes::new().set_modified(SystemTime::UNIX_EPOCH)).unwrap();
+        File::options()
+            .write(true)
+            .open(&abandoned)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
         usage.bytes = MAX_BYTES;
         usage.reserve(&fixture.0).unwrap();
-        assert_eq!(usage, CacheUsage { bytes: 2 * png().len() as u64, files: 2 });
+        assert_eq!(
+            usage,
+            CacheUsage {
+                bytes: 2 * png().len() as u64,
+                files: 2
+            }
+        );
         assert!(!abandoned.exists());
         assert!(destination.exists());
     }
@@ -595,7 +627,9 @@ mod tests {
         let key = hex::encode(Sha256::digest(url.as_bytes()));
         let image = root.join(format!("{PREFIX}{key}.png"));
         fs::write(&image, png()).unwrap();
-        assert_eq!(cache.get(url.into()).await.unwrap(), image);
+        let cached = cache.get(url.into()).await.unwrap();
+        assert_eq!(cached, image.canonicalize().unwrap());
+        assert_eq!(fs::read(cached).unwrap(), png());
     }
 
     #[cfg(windows)]

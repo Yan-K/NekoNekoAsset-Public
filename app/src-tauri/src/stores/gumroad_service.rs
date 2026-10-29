@@ -314,42 +314,57 @@ impl GumroadService {
             }
             *recovering = true;
         }
-        for mut job in self.inner.catalogue.list("job")? {
-            if job["store"] != "Gumroad"
-                || !matches!(job["state"].as_str(), Some("running" | "queued"))
-            {
-                continue;
+        for job in self.inner.catalogue.list("job")? {
+            if job["store"] != "Gumroad" || !matches!(job["state"].as_str(), Some("running" | "queued")) { continue; }
+            let Some(job) = self.prepare_recovered_job(job)? else { continue };
+            if let Err(error) = self.spawn(app.clone(), job) {
+                if safe_code(&error) != "ACCOUNT_BUSY" { return Err(error); }
             }
+        }
+        Ok(())
+    }
+    fn prepare_recovered_job(&self, mut job: Value) -> Result<Option<Value>> {
+        let id = field(&job, "id")?.to_owned();
+        let result = (|| -> Result<Option<Value>> {
+            let account_id = field(&job, "accountId")?;
+            let account = self.account(account_id)?;
             if self.inner.catalogue.library_root().is_some()
                 && (job["originDeviceId"] != self.inner.catalogue.device_id()
-                    || (job["type"] != "gumroadLogin"
-                        && !super::has_local_session(
-                            &self.inner.catalogue,
-                            &self.account(field(&job, "accountId")?)?,
-                        )))
+                    || (job["type"] != "gumroadLogin" && !super::has_local_session(&self.inner.catalogue, &account)))
             {
                 job["state"] = json!("needsAction");
                 job["errorCode"] = json!("RETRY_REQUIRED");
                 job["updatedAt"] = json!(now());
-                self.inner
-                    .catalogue
-                    .put("job", field(&job, "id")?, job.clone())?;
-                continue;
+                self.inner.catalogue.put("job", &id, job)?;
+                return Ok(None);
             }
             if job["type"] == "gumroadLogin" {
                 job["state"] = json!("needsAction");
                 job["errorCode"] = json!("RETRY_REQUIRED");
-                self.inner
-                    .catalogue
-                    .put("job", field(&job, "id")?, job.clone())?;
+                self.inner.catalogue.put("job", &id, job.clone())?;
                 session::discard_unverified_account(&self.inner.catalogue, StoreProvider::Gumroad, field(&job, "accountId")?)?;
-            } else if let Err(error) = self.spawn(app.clone(), job) {
-                if safe_code(&error) != "ACCOUNT_BUSY" {
-                    return Err(error);
+                return Ok(None);
+            }
+            Ok(Some(job))
+        })();
+        match result {
+            Ok(job) => Ok(job),
+            Err(error) => {
+                if let Some(before) = self.inner.catalogue.get("job", &id)?
+                    .filter(|job| matches!(job["state"].as_str(), Some("queued" | "running")))
+                {
+                    let mut failed = before.clone();
+                    failed["state"] = json!("needsAction");
+                    failed["errorCode"] = json!(safe_code(&error));
+                    failed["updatedAt"] = json!(now());
+                    self.inner.catalogue.put_many_if_unchanged(
+                        vec![("job".into(), id.clone(), failed)],
+                        vec![("job".into(), id, Some(before))],
+                    )?;
                 }
+                Ok(None)
             }
         }
-        Ok(())
     }
     pub async fn command(&self, app: &AppHandle, action: &str, args: Value) -> Result<Value> {
         let _work = self.inner.catalogue.begin_catalogue_work()?;
@@ -541,7 +556,7 @@ impl GumroadService {
             }
             "cancel_sync" | "retry_sync" => {
                 let id = field(&args, "jobId")?;
-                let mut job = self
+                let job = self
                     .inner
                     .catalogue
                     .get("job", id)?
@@ -590,13 +605,7 @@ impl GumroadService {
                         )
                         .await?;
                     }
-                    crate::support::reset_attempt(&mut job);
-                    job["state"] = json!("queued");
-                    job["errorCode"] = Value::Null;
-                    job["completedAt"] = Value::Null;
-                    job["updatedAt"] = json!(now());
-                    job["originDeviceId"] = json!(self.inner.catalogue.device_id());
-                    self.inner.catalogue.put("job", id, job.clone())?;
+                    let job = self.requeue_job(&job)?;
                     self.spawn(app.clone(), job)?;
                 }
                 let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":id}));
@@ -724,6 +733,22 @@ impl GumroadService {
             let _ = app.emit("nna:changed", json!({"scope":scope,"jobId":id}));
         });
         Ok(())
+    }
+    fn requeue_job(&self, previous: &Value) -> Result<Value> {
+        let id = field(previous, "id")?;
+        ensure!(matches!(previous["state"].as_str(), Some("failed" | "needsAction" | "cancelled")), "JOB_BUSY");
+        let mut job = previous.clone();
+        crate::support::reset_attempt(&mut job);
+        job["state"] = json!("queued");
+        job["errorCode"] = Value::Null;
+        job["completedAt"] = Value::Null;
+        job["updatedAt"] = json!(now());
+        job["originDeviceId"] = json!(self.inner.catalogue.device_id());
+        ensure!(self.inner.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.into(), job.clone())],
+            vec![("job".into(), id.into(), Some(previous.clone()))],
+        )?, "JOB_BUSY");
+        Ok(job)
     }
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
         let id = field(job, "id")?;
@@ -1038,7 +1063,7 @@ impl GumroadService {
         let (status, html) = self.inner.http.get(client, url.clone()).await?;
         ensure!(status.is_success(), "GUMROAD_LIBRARY_UNAVAILABLE");
         let page_data = gumroad::inertia_page(&html)?;
-        ensure!(page_data["component"] == "Library/Index", "AUTH_REQUIRED");
+        ensure!(page_data["component"] == "Library/Index", "SOURCE_UNSUPPORTED");
         gumroad::parse_library_scope(&page_data["props"], &url, page, archived, bundle)
     }
     async fn content(
@@ -2691,6 +2716,47 @@ pub fn validate_download_response(response: &reqwest::Response) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn startup_recovery_isolates_orphan_jobs_and_keeps_later_jobs_resumable() {
+        let path = std::env::temp_dir().join(format!("gumroad-startup-{}", uuid::Uuid::new_v4()));
+        let catalogue = Catalogue::open(&path).unwrap();
+        let service = GumroadService::new(catalogue.clone()).unwrap();
+        let missing = "d0140000-0000-4000-8000-000000000001";
+        let healthy = "d0140000-0000-4000-8000-000000000002";
+        catalogue.put("account", healthy, json!({"id":healthy,"store":"Gumroad"})).unwrap();
+        for (id, owner) in [("authored-orphan-job", missing), ("authored-healthy-job", healthy)] {
+            let job = json!({"id":id,"type":"gumroadSync","store":"Gumroad","accountId":owner,"state":"running"});
+            catalogue.put("job", id, job.clone()).unwrap();
+            let recovered = service.prepare_recovered_job(job).unwrap();
+            assert_eq!(recovered.is_some(), owner == healthy);
+        }
+        let orphan = catalogue.get("job", "authored-orphan-job").unwrap().unwrap();
+        assert_eq!(orphan["state"], "needsAction");
+        assert_eq!(orphan["errorCode"], "ACCOUNT_UNAVAILABLE");
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn stale_retry_cannot_overwrite_the_first_retry_attempt() {
+        let path = std::env::temp_dir().join(format!("gumroad-retry-{}", uuid::Uuid::new_v4()));
+        let catalogue = Catalogue::open(&path).unwrap();
+        let service = GumroadService::new(catalogue.clone()).unwrap();
+        let previous = json!({"id":"authored-retry","type":"gumroadLogin","store":"Gumroad","accountId":"authored-account","state":"needsAction","errorCode":"RETRY_REQUIRED"});
+        catalogue.put("job", "authored-retry", previous.clone()).unwrap();
+        let mut running = service.requeue_job(&previous).unwrap();
+        assert_eq!(running["state"], "queued");
+        running["state"] = json!("running");
+        running["progress"] = json!({"pages":5});
+        catalogue.put("job", "authored-retry", running.clone()).unwrap();
+        assert_eq!(safe_code(&service.requeue_job(&previous).unwrap_err()), "JOB_BUSY");
+        assert_eq!(catalogue.get("job", "authored-retry").unwrap().unwrap(), running);
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[tokio::test]
     async fn content_pipeline_publishes_completed_grant_before_pending_work_and_merges_next_grant()
     {

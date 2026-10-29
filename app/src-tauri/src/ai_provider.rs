@@ -474,7 +474,7 @@ pub fn request_payload(config: &AiConfig, mut payload: Value) -> Result<Value> {
                 let mut out = json!({"systemInstruction":{"parts":[{"text":system.join("\n")}]},"contents":turns,"generationConfig":{"maxOutputTokens":tokens}});
                 if let Some(schema) = schema {
                     out["generationConfig"]["responseFormat"] =
-                        json!({"text":{"mimeType":"application/json","schema":schema["schema"]}});
+                        json!({"text":{"mimeType":"APPLICATION_JSON","schema":schema["schema"]}});
                 }
                 Ok(out)
             }
@@ -587,6 +587,21 @@ pub fn response_payload(wire: AiWire, value: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gemini_structured_output_uses_generate_content_mime_enum() {
+        let config = AiConfig {
+            entry_id: None,
+            provider: "gemini".into(),
+            endpoint: "https://example.invalid/v1beta".into(),
+            model: "synthetic-model".into(),
+        };
+        let schema = crate::ai_analysis::structured_output_schema();
+        let payload = request_payload(&config, json!({"messages":[{"role":"user","content":"synthetic"}],"max_completion_tokens":4096,"response_format":{"type":"json_schema","json_schema":schema.clone()}})).unwrap();
+        assert_eq!(payload["generationConfig"]["responseFormat"], json!({"text":{"mimeType":"APPLICATION_JSON","schema":schema["schema"]}}));
+        assert!(payload["generationConfig"].get("responseMimeType").is_none());
+        assert!(payload["generationConfig"].get("responseJsonSchema").is_none());
+        assert_eq!(payload["generationConfig"]["maxOutputTokens"], 4096);
+    }
     #[test]
     fn anthropic_wire_bounds_transform_does_not_relax_native_confidence_validation() {
         let schema = crate::ai_analysis::structured_output_schema();

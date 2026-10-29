@@ -529,12 +529,22 @@ fn retry_after(value: Option<&str>) -> Duration {
                     })
                 })
         })
+        // An unrepresentable header is invalid, just like malformed text.
+        // defer() must be able to form its monotonic deadline before returning.
+        .filter(|delay| Instant::now().checked_add(*delay).is_some())
         .unwrap_or(Duration::from_secs(5))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_after_rejects_unrepresentable_delays() {
+        assert_eq!(retry_after(Some("18446744073709551615")), Duration::from_secs(5));
+        assert_eq!(retry_after(Some("600")), Duration::from_secs(600));
+        assert_eq!(retry_after(Some("bad")), Duration::from_secs(5));
+        assert_eq!(retry_after(None), Duration::from_secs(5));
+    }
     #[tokio::test]
     async fn terminal_rate_limit_defers_other_requests_without_waiting_to_return() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -380,7 +380,8 @@ fn publication_entry_certifiable(entry: &ProductPublication, publications: &Publ
     let Some(checkpoint) = publications.checkpoints.get(&entry.checkpoint_key) else {
         return false;
     };
-    checkpoint.account_id == entry.account
+    !entry.needs_enrichment
+        && checkpoint.account_id == entry.account
         && checkpoint.source == entry.source
         && publication_entry_has_complete_grant(entry)
         && !publications
@@ -412,8 +413,7 @@ fn ready_product_entries(
         .into_iter()
         .flatten()
         .filter(|entry| {
-            !entry.needs_enrichment
-                && !publication_entry_published(entry, &publications.checkpoints)
+            !publication_entry_published(entry, &publications.checkpoints)
                 && publication_entry_has_complete_grant(entry)
         })
         .cloned()
@@ -510,6 +510,15 @@ impl Checkpoint {
             && self.unresolved == 0
             && self.enrichment_pending.is_empty()
     }
+}
+fn resumable_checkpoint(saved: Option<Value>, mode: &str, selected: bool) -> Result<Option<Checkpoint>> {
+    // A forced traversal or selected-product refresh never resumes this source
+    // checkpoint. Do not let an unrelated malformed saved run block that intent.
+    if mode == "forced" || selected {
+        return Ok(None);
+    }
+    saved.map(serde_json::from_value).transpose()
+        .map_err(|_| anyhow::anyhow!("CHECKPOINT_INVALID"))
 }
 #[cfg(test)]
 fn source_traversal_verified(checkpoint: &Checkpoint, final_head: &parser::Page) -> bool {
@@ -1279,13 +1288,9 @@ impl BoothService {
         let baseline = previous_baseline
             .as_ref()
             .filter(|b| b.usable(account, source));
-        let previous = self
-            .inner
-            .catalogue
-            .get("checkpoint", &key)?
-            .map(serde_json::from_value::<Checkpoint>)
-            .transpose()
-            .map_err(|_| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+        let previous = resumable_checkpoint(
+            self.inner.catalogue.get("checkpoint", &key)?, mode, selected.is_some(),
+        )?;
         let mut checkpoint = if let Some(previous) = previous.filter(|p| {
             !p.finished
                 && p.version == 1
@@ -2296,8 +2301,8 @@ impl BoothService {
             let ready: Vec<_> = entries
                 .iter()
                 .filter(|entry| {
-                    !entry.needs_enrichment
-                        && !publication_entry_published(entry, &early.publications.checkpoints)
+                    !publication_entry_published(entry, &early.publications.checkpoints)
+                        && (!entry.needs_enrichment || publication_entry_has_complete_grant(entry))
                 })
                 .cloned()
                 .collect();
@@ -2709,7 +2714,7 @@ impl BoothService {
                     ensure!(job["accountId"].as_str().is_none_or(|account| account == entry.account), "ACCOUNT_UNAVAILABLE");
                     ensure!(batch.get("account", &entry.account)?.is_some_and(|account| account["store"] == "BOOTH"), "ACCOUNT_UNAVAILABLE");
                 }
-                if entry.needs_enrichment {
+                if authoritative && entry.needs_enrichment {
                     bail!("PUBLIC_METADATA_FAILED");
                 }
                 let entitlement = format!("{}:{}:{product}", entry.account, entry.source);
@@ -3991,6 +3996,15 @@ fn revision_observation(
 mod tests {
     use super::*;
     #[test]
+    fn explicit_fresh_traversal_ignores_an_unusable_previous_checkpoint() {
+        let malformed = json!({"mode":"incremental","pending":"unusable"});
+        assert!(resumable_checkpoint(Some(malformed.clone()), "incremental", false).is_err());
+        assert!(resumable_checkpoint(Some(malformed.clone()), "forced", false).unwrap().is_none());
+        assert!(resumable_checkpoint(Some(malformed), "incremental", true).unwrap().is_none());
+        let saved = Checkpoint::fresh("authored-account", "library", "incremental").unwrap();
+        assert!(resumable_checkpoint(Some(serde_json::to_value(saved).unwrap()), "incremental", false).unwrap().is_some());
+    }
+    #[test]
     fn only_source_local_failures_allow_other_source_scans_to_continue() {
         for code in ["COLLECTOR_UNSUPPORTED", "SOURCE_UNSUPPORTED", "CHECKPOINT_INVALID",
             "NO_RECOGNIZED_ROWS", "SOURCE_MARKER_UNKNOWN", "DIGITAL_PROOF_UNPROVEN",
@@ -4763,10 +4777,34 @@ mod tests {
             "900002".into(),
             vec![entry("900002", "library"), entry("900002", "purchase")],
         );
-        assert!(service
+        early.observations.insert("900002".into(), Err("PUBLIC_METADATA_FAILED".into()));
+        assert_eq!(service
             .publish_early_records(&job, &mut early, None)
-            .unwrap()
-            .is_empty()); // public details still pending
+            .unwrap(), vec!["900002"]); // complete observed grants do not wait for public metadata
+        assert_ne!(catalogue.get("product", "900002").unwrap().unwrap()["publicMetadataState"], "complete");
+        assert_eq!(catalogue.get("entitlement", "authored-account:purchase:900002").unwrap().unwrap()["manifestComplete"], false);
+        assert!(early.publications.products["900002"].iter().all(|entry| entry.needs_enrichment));
+        let mut closed = Publications {
+            checkpoints: early.publications.checkpoints.clone(),
+            products: BTreeMap::from([("900002".into(), early.publications.products["900002"].clone())]),
+            ..Default::default()
+        };
+        for checkpoint in closed.checkpoints.values_mut() {
+            checkpoint.pending.clear();
+            checkpoint.terminal = true;
+        }
+        let (certified, additive) = ready_product_entries(&closed, "900002");
+        assert!(certified.is_empty());
+        assert_eq!(additive.len(), 2); // source closure cannot stand in for missing metadata
+        for checkpoint in closed.checkpoints.values() {
+            let marker = format!("booth-product:{}:900002", checkpoint.run_id);
+            assert!(catalogue.get("checkpoint", &marker).unwrap().is_none());
+        }
+        let mut incomplete = entry("900003", "purchase");
+        incomplete.rows[0].manifest_complete = false;
+        early.publications.products.insert("900003".into(), vec![incomplete]);
+        assert!(service.publish_early_records(&job, &mut early, None).unwrap().is_empty());
+        assert!(catalogue.get("product", "900003").unwrap().is_none());
         early.observations.insert(
             "900002".into(),
             Ok(json!({"publicMetadataState":"complete"})),
@@ -7033,7 +7071,14 @@ mod tests {
             ..Default::default()
         };
         let (authoritative, additive) = ready_product_entries(&publications, "900002");
-        assert!(authoritative.is_empty() && additive.is_empty());
+        assert!(authoritative.is_empty());
+        assert_eq!(additive.len(), 1);
+        assert!(additive[0].needs_enrichment);
+        service.commit_product_group_mode(&job, "900002", &additive, &mut publications.checkpoints, false).unwrap();
+        assert_eq!(catalogue.get("acquisition", "authored-account:purchase:910002").unwrap().unwrap()["paidPrice"], 900);
+        assert_eq!(catalogue.get("entitlement", "authored-account:purchase:900002").unwrap().unwrap()["manifestComplete"], false);
+        assert!(catalogue.get("remote_file", "authored-account:700001:800001").unwrap().is_none());
+        assert!(publications.checkpoints[&key].published_products.is_empty());
         publications.products.get_mut("900002").unwrap()[0].draft["publicMetadataState"] =
             json!("complete");
         publications.products.get_mut("900002").unwrap()[0].needs_enrichment = false;

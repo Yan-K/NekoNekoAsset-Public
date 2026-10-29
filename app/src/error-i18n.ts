@@ -1,5 +1,8 @@
 import type {Locale} from './model';
 const labels:Record<string,string[]>={
+ archive_listing_invalid:['Could not read the archive file list; update the app or try another copy','圧縮ファイルの一覧を読み取れません。アプリを更新するか、別のコピーをお試しください','압축 파일 목록을 읽을 수 없습니다. 앱을 업데이트하거나 다른 사본을 사용하세요','无法读取压缩包文件列表，请更新应用或尝试其他副本','無法讀取壓縮檔的檔案清單，請更新程式或嘗試其他副本'],
+ archive_inventory_mismatch:['Extracted files do not match the archive list; retry from the original archive','展開したファイルが圧縮ファイルの一覧と一致しません。元の圧縮ファイルから再試行してください','압축 해제 결과가 파일 목록과 다릅니다. 원본 압축 파일로 다시 시도하세요','解压结果与压缩包清单不符，请使用原压缩包重试','解壓結果與壓縮檔清單不符，請使用原壓縮檔重試'],
+ destination_not_fresh:['Choose a new empty destination folder','新しい空の保存先フォルダーを選択してください','새 빈 대상 폴더를 선택하세요','请选择新的空目标文件夹','請選擇新的空白目的地資料夾'],
  SYNC_INCOMPLETE:['Some source information is still unconfirmed; retry sync','取得元の情報を確認しきれていません。同期を再試行してください','일부 소스 정보를 확인하지 못했습니다. 동기화를 다시 시도하세요','部分来源信息尚未确认，请重试同步','部分來源資訊尚未確認，請重試同步'],
  NO_RECOGNIZED_ROWS:['Could not read the store list; retry or copy diagnostics','ストアの一覧を読み取れません。再試行するか診断情報をコピーしてください','스토어 목록을 읽을 수 없습니다. 다시 시도하거나 진단 정보를 복사하세요','无法读取商店列表，请重试或复制诊断信息','無法讀取商店清單，請重試或複製診斷資訊'],
  SOURCE_MARKER_UNKNOWN:['The store list format was not recognized; copy diagnostics if retry fails','ストアの一覧形式を認識できません。再試行しても失敗する場合は診断情報をコピーしてください','스토어 목록 형식을 인식하지 못했습니다. 재시도 후에도 실패하면 진단 정보를 복사하세요','无法识别商店列表格式，重试仍失败时请复制诊断信息','無法辨識商店清單格式，重試仍失敗時請複製診斷資訊'],
@@ -71,7 +74,7 @@ export function nativeErrorText(locale:Locale,code:string):string|undefined {
  const nativeCode=lower.split('.').at(-1)??lower;
  const upper=nativeCode.toUpperCase();
  const aliases:Record<string,string>={SOURCE_UNSUPPORTED:'COLLECTOR_UNSUPPORTED',RECEIPT_BODY_FAILED:'RECEIPT_REQUEST_FAILED',RECEIPT_AUTH_FAILED:'auth',RECEIPT_AUTHORIZATION_REQUIRED:'auth',PROTECTED_SESSION_UNAVAILABLE:'auth',DIGITAL_DETAIL_ROLE_UNKNOWN:'RECEIPT_PARSE_FAILED',GUMROAD_PUBLIC_METADATA_UNAVAILABLE:'PUBLIC_METADATA_UNAVAILABLE',FILE_INCOMPLETE:'manifest_incomplete',DOWNLOAD_LINK_UNAVAILABLE:'download_resolver_failed',DOWNLOAD_RESOLVER_FAILED:'download_resolver_failed'};
- let key=labels[code]?code:labels[upper]?upper:aliases[upper]??'';
+ let key=labels[code]?code:labels[upper]?upper:labels[nativeCode]?nativeCode:aliases[upper]??'';
  if(!key&&['store_identity_changed','store_identity_mismatch','account_identity_mismatch'].includes(nativeCode))key='auth';
  if(!key&&/^(jinxxy|gumroad)_(source_unsupported|scope_changed|pagination_unproven)$/.test(nativeCode))key='operationFailed';
  if(!key&&/^(file_unavailable|downloads?_unavailable)$/.test(nativeCode))key='missing';

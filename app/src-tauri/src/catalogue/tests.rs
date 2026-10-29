@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn unsupported_schema_is_rejected_before_persistent_journal_changes() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("future.sqlite3");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA user_version=99; CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES('preserved');").unwrap();
+    drop(conn);
+    assert!(Catalogue::from_connection(Connection::open(&path).unwrap(), &fixture.0, &fixture.0, Some(fixture.0.clone()), None).is_err());
+    let conn = Connection::open(path).unwrap();
+    assert_eq!(conn.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "wal");
+    assert_eq!(conn.query_row("SELECT value FROM future_data", [], |r| r.get::<_, String>(0)).unwrap(), "preserved");
+}
+
+#[test]
+fn shared_catalogue_checks_delete_journal_and_setup_accepts_memory_mode() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("shared.sqlite3");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+    let c = Catalogue::from_connection(conn, &fixture.0, &fixture.0, Some(fixture.0.clone()), None).unwrap();
+    assert_eq!(c.inner.lock().unwrap().query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "delete");
+    drop(c);
+    let setup = Catalogue::open_setup(&fixture.0).unwrap();
+    assert_eq!(setup.inner.lock().unwrap().query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "memory");
+}
+
+#[test]
 fn all_summary_queries_include_results_after_10000_without_unbounding_file_payloads() {
     let fixture = Fixture::new();
     let c = fixture.open();
@@ -2474,7 +2500,7 @@ fn canonical_avatar_registry_counts_aliases_and_preserves_manual_disable() {
 }
 
 #[test]
-fn avatar_base_pins_override_every_filter_before_paging_without_duplicates() {
+fn avatar_base_pins_override_ordinary_filters_before_paging_without_duplicates() {
     let f = Fixture::new();
     let c = f.open();
     c.put("product","5007531",json!({"id":"5007531","sourceTitle":"真冬","sourceCategory":{"name":"3Dアバター"},"sensitive":true})).unwrap();
@@ -2486,7 +2512,7 @@ fn avatar_base_pins_override_every_filter_before_paging_without_duplicates() {
         )
         .unwrap();
     }
-    let hidden=c.command("query",json!({"avatar":"booth:5007531","category":"Clothes","collectionId":"missing","search":"no match","quick":"downloaded","sensitive":"hide","accountIds":[],"sort":"price","limit":1})).unwrap();
+    let hidden=c.command("query",json!({"avatar":"booth:5007531","category":"Clothes","collectionId":"missing","search":"no match","quick":"downloaded","sensitive":"show","accountIds":[],"sort":"price","limit":1})).unwrap();
     assert_eq!(hidden["matchedIds"], json!(["5007531"]));
     assert_eq!(hidden["matched"], 1);
     let first = c
@@ -2518,6 +2544,22 @@ fn avatar_base_pins_override_every_filter_before_paging_without_duplicates() {
         c.command("query", json!({"avatar":"Mafuyu"})).unwrap()["matched"],
         3
     );
+}
+
+#[test]
+fn avatar_base_pins_respect_r18_hide_only_and_hidden_boundaries() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("product", "5007531", json!({"id":"5007531","provider":"booth","sourceTitle":"真冬","sourceCategory":{"name":"3Dアバター"},"sensitive":true})).unwrap();
+    let query = |mode| c.command("query", json!({"avatar":"booth:5007531","sensitive":mode})).unwrap()["matchedIds"].clone();
+    assert_eq!(query("hide"), json!([]));
+    assert_eq!(query("only"), json!(["5007531"]));
+    c.command("overlay", json!({"ids":["5007531"],"patch":{"sensitive":false}})).unwrap();
+    assert_eq!(query("only"), json!([]));
+    assert_eq!(query("hide"), json!(["5007531"]));
+    c.command("overlay", json!({"ids":["5007531"],"patch":{"hidden":true}})).unwrap();
+    assert_eq!(query("show"), json!([]));
+    assert_eq!(c.command("query", json!({"avatar":"booth:5007531","sensitive":"hide","hiddenOnly":true})).unwrap()["matchedIds"], json!(["5007531"]));
 }
 
 #[test]

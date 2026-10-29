@@ -3,6 +3,7 @@ import {nativeErrorText} from './error-i18n';
 import type {UnityPreparation} from './backend';
 const locales:Locale[]=['en','ja','ko','zh-Hans','zh-Hant'];
 const text:Record<string,string[]>={
+ UNITY_REQUEST_INVALID:['Saved Unity request could not be read; check its results in Unity','保存した Unity リクエストを読み取れません。Unity で結果を確認してください','저장된 Unity 요청을 읽을 수 없습니다. Unity에서 결과를 확인하세요','无法读取已保存的 Unity 请求，请在 Unity 中检查结果','無法讀取已儲存的 Unity 請求，請在 Unity 中檢查結果'],
  selectAll:['Select all','すべて選択','모두 선택','全选','全選'],
  project:['Project','プロジェクト','프로젝트','项目','專案'],
  files:['Files','ファイル','파일','文件','檔案'],

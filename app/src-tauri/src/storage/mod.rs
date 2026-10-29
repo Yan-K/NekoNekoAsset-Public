@@ -363,30 +363,44 @@ impl StorageService {
         }
         Ok(true)
     }
+    fn put_queued_download(
+        &self,
+        before: &Value,
+        job: &mut Value,
+        state: &str,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        ensure!(before["type"] == "download" && before["state"] == "queued", "invalid_job");
+        let id = io::required_string(before, "id")?;
+        job["state"] = json!(state);
+        job["updatedAt"] = json!(now());
+        job["errorCode"] = json!(error);
+        self.catalogue.put_many_if_unchanged(
+            vec![("job".into(), id.to_owned(), job.clone())],
+            vec![("job".into(), id.to_owned(), Some(before.clone()))],
+        )
+    }
     fn queued_download(&self) -> Result<(Option<Value>, bool)> {
-        let jobs: Vec<_> = self
-            .catalogue
-            .list("job")?
-            .into_iter()
-            .filter(|job| job["type"] == "download" && job["state"] == "queued")
-            .collect();
+        let jobs = self.catalogue.queued_jobs(Some("download"), None)?;
         if jobs.is_empty() {
             return Ok((None, false));
         }
         let accounts = self.available_download_accounts()?;
         let mut changed = false;
         for mut job in jobs {
+            let before = job.clone();
             if !self.download_has_local_session(&job, &accounts)? {
                 if job["stage"] != "authRequired" || job["errorCode"] != "auth_required" {
                     job["stage"] = json!("authRequired");
-                    self.put_job(&mut job, "queued", Some("auth_required"))?;
-                    changed = true;
+                    changed |= self.put_queued_download(&before, &mut job, "queued", Some("auth_required"))?;
                 }
                 continue;
             }
             if job["stage"] == "authRequired" {
                 job.as_object_mut().unwrap().remove("stage");
-                self.put_job(&mut job, "queued", None)?;
+                if !self.put_queued_download(&before, &mut job, "queued", None)? {
+                    continue;
+                }
                 changed = true;
             }
             return Ok((Some(job), changed));
@@ -449,14 +463,16 @@ impl StorageService {
                         continue;
                     }
                 };
-                let local = service.catalogue.list("job").ok().and_then(|jobs| {
-                    jobs.into_iter().find(|job| {
-                        job["type"] == "storage:import_local"
-                            && job["state"] == "queued"
-                            && (service.catalogue.library_root().is_none()
-                                || job["originDeviceId"] == service.catalogue.device_id())
-                    })
-                });
+                let local = service
+                    .catalogue
+                    .queued_jobs(Some("storage:import_local"), None)
+                    .ok()
+                    .and_then(|jobs| {
+                        jobs.into_iter().find(|job| {
+                            service.catalogue.library_root().is_none()
+                                || job["originDeviceId"] == service.catalogue.device_id()
+                        })
+                    });
                 if let Some(job) = local {
                     service.process_local_job(&app, job).await;
                     continue;
@@ -467,12 +483,13 @@ impl StorageService {
                     service.changed(&app, None);
                 }
                 if let Some(mut job) = next {
+                    let before = job.clone();
                     let id = job["id"].as_str().unwrap_or("").to_owned();
                     let cancel = service.cancellation(&id);
                     if job["cancelRequested"] == true {
                         cancel.store(true, Ordering::Release);
                     }
-                    if service.put_job(&mut job, "running", None).is_ok() {
+                    if service.put_queued_download(&before, &mut job, "running", None).unwrap_or(false) {
                         service.changed(&app, Some(&id));
                         let result = service.run_download(&app, &mut job, &cancel).await;
                         let (state, error) = match &result {

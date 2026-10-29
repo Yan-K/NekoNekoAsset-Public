@@ -90,12 +90,12 @@ pub(super) fn query(conn: &Connection, args: &Value) -> Result<Value> {
         let registry = avatars::registry(conn, &preferences)?;
         let avatar_id = registry.resolve(avatar);
         // Base pins override ordinary filters, but never the user's explicit
-        // hidden/visible boundary.
+        // hidden/visible or R-18 visibility boundaries.
         let mut visible_base = conn.prepare_cached(
-            "SELECT COALESCE(json_extract(summary,'$.hidden'),0)=?2 FROM products WHERE id=?1",
+            "SELECT COALESCE(json_extract(summary,'$.hidden'),0)=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) FROM products WHERE id=?1",
         )?;
         for id in registry.bases(&avatar_id) {
-            if visible_base.query_row(params![id, hidden_only], |row| row.get::<_, bool>(0))? {
+            if visible_base.query_row(params![id, hidden_only, sensitive], |row| row.get::<_, bool>(0))? {
                 pinned.push(id);
             }
         }

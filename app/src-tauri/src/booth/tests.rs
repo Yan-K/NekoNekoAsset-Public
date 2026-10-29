@@ -1,6 +1,68 @@
 use super::*;
 use std::path::PathBuf;
 
+#[test]
+fn startup_recovery_isolates_orphan_jobs_and_keeps_later_jobs_resumable() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    account(catalogue, A, false);
+    for (id, owner) in [("authored-orphan", B), ("authored-healthy", A)] {
+        let job = json!({"id":id,"type":"boothSync","accountId":owner,"state":"running"});
+        catalogue.put("job", id, job.clone()).unwrap();
+        let recovered = fixture.service.prepare_recovered_job(job).unwrap();
+        assert_eq!(recovered.is_some(), owner == A);
+    }
+    let orphan = catalogue.get("job", "authored-orphan").unwrap().unwrap();
+    assert_eq!(orphan["state"], "needsAction");
+    assert_eq!(orphan["errorCode"], "ACCOUNT_UNAVAILABLE");
+    assert_eq!(catalogue.get("job", "authored-healthy").unwrap().unwrap()["state"], "running");
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn stale_retry_cannot_overwrite_the_first_retry_attempt() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    let previous = json!({"id":"authored-retry","type":"boothLogin","accountId":A,"state":"needsAction","errorCode":"RETRY_REQUIRED"});
+    catalogue.put("job", "authored-retry", previous.clone()).unwrap();
+    let mut running = fixture.service.requeue_job(&previous).unwrap();
+    assert_eq!(running["state"], "queued");
+    running["state"] = json!("running");
+    running["progress"] = json!({"pages":5});
+    catalogue.put("job", "authored-retry", running.clone()).unwrap();
+    assert_eq!(code(&fixture.service.requeue_job(&previous).unwrap_err()), "JOB_BUSY");
+    assert_eq!(catalogue.get("job", "authored-retry").unwrap().unwrap(), running);
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn successful_sync_clears_previous_action_state_without_replacing_identity() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    let account = json!({"id":A,"store":"BOOTH","status":"needsAction","state":"needsAction","identityVerified":true,"identityHash":"authored-identity","authenticatedAt":"2026-01-01T00:00:00Z"});
+    catalogue.put("account", A, account.clone()).unwrap();
+    let job = json!({"id":"authored-recovered-sync","type":"boothSync","accountId":A,"state":"running"});
+    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    fixture.service.finish_job(&job, Some("PUBLIC_METADATA_FAILED")).unwrap();
+    assert_eq!(catalogue.get("account", A).unwrap().unwrap()["state"], "needsAction");
+    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    fixture.service.finish_job(&job, None).unwrap();
+    let recovered = catalogue.get("account", A).unwrap().unwrap();
+    assert_eq!(recovered["state"], "connected");
+    assert_eq!(recovered["status"], "connected");
+    assert_eq!(recovered["syncState"], "complete");
+    for key in ["identityVerified", "identityHash", "authenticatedAt"] {
+        assert_eq!(recovered[key], account[key]);
+    }
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[tokio::test]
 async fn completed_incomplete_attempt_retains_execution_and_source_diagnostics_in_database() {
     let fixture = Fixture::new();

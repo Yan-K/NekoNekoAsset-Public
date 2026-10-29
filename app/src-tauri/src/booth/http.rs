@@ -261,6 +261,9 @@ fn retry_after(value: Option<&str>, now: std::time::SystemTime) -> Duration {
                 })
             })
         })
+        // An unrepresentable header is invalid, just like malformed text.
+        // defer() must be able to form its monotonic deadline before returning.
+        .filter(|delay| Instant::now().checked_add(*delay).is_some())
         .unwrap_or(Duration::from_secs(5))
 }
 pub fn build_client(jar: Arc<reqwest::cookie::Jar>, download: bool) -> Result<Client> {
@@ -435,6 +438,8 @@ mod tests {
     fn retry_after_obeys_dates_and_bounds() {
         let now = std::time::UNIX_EPOCH + Duration::from_secs(1000);
         assert_eq!(retry_after(Some("90"), now), Duration::from_secs(90));
+        assert_eq!(retry_after(Some("600"), now), Duration::from_secs(600));
+        assert_eq!(retry_after(Some("18446744073709551615"), now), Duration::from_secs(5));
         let date = "Thu, 01 Jan 1970 00:17:10 GMT";
         assert_eq!(retry_after(Some(date), now), Duration::from_secs(30));
         assert!(retry_after(Some("999999"), now) > Duration::from_secs(120));

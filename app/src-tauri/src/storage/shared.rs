@@ -23,7 +23,10 @@ impl StorageService {
         // Reject unrelated contents before acquiring a lock can create its marker.
         // copy_into_locked_root rechecks under the destination lock.
         for entry in std::fs::read_dir(&destination)? {
-            ensure!(entry?.file_name() == ".nna-library.lock", "storage.destination_not_fresh");
+            ensure!(
+                entry?.file_name() == ".nna-library.lock",
+                "storage.destination_not_fresh"
+            );
         }
         let destination_lock = Arc::new(LibraryLock::acquire(&destination)?);
         let mut payload = self.payload(None, None, false)?;
@@ -35,9 +38,9 @@ impl StorageService {
                 .ok_or_else(|| anyhow::anyhow!("invalid_path"))?
                 .replace('\\', "/");
         }
-        for directory in ["media", "cache", "recovery", "unity"] {
-            self.shared_directory_payload(directory, &source, &mut payload)?;
-        }
+        // The selected library is user-owned. Preserve additional files and
+        // empty folders too, retaining stronger hashes for managed artifacts.
+        self.complete_library_payload(&source, &mut payload, cancel)?;
         let snapshot = self
             .catalogue
             .data_dir()
@@ -62,32 +65,54 @@ impl StorageService {
         )
     }
 
-    fn shared_directory_payload(
+    fn complete_library_payload(
         &self,
-        name: &str,
         library: &Path,
         payload: &mut Vec<portable::PayloadSource>,
+        cancel: &AtomicBool,
     ) -> Result<()> {
-        let directory = self.catalogue.data_dir().join(name);
-        if !directory.exists() {
-            return Ok(());
-        }
-        let mut pending = vec![directory];
+        let mut known: HashMap<_, _> = payload
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.relative_path.clone(), index))
+            .collect();
+        ensure!(known.len() == payload.len(), "archive_path_collision");
+        let mut pending = std::fs::read_dir(library)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
         while let Some(path) = pending.pop() {
-            io::reject_link(&path)?;
+            io::check_cancel(cancel)?;
             let relative = path
                 .strip_prefix(library)?
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("invalid_path"))?
                 .replace('\\', "/");
-            let is_directory = path.is_dir();
-            payload.push(portable::PayloadSource {
-                root_id: "__catalogue".into(),
-                relative_path: relative,
-                source_path: path.clone(),
-                expected_hash: None,
-                is_directory,
-            });
+            if move_transient(&relative) {
+                continue;
+            }
+            io::reject_link(&path)?;
+            let metadata = std::fs::symlink_metadata(&path)?;
+            ensure!(
+                metadata.is_dir() || metadata.is_file(),
+                "storage_source_changed"
+            );
+            let is_directory = metadata.is_dir();
+            if let Some(index) = known.get(&relative) {
+                ensure!(
+                    payload[*index].source_path == path
+                        && payload[*index].is_directory == is_directory,
+                    "storage_source_changed"
+                );
+            } else {
+                known.insert(relative.clone(), payload.len());
+                payload.push(portable::PayloadSource {
+                    root_id: "__catalogue".into(),
+                    relative_path: relative,
+                    source_path: path.clone(),
+                    expected_hash: None,
+                    is_directory,
+                });
+            }
             if is_directory {
                 for entry in std::fs::read_dir(path)? {
                     pending.push(entry?.path());
@@ -96,6 +121,24 @@ impl StorageService {
         }
         Ok(())
     }
+}
+
+fn move_transient(relative: &str) -> bool {
+    matches!(
+        relative,
+        ".nna-library.lock"
+            | ".nna/data/catalogue.sqlite3"
+            | ".nna/data/catalogue.sqlite3-journal"
+            | ".nna/data/catalogue.sqlite3-wal"
+            | ".nna/data/catalogue.sqlite3-shm"
+    ) || [".nna-staging", ".nna-partials", ".nna-import-partials"]
+        .iter()
+        .any(|directory| relative == *directory || relative.starts_with(&format!("{directory}/")))
+        || relative
+            .strip_prefix(".nna/data/")
+            .and_then(|name| name.strip_prefix(".nna-move-db-"))
+            .and_then(|name| name.strip_suffix(".sqlite3"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id))
 }
 
 #[cfg(test)]
@@ -189,7 +232,8 @@ mod tests {
 
     #[test]
     fn shared_move_rejects_unrelated_contents_without_creating_a_lock_marker() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target")
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
             .join(format!("shared-move-refused-{}", uuid::Uuid::new_v4()));
         let source = fixture.join("source");
         let destination = fixture.join("destination");
@@ -200,10 +244,68 @@ mod tests {
         let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
         let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
         let service = StorageService::new(catalogue.clone(), stores).unwrap();
-        assert!(service.move_library(&json!({"path":destination}), &AtomicBool::new(false)).is_err());
+        assert!(service
+            .move_library(&json!({"path":destination}), &AtomicBool::new(false))
+            .is_err());
         assert!(!destination.join(".nna-library.lock").exists());
-        assert_eq!(std::fs::read(destination.join("unrelated.txt")).unwrap(), b"human-owned bytes");
+        assert_eq!(
+            std::fs::read(destination.join("unrelated.txt")).unwrap(),
+            b"human-owned bytes"
+        );
         drop(catalogue.begin_catalogue_work().unwrap());
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn shared_move_preserves_unrecorded_library_files_and_empty_folders() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("shared-complete-library-{}", uuid::Uuid::new_v4()));
+        let source = fixture.join("source");
+        let destination = fixture.join("destination");
+        std::fs::create_dir_all(source.join("assets/Authored/User empty folder")).unwrap();
+        std::fs::create_dir_all(source.join("user documents/empty")).unwrap();
+        std::fs::write(
+            source.join("assets/Authored/hand-edited.psd"),
+            b"authored user-owned product addition",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("user documents/notes.txt"),
+            b"authored library notes",
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join(".nna-partials")).unwrap();
+        std::fs::write(
+            source.join(".nna-partials/stale.part"),
+            b"authored unfinished bytes",
+        )
+        .unwrap();
+        let catalogue = Catalogue::open_bound(&source, &fixture.join("profile")).unwrap();
+        let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
+        let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
+        let service = StorageService::new(catalogue.clone(), stores).unwrap();
+        service
+            .move_library(&json!({"path":destination}), &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("assets/Authored/hand-edited.psd")).unwrap(),
+            b"authored user-owned product addition"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("user documents/notes.txt")).unwrap(),
+            b"authored library notes"
+        );
+        assert!(destination
+            .join("assets/Authored/User empty folder")
+            .is_dir());
+        assert!(destination.join("user documents/empty").is_dir());
+        assert!(!destination.join(".nna-partials").exists());
+        assert!(source.join(".nna-partials/stale.part").is_file());
+        assert!(destination.join(".nna/data/catalogue.sqlite3").is_file());
+        catalogue.release_move_hold().unwrap();
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(fixture).unwrap();

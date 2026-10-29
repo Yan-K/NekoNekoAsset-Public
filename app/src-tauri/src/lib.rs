@@ -913,6 +913,7 @@ async fn preview_cache(
 ) -> Result<Value, UiError> {
     let _operation = trusted(&window)?;
     let services = services.services()?;
+    let _work = services.catalogue.begin_catalogue_work().map_err(UiError::from_error)?;
     let path = services
         .previews
         .get(url)
@@ -922,12 +923,13 @@ async fn preview_cache(
 }
 
 #[tauri::command]
-fn library_status(
+async fn library_status(
     window: tauri::WebviewWindow,
-    host: tauri::State<'_, LibraryHost>,
 ) -> Result<LibraryStatus, UiError> {
     let _operation = trusted(&window)?;
-    active_library_status(&host)
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || active_library_status(&app.state::<LibraryHost>()))
+        .await.map_err(|_| UiError { code: "worker_failed".into() })?
 }
 
 fn active_library_status(host: &LibraryHost) -> Result<LibraryStatus, UiError> {

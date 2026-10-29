@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn download_scheduler_cas_does_not_revive_cancelled_queue_snapshots() {
+    let f = Fixture::new();
+    for action in ["require-auth", "clear-auth", "claim"] {
+        let mut queued = json!({"id":"authored-scheduler","type":"download","state":"queued","fileIds":[]});
+        if action == "clear-auth" {
+            queued["stage"] = json!("authRequired");
+            queued["errorCode"] = json!("auth_required");
+        }
+        f.service.catalogue.put("job", "authored-scheduler", queued.clone()).unwrap();
+        f.service.cancel_job("authored-scheduler").unwrap();
+        let cancelled = f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap();
+        assert_eq!(cancelled["state"], "cancelled");
+        let mut stale = queued.clone();
+        let (state, error) = match action {
+            "require-auth" => {
+                stale["stage"] = json!("authRequired");
+                ("queued", Some("auth_required"))
+            }
+            "clear-auth" => {
+                stale.as_object_mut().unwrap().remove("stage");
+                ("queued", None)
+            }
+            _ => ("running", None),
+        };
+        assert!(!f.service.put_queued_download(&queued, &mut stale, state, error).unwrap(), "{action}");
+        assert_eq!(f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap(), cancelled, "{action}");
+    }
+}
+
+#[test]
+fn download_scheduler_cas_claim_keeps_late_cancellation_and_queue_flags() {
+    let f = Fixture::new();
+    let queued = json!({"id":"authored-scheduler","type":"download","state":"queued","fileIds":[],"cancelRequested":true});
+    f.service.catalogue.put("job", "authored-scheduler", queued.clone()).unwrap();
+    let mut running = queued.clone();
+    let token = f.service.cancellation("authored-scheduler");
+    assert!(f.service.put_queued_download(&queued, &mut running, "running", None).unwrap());
+    assert_eq!(running["cancelRequested"], true);
+    assert_eq!(f.service.cancel_job("authored-scheduler").unwrap()["cancelRequested"], true);
+    assert!(token.load(Ordering::Acquire));
+    let cancelled_running = f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap();
+    assert_eq!(cancelled_running["state"], "running");
+    assert_eq!(cancelled_running["cancelRequested"], true);
+    let mut stale = queued.clone();
+    assert!(!f.service.put_queued_download(&queued, &mut stale, "running", None).unwrap());
+    assert_eq!(f.service.catalogue.get("job", "authored-scheduler").unwrap().unwrap(), cancelled_running);
+}
+
+#[test]
 fn cancellation_during_restore_and_after_completion_preserves_terminal_facts() {
     let f = Fixture::new();
     let running = json!({"id":"restore","type":"storage:restore_backup","state":"running"});

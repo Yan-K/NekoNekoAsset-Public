@@ -173,8 +173,13 @@ fn remove_library(device: &Path, request: &mut Request) -> Result<()> {
         storage::validate_library_path(&database)?;
         let connection = rusqlite::Connection::open_with_flags(
             &database,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            // The prior process may have died with a hot rollback journal.
+            // SQLite must recover it before reading the durable library identity.
+            // The OS library lock is already held; never create or initialize SQL.
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
         )?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        ensure!(version == 1, "catalogue.newer_schema");
         let body: String = connection.query_row(
             "SELECT body FROM entities WHERE kind='preferences' AND id='app'",
             [],
@@ -403,6 +408,67 @@ mod tests {
             false
         );
     }
+    #[test]
+    fn deletion_recovers_a_crash_left_hot_journal_before_checking_library_identity() {
+        const CHILD: &str = "NNA_AUTHORED_RESET_HOT_JOURNAL";
+        if let Some(database) = std::env::var_os(CHILD) {
+            let database = PathBuf::from(database).canonicalize().unwrap();
+            let boundary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/verification/settings-reset")
+                .canonicalize()
+                .unwrap();
+            assert!(database.starts_with(boundary));
+            assert_eq!(database.file_name().unwrap(), "catalogue.sqlite3");
+            storage::validate_library_path(&database).unwrap();
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            connection.execute_batch("PRAGMA synchronous=FULL; PRAGMA cache_size=5; BEGIN IMMEDIATE; CREATE TABLE authored_crash_spill(payload BLOB);").unwrap();
+            for _ in 0..64 {
+                connection
+                    .execute(
+                        "INSERT INTO authored_crash_spill VALUES(zeroblob(4096))",
+                        [],
+                    )
+                    .unwrap();
+            }
+            // Deliberately bypass Drop/rollback in this isolated child only.
+            std::process::exit(0);
+        }
+        let f = Fixture::new();
+        f.schedule(true);
+        let database = f.root.join(".nna/data/catalogue.sqlite3");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child.args(["--exact", "app_reset::tests::deletion_recovers_a_crash_left_hot_journal_before_checking_library_identity"])
+            .env(CHILD, &database)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            child.creation_flags(0x08000000);
+        }
+        assert!(child.output().unwrap().status.success());
+        let journal = database.with_file_name("catalogue.sqlite3-journal");
+        assert!(fs::metadata(&journal).unwrap().len() > 512);
+        let readonly = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let error = readonly
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ReadOnly)
+        );
+        drop(readonly);
+        apply_pending(&f.device).unwrap();
+        assert!(!f.root.exists());
+        assert!(!pending(&f.device));
+        f.retained();
+    }
+
     #[test]
     fn reset_delete_removes_entire_selected_library_and_keeps_device_and_siblings() {
         let f = Fixture::new();
