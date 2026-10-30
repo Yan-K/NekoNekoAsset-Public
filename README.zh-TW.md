@@ -23,6 +23,10 @@ NekoNekoAsset 是一款 Windows 桌面 App。它會同步你在 BOOTH、Gumroad�
   <a href="https://yan-k.github.io/NekoNekoAsset-Public/zh-tw/"><b>官方網站</b></a> · <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><b>下載 Windows 版</b></a>
 </p>
 
+<p align="center">
+  <img src="site/assets/screens/zh-TW/library.webp" alt="NekoNekoAsset 素材庫畫面（示範資料）" width="900">
+</p>
+
 ## 功能特色
 
 - **自動同步購買紀錄**。登入一次就好，之後每次打開 App，新買的素材會自動出現在清單裡。
@@ -31,6 +35,23 @@ NekoNekoAsset 是一款 Windows 桌面 App。它會同步你在 BOOTH、Gumroad�
 - **一鍵送進 Unity**。勾選檔案後先在 Unity 裡預覽，確認了才會寫進專案。
 - **匯入自己的檔案**。資料夾、ZIP 拖進來一起管理，App 會複製一份到素材庫，原始檔案不會被動到。
 - **花費統計、主題與語言**。依幣別統計有付款證據的金額；多款內建主題；支援繁中、简中、日本語、한국어、English。
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/zh-TW/sync.webp" alt="來源同步視窗：BOOTH、Gumroad、Jinxxy 帳號"><br><sub><b>自動同步購買紀錄</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/zh-TW/downloads.webp" alt="檔案分頁：已下載與解壓縮中的檔案"><br><sub><b>下載＋自動解壓縮</b></sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/zh-TW/find.webp" alt="依相容素體篩選後的資產清單"><br><sub><b>分類、標籤，一找就有</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/zh-TW/unity.webp" alt="Unity 匯入視窗：已勾選 unitypackage"><br><sub><b>一鍵送進 Unity</b></sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/zh-TW/import.webp" alt="匯入資產視窗：資料夾、ZIP 與縮圖"><br><sub><b>匯入自己的檔案</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/zh-TW/themes.webp" alt="設定中選用 Sakura 深色主題"><br><sub><b>多款內建主題</b></sub></td>
+  </tr>
+</table>
+
+<sub>截圖為 App 實際畫面，內容為示範資料。</sub>
 
 ## 支援的商店
 

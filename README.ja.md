@@ -23,6 +23,10 @@ NekoNekoAsset は Windows 向けのデスクトップアプリです。BOOTH・G
   <a href="https://yan-k.github.io/NekoNekoAsset-Public/ja/"><b>公式サイト</b></a> · <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><b>Windows 版をダウンロード</b></a>
 </p>
 
+<p align="center">
+  <img src="site/assets/screens/ja/library.webp" alt="NekoNekoAsset のライブラリ画面（デモデータ）" width="900">
+</p>
+
 ## 機能
 
 - **購入履歴を自動で同期**。ログインは一度だけ。アプリを開くたびに、新しく買った素材がリストに並びます。
@@ -31,6 +35,23 @@ NekoNekoAsset は Windows 向けのデスクトップアプリです。BOOTH・G
 - **ワンクリックで Unity へ**。ファイルを選んで Unity のインポートプレビューを確認。確定するまで何も書き込みません。
 - **手持ちのファイルも取り込み**。フォルダーや ZIP をドラッグするだけ。ライブラリにコピーを作るので、元のファイルはそのままです。
 - **支出の集計・テーマ・言語**。支払いが確認できた金額を通貨ごとに集計。内蔵テーマが多数あり、English・繁體中文・简体中文・日本語・한국어に対応。
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/ja/sync.webp" alt="ソース同期画面：BOOTH・Gumroad・Jinxxy のアカウント"><br><sub><b>購入履歴を自動で同期</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/ja/downloads.webp" alt="ファイルタブ：ダウンロード済みと展開中のファイル"><br><sub><b>ダウンロード＋自動解凍</b></sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/ja/find.webp" alt="対応アバターで絞り込んだアセット一覧"><br><sub><b>分類もタグも、すぐ見つかる</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/ja/unity.webp" alt="Unity インポート画面：unitypackage を選択"><br><sub><b>ワンクリックで Unity へ</b></sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/ja/import.webp" alt="アセット追加画面：フォルダー・ZIP・サムネイル"><br><sub><b>手持ちのファイルも取り込み</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/ja/themes.webp" alt="設定で Sakura ダークテーマを選択"><br><sub><b>内蔵テーマ</b></sub></td>
+  </tr>
+</table>
+
+<sub>スクリーンショットは実際のアプリ画面です（内容はデモデータ）。</sub>
 
 ## 対応ストア
 

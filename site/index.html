@@ -73,8 +73,24 @@ a:hover{color:#B02A6B}
 .faq .a{padding:0 26px 22px 70px;font-size:16px;line-height:1.85;color:#4A3F5C;display:flex;flex-direction:column;gap:10px}
 .faq .a strong,.hero-lead strong{color:#241B35}
 .faq .a ul{padding-left:1.2em;display:flex;flex-direction:column;gap:4px}
+.shot-card{position:relative;cursor:zoom-in}
+.shot-btn{position:absolute;top:35px;right:28px;display:inline-flex;align-items:center;gap:6px;height:38px;padding:0 14px;border:2.5px solid #241B35;border-radius:999px;background:#FFFFFF;color:#241B35;font:inherit;font-weight:800;font-size:14px;line-height:1;white-space:nowrap;cursor:zoom-in;box-shadow:2px 2px 0 #241B35}
+.shot-btn:hover,.shot-card:hover .shot-btn{background:#FFD43B}
+.shot-dialog{width:min(1180px,calc(100vw - 32px),calc((100vh - 190px) * 1.6 + 40px));max-width:none;max-height:calc(100vh - 24px);padding:0;border:3px solid #241B35;border-radius:24px;background:#FFFDF8;color:#241B35;box-shadow:8px 8px 0 #241B35;overflow:auto}
+.shot-dialog::backdrop{background:rgba(36,27,53,.62)}
+.shot-head{display:flex;align-items:center;gap:12px;padding:14px 14px 12px 20px}
+.shot-head h3{min-width:0;font-weight:800;font-size:22px;line-height:1.3}
+.shot-head h3:focus{outline:none}
+.shot-count{margin-left:auto;flex:none;font-weight:800;font-size:14px;color:#6B6080}
+.shot-close,.shot-nav{flex:none;display:grid;place-items:center;width:44px;height:44px;padding:0;border:2.5px solid #241B35;border-radius:50%;background:#FFFFFF;color:#241B35;cursor:pointer;box-shadow:2px 2px 0 #241B35}
+.shot-close:hover,.shot-nav:hover{background:#FFE3EF}
+.shot-body{padding:0 14px}
+.shot-img{display:block;border:2.5px solid #241B35;border-radius:14px;overflow:hidden;background:#EDEAF2;cursor:zoom-in}
+.shot-img img{display:block;width:100%;height:auto;aspect-ratio:16/10}
+.shot-foot{display:flex;align-items:center;gap:12px;padding:12px 14px 14px}
+.shot-note{flex:1;min-width:0;text-align:center;font-size:14px;font-weight:700;line-height:1.5;color:#6B6080}
 @media (max-width:900px){.nav-links{display:none}}
-@media (max-width:640px){.mock-side,.hide-sm{display:none}.faq .a{padding:0 18px 20px 18px}.faq summary{font-size:16px;padding:16px}}
+@media (max-width:640px){.mock-side,.hide-sm{display:none}.shot-head h3{font-size:18px}.faq .a{padding:0 18px 20px 18px}.faq summary{font-size:16px;padding:16px}}
 @media (max-width:520px){.wm{font-size:18px}.hdr-row{gap:8px;padding:10px 16px !important}.lang-txt,.lang-chev,.dl-ic{display:none}.lang-btn{padding:0 10px !important}}
 @media (max-width:380px){.dl-txt{display:none}.dl-ic{display:block !important}.hdr-dl{padding:0 12px !important}}
 @media (prefers-reduced-motion:reduce){.bob,.bob2,.marquee,.blink{animation:none}.pop-btn,.lift,.faq .chev{transition:none}}
@@ -368,8 +384,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 <div style="margin-top: 52px; display: flex; flex-wrap: wrap; gap: 24px;">
 
-<div class="lift" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFE3EF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/sync.webp" data-alt="{{shot_alt_sync}}" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFE3EF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{sync_title}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{sync_title}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C; max-width: 34em;">{{sync_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
@@ -395,8 +412,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 </div>
 
-<div class="lift" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFF3C4; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/downloads.webp" data-alt="{{shot_alt_downloads}}" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFF3C4; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="2" y="3" width="20" height="5" rx="1"></rect><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path><path d="M10 12h4"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{dl_title}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{dl_title}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{dl_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px; font-size: 14px; font-weight: 700;">
@@ -407,8 +425,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 </div>
 
-<div class="lift" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #DDF8EE; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/find.webp" data-alt="{{shot_alt_find}}" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #DDF8EE; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{find_title}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{find_title}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{find_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
@@ -426,8 +445,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 </div>
 
-<div class="lift" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #EFE8FF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/unity.webp" data-alt="{{shot_alt_unity}}" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #EFE8FF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{one_click_unity}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{one_click_unity}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C; max-width: 34em;">{{unity_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
@@ -446,8 +466,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 </div>
 
-<div class="lift" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #E1F2FF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/import.webp" data-alt="{{shot_alt_import}}" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #E1F2FF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 10v6"></path><path d="M9 13h6"></path><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{import_title}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{import_title}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{import_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; padding: 16px; border: 3px dashed #241B35; border-radius: 18px; background: #FFFFFF; font-weight: 800; font-size: 15px; text-align: center;">
@@ -456,8 +477,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 </div>
 
-<div class="lift" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFE9DB; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/spending.webp" data-alt="{{shot_alt_spending}}" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFE9DB; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFFFFF;"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path class="icf" fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{spend_title}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{spend_title}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{spend_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; position: relative; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px;">
@@ -469,8 +491,9 @@ html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lan
 </div>
 </div>
 
-<div class="lift" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<div class="lift shot-card" data-src="{{base}}assets/screens/{{shot_dir}}/themes.webp" data-alt="{{shot_alt_themes}}" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
 <span class="tile" style="background: #FFD3E6;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="13.5" cy="6.5" r="1"></circle><circle cx="17.5" cy="10.5" r="1"></circle><circle cx="8.5" cy="7.5" r="1"></circle><circle cx="6.5" cy="12.5" r="1"></circle><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"></path></svg></span>
+<button type="button" class="shot-btn" aria-label="{{shot_label}} · {{theme_title}}"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path></svg><span>{{shot_label}}</span></button>
 <h3 class="disp" style="font-weight: 800; font-size: 26px;">{{theme_title}}</h3>
 <p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{theme_desc}}</p>
 <div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 12px;">
@@ -766,6 +789,12 @@ by Yan-K ・ © 2026 NekoNekoAsset contributors
 </div>
 </footer>
 
+<dialog class="shot-dialog" aria-labelledby="shot-title">
+<div class="shot-head"><h3 id="shot-title" class="disp" tabindex="-1" autofocus></h3><span class="shot-count"></span><button type="button" class="shot-close" aria-label="{{shot_close}}"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></div>
+<div class="shot-body"><a class="shot-img" target="_blank" rel="noopener"><img alt="" width="1920" height="1200" decoding="async"></a></div>
+<div class="shot-foot"><button type="button" class="shot-nav" data-step="-1" aria-label="{{shot_prev}}"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button><p class="shot-note">{{shot_note}}</p><button type="button" class="shot-nav" data-step="1" aria-label="{{shot_next}}"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></button></div>
+</dialog>
+
 </div>
 <script>
 (function () {
@@ -781,6 +810,44 @@ by Yan-K ・ © 2026 NekoNekoAsset contributors
       try { localStorage.setItem('nna-lang', link.getAttribute('data-lang')); } catch (error) {}
     });
   });
+})();
+(function () {
+  var dialog = document.querySelector('.shot-dialog');
+  if (!dialog || typeof dialog.showModal !== 'function') return;
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.shot-card'));
+  var image = dialog.querySelector('img'), link = dialog.querySelector('.shot-img');
+  var title = dialog.querySelector('h3'), count = dialog.querySelector('.shot-count');
+  var index = 0, opener = null;
+  var source = function (i) { return cards[(i + cards.length) % cards.length].getAttribute('data-src'); };
+  function show(i) {
+    index = (i + cards.length) % cards.length;
+    var card = cards[index];
+    title.textContent = card.querySelector('h3').textContent;
+    image.src = link.href = source(index);
+    image.alt = card.getAttribute('data-alt');
+    count.textContent = (index + 1) + ' / ' + cards.length;
+    new Image().src = source(index + 1);
+    new Image().src = source(index - 1);
+  }
+  cards.forEach(function (card, i) {
+    card.addEventListener('pointerenter', function () { new Image().src = source(i); }, { once: true });
+    card.addEventListener('click', function () {
+      opener = card.querySelector('.shot-btn');
+      show(i);
+      dialog.showModal();
+    });
+  });
+  dialog.querySelectorAll('.shot-nav').forEach(function (button) {
+    button.addEventListener('click', function () { show(index + Number(button.getAttribute('data-step'))); });
+  });
+  dialog.querySelector('.shot-close').addEventListener('click', function () { dialog.close(); });
+  // A click that lands on the dialog element itself is a click on its backdrop.
+  dialog.addEventListener('click', function (event) { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('keydown', function (event) {
+    if (event.key === 'ArrowLeft') show(index - 1);
+    if (event.key === 'ArrowRight') show(index + 1);
+  });
+  dialog.addEventListener('close', function () { if (opener) opener.focus(); });
 })();
 </script>
 </body>

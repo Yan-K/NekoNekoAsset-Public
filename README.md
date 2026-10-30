@@ -23,6 +23,10 @@ NekoNekoAsset is a Windows desktop app that syncs the VRChat assets you bought o
   <a href="https://yan-k.github.io/NekoNekoAsset-Public/"><b>Website</b></a> · <a href="https://github.com/Yan-K/NekoNekoAsset-Public/releases"><b>Download for Windows</b></a>
 </p>
 
+<p align="center">
+  <img src="site/assets/screens/en/library.webp" alt="NekoNekoAsset library with a demo collection of cat-themed assets" width="900">
+</p>
+
 ## Features
 
 - **Purchases sync on their own.** Sign in once, and new purchases appear in your list every time you open the app.
@@ -31,6 +35,23 @@ NekoNekoAsset is a Windows desktop app that syncs the VRChat assets you bought o
 - **One-click Unity import.** Pick files, check Unity’s import preview, and nothing is written until you confirm.
 - **Bring your own files.** Drag in folders and ZIPs. The app copies them into your library and never touches the originals.
 - **Spending, themes and languages.** Per-currency totals from proven payments, built-in themes, and English, 繁體中文, 简体中文, 日本語 and 한국어.
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/en/sync.webp" alt="Source sync window with BOOTH, Gumroad and Jinxxy accounts"><br><sub><b>Purchases sync on their own</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/en/downloads.webp" alt="Files tab with downloaded and extracting files"><br><sub><b>Download + auto extract</b></sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/en/find.webp" alt="Asset list narrowed down to one compatible avatar"><br><sub><b>Sorted, tagged, easy to find</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/en/unity.webp" alt="Unity import window with packages selected"><br><sub><b>One-click Unity import</b></sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="site/assets/screens/en/import.webp" alt="Import window with a folder, a ZIP and a thumbnail"><br><sub><b>Bring your own files</b></sub></td>
+    <td width="50%" valign="top"><img src="site/assets/screens/en/themes.webp" alt="Settings with the Sakura dark theme"><br><sub><b>Built-in themes</b></sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots show the real app, filled with made-up demo data.</sub>
 
 ## Supported stores
 
