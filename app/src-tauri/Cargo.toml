@@ -50,6 +50,10 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# Parallelize the App's code generation while retaining dependency settings and Thin LTO.
+[profile.release.package.nekonekoasset]
+codegen-units = 16
+
 # Optimized, isolated local verification; default production release has no data-dir override.
 [profile.integration]
 inherits = "release"

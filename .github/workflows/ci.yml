@@ -30,11 +30,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup toolchain install 1.99.0 --profile minimal --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache Rust tests and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: app/src-tauri/target
-          key: windows-2022-rust-1.99.0-${{ hashFiles('app/src-tauri/Cargo.lock') }}
-          restore-keys: windows-2022-rust-1.99.0-
+          path: |
+            app/src-tauri/target/debug
+            ~/.cargo/registry
+          # Caches are immutable: retain the newest successful source build.
+          key: windows-2022-rust-1.99.0-tests-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            windows-2022-rust-1.99.0-tests-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-
+            windows-2022-rust-1.99.0-tests-v2-
       - name: Validate public inputs and release logic
         run: |
           python scripts/release.py check

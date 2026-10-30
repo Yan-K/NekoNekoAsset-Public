@@ -1,4 +1,5 @@
 name: Release
+run-name: Release ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
@@ -18,7 +19,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  dispatch:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # Different tags cannot share caches. Run on the default branch while
+      # every checkout below still uses the exact requested release tag.
+      - name: Dispatch tagged release from the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_WORKFLOW_REF" --field "tag=$RELEASE_TAG"
+
   prepare:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -60,11 +78,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup toolchain install 1.99.0 --profile minimal --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache optimized Rust build and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: app/src-tauri/target
-          key: windows-2022-rust-1.99.0-${{ hashFiles('app/src-tauri/Cargo.lock') }}
-          restore-keys: windows-2022-rust-1.99.0-
+          path: |
+            app/src-tauri/target/release
+            app/src-tauri/target/x86_64-pc-windows-msvc/release
+            ~/.cargo/registry
+          key: windows-2022-rust-1.99.0-release-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            windows-2022-rust-1.99.0-release-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-
+            windows-2022-rust-1.99.0-release-v2-
       - name: Check packaged notices and release validation
         run: |
           python scripts/update-notices.py --check
@@ -74,8 +98,6 @@ jobs:
       - name: Install frontend dependencies
         working-directory: app
         run: pnpm install --frozen-lockfile
-      - name: Run existing Rust tests
-        run: cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
       - name: Clear owned cached NSIS output
         shell: pwsh
         run: |
@@ -105,7 +127,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Missing Tauri updater signing key secret.' }
-          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci -- --timings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Collect installer and signature only
         run: python scripts/release.py collect-app --bundle app/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis --output build/release-app
@@ -115,6 +137,41 @@ jobs:
           path: build/release-app/*
           if-no-files-found: error
           retention-days: 7
+      - name: Retain Rust compilation timings
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-build-timings
+          path: app/src-tauri/target/cargo-timings/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows-tests:
+    needs: prepare
+    if: needs.prepare.outputs.published != 'true'
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Install pinned Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Cache Rust tests and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            app/src-tauri/target/debug
+            ~/.cargo/registry
+          key: windows-2022-rust-1.99.0-tests-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            windows-2022-rust-1.99.0-tests-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-
+            windows-2022-rust-1.99.0-tests-v2-
+      - name: Run existing Rust tests
+        run: cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
 
   bridge:
     needs: prepare
@@ -137,11 +194,11 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [prepare, windows, bridge]
+    needs: [prepare, windows, windows-tests, bridge]
     if: >-
       always() && needs.prepare.result == 'success' &&
       (needs.prepare.outputs.published == 'true' ||
-      (needs.windows.result == 'success' && needs.bridge.result == 'success'))
+      (needs.windows.result == 'success' && needs.windows-tests.result == 'success' && needs.bridge.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
