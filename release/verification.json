@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "version": "0.3.1",
-  "sourceSha256": "83372229eae227a0fd174de5475ce0e97e361298405e5e8963371843e113f433",
-  "verifiedAt": "2026-10-30T17:25:23.715401Z",
+  "version": "0.3.2",
+  "sourceSha256": "7c7229d3b07b1b9085a99b083dc9653dda5ac855226a55f1618726309e834893",
+  "verifiedAt": "2026-10-30T22:46:15.113247Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -31,7 +31,7 @@
     "products": 174,
     "attachedFiles": 1253,
     "decodedThumbnails": 166,
-    "verifierExecutableSha256": "22ffb74ebbfd9c12224a1c8b28ff1e5a6ac850fd9d80849eecb82ca20bd7f8d1",
+    "verifierExecutableSha256": "cfc8ad612d9d89d3fac1c1c6d65830f1193e1f48a351f1b83dda733e0aa671a2",
     "frozenPublicBuildInputs": 396,
     "actualNativeStoreAppVersionVerified": true,
     "metadataNormalSetupRestartVerified": true,
