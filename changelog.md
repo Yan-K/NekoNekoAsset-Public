@@ -9,6 +9,7 @@
 - BOOTH no longer occasionally asks you to sign in again during normal use. When an older copy of BOOTH's sign-in cookie was stored beside the current one, a sync could send only the older copy, fail and then discard the working sign-in.
 - Product list: search, filters, sorting and language changes now respond immediately on large libraries instead of showing No matching assets for a long time.
 - Clear search clears on the first click again; on wide windows the search box no longer slides the button away mid-click.
+- Long kanji avatar names are read in short pieces. Some Windows versions return no reading once Japanese text passes about 20 characters, well under their documented limit.
 
 ### Changed
 

@@ -1,14 +1,18 @@
 //! Local Windows reading fallback. No text leaves the device and no reading is
 //! treated as an official creator spelling. Runtime objects stay on their STA.
+// Windows documents 100 characters, but some hosts return no words from 21
+// UTF-16 units and have crashed after longer calls; 20 read on every host seen.
+#[cfg(target_os = "windows")]
+const NATIVE_CHUNK_UNITS: usize = 16;
+
 #[cfg(target_os = "windows")]
 fn reading_chunks(input: &str) -> Vec<String> {
-    // Some Windows implementations return no words at the documented 100
-    // character boundary. Stay below it without splitting a surrogate pair.
+    // Stay below the native limit without splitting a surrogate pair.
     let mut chunks = Vec::new();
     let mut chunk = String::new();
     let mut units = 0;
     for c in input.chars() {
-        if units + c.len_utf16() > 99 {
+        if units + c.len_utf16() > NATIVE_CHUNK_UNITS {
             chunks.push(std::mem::take(&mut chunk));
             units = 0;
         }
@@ -149,7 +153,7 @@ mod tests {
         let bounded = bounded.expect("Windows local phonetic analyzer bounded input");
         let chunks = super::reading_chunks(&input);
         assert_eq!(chunks.concat(), input);
-        assert!(chunks.iter().all(|chunk| (1..=99).contains(&chunk.encode_utf16().count())));
+        assert!(chunks.iter().all(|chunk| (1..=super::NATIVE_CHUNK_UNITS).contains(&chunk.encode_utf16().count())));
         let independently_read = chunks.iter().map(|chunk| super::reading(chunk))
             .collect::<Option<Vec<_>>>().expect("Windows local phonetic analyzer exact chunks");
         assert_eq!(bounded, independently_read.concat());
@@ -159,11 +163,11 @@ mod tests {
 
     #[test]
     fn reading_chunks_cover_every_scalar_below_the_native_boundary() {
-        for input in [String::new(), "星".repeat(99), "星".repeat(100), "星空".repeat(60),
-            "星".repeat(98) + "\u{20000}" + "猫", "\u{20000}".repeat(100)] {
+        for input in [String::new(), "星".repeat(16), "星".repeat(17), "星".repeat(100), "星空".repeat(60),
+            "星".repeat(15) + "\u{20000}" + "猫", "\u{20000}".repeat(100)] {
             let chunks = super::reading_chunks(&input);
             assert_eq!(chunks.concat(), input);
-            assert!(chunks.iter().all(|chunk| (1..=99).contains(&chunk.encode_utf16().count())));
+            assert!(chunks.iter().all(|chunk| (1..=super::NATIVE_CHUNK_UNITS).contains(&chunk.encode_utf16().count())));
         }
     }
 
@@ -232,16 +236,10 @@ mod tests {
                 error.code().0 as u32
             )
         }
+        // Longer probes are left out: near-100 calls preceded hosted crashes.
         let cases = [
             ("short-synthetic", vec!["星空猫".into()]),
-            ("direct-99", vec!["星空".repeat(49) + "星"]),
-            ("direct-100", vec!["星空".repeat(50)]),
-            ("punctuated-100", vec!["星空を見て猫と歩く。".repeat(10)]),
-            (
-                "punctuated-split-120",
-                vec!["星空を見て猫と歩く。".repeat(10), "星空を見て猫と歩く。".repeat(2)],
-            ),
-            ("kanji-split-120", vec!["星空".repeat(50), "星空".repeat(10)]),
+            ("punctuated-safe-split-120", super::reading_chunks(&"星空を見て猫と歩く。".repeat(12))),
             ("kanji-safe-split-120", super::reading_chunks(&"星空".repeat(60))),
         ];
         for (case, chunks) in cases {
