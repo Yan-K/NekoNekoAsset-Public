@@ -21,9 +21,15 @@
 .asset-inspector-section{padding:13px 0;border-top:1px solid var(--border);font-size:12px;}
 .asset-inspector-label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px;color:var(--muted);font-size:11px;}
 .asset-inspector-label>button{min-height:21px;padding:0 3px;font-size:11px;}
-.asset-inspector-tags{display:flex;flex-wrap:wrap;gap:4px;}
+.asset-inspector-tags{position:relative;display:flex;flex-wrap:wrap;gap:4px;}
 .asset-inspector-tags>button{max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:11px;min-height:23px;padding:2px 6px;border-radius:3px;background:var(--raised);}
 .asset-inspector-tags>.asset-inspector-tag-add{background:transparent;border-color:transparent;}
+/* More than three rows of tags fold to three; the clip margin keeps focus rings visible. */
+.asset-inspector-tags-frame.clamped{overflow:clip;overflow-clip-margin:4px;transition:max-height .25s ease;}
+.asset-inspector-tags-toggle{display:inline-flex;align-items:center;gap:3px;min-height:22px;margin-top:6px;padding:0 2px;border:0;background:transparent;color:var(--muted);font-size:11px;}
+.asset-inspector-tags-toggle:hover{background:transparent;color:var(--accent);}
+.asset-inspector-tags-toggle>svg{width:13px;height:13px;flex:none;transition:transform .2s ease;}
+.asset-inspector-tags-toggle[aria-expanded=true]>svg{transform:rotate(180deg);}
 .asset-inspector-note{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5;}
 .asset-inspector-metadata>div{display:grid;grid-template-columns:92px minmax(0,1fr);gap:8px;padding:5px 0;font-size:12px;}
 .asset-inspector-metadata>div>:first-child{color:var(--muted);}.asset-inspector-metadata>div>:last-child{min-width:0;overflow-wrap:anywhere;}

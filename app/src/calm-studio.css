@@ -280,10 +280,16 @@
 .app .thumb.blurred>.asset-art{filter:blur(16px) saturate(1.15);transform:scale(1.18);}
 .app .product-card:hover .thumb.blurred>.asset-art{transform:scale(1.2);}
 .app .card-category{left:7px;right:auto;top:7px;max-width:calc(100% - 44px);height:20px;padding:0 7px;border:0;border-radius:6px;background:rgb(12 12 14/.58);color:#fff;font-size:10.5px;font-weight:700;line-height:20px;backdrop-filter:blur(8px) saturate(1.3);box-shadow:inset 0 0 0 1px rgb(255 255 255/.16);}
-.app .thumb .reveal{height:28px;min-height:28px;padding:0 11px;gap:5px;border:0;border-radius:99px;background:rgb(12 12 14/.55);color:#fff;font-size:11.5px;font-weight:700;backdrop-filter:blur(8px);box-shadow:inset 0 0 0 1px rgb(255 255 255/.18);transition:background-color .15s,transform .2s var(--spring);}
-.app .thumb .reveal:hover{background:rgb(12 12 14/.72);transform:translate(-50%,-50%) scale(1.04);}
-.app .thumb .reveal:active:not(:disabled){transform:translate(-50%,-50%) scale(.97);}
-.app .row-thumb .thumb .reveal{height:20px;min-height:20px;padding:0 5px;font-size:10px;}
+/* The reveal button covers the whole blurred thumbnail; the pill keeps its look and reacts to it. */
+.app .thumb .reveal{height:100%;min-height:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;transform:none;cursor:pointer;}
+.app .thumb .reveal:hover{background:transparent;}
+.app .thumb .reveal:active:not(:disabled){transform:none;}
+.app .thumb .reveal:focus-visible{outline:none;}
+.app .thumb .reveal-label{height:28px;min-height:28px;padding:0 11px;gap:5px;border:0;border-radius:99px;background:rgb(12 12 14/.55);color:#fff;font-size:11.5px;font-weight:700;backdrop-filter:blur(8px);box-shadow:inset 0 0 0 1px rgb(255 255 255/.18);transition:background-color .15s,transform .2s var(--spring);}
+.app .thumb .reveal:hover .reveal-label{background:rgb(12 12 14/.72);transform:scale(1.04);}
+.app .thumb .reveal:active:not(:disabled) .reveal-label{transform:scale(.97);}
+.app .thumb .reveal:focus-visible .reveal-label{outline:2px solid var(--acc-ring);outline-offset:2px;}
+.app .row-thumb .thumb .reveal-label{height:20px;min-height:20px;padding:0 5px;font-size:10px;}
 .app .result-items .product-card>input[type=checkbox]{position:absolute;left:auto;right:8px;top:8px;z-index:4;width:20px;height:20px;min-height:20px;border:0;border-radius:6px;background:rgb(12 12 14/.34);box-shadow:inset 0 0 0 1.5px rgb(255 255 255/.7);opacity:0;transition:opacity .16s var(--ease),background-color .16s var(--ease),box-shadow .16s var(--ease);}
 .app .result-items .product-card>input[type=checkbox]::after{width:9px;height:5px;transform:translateY(-1px) rotate(-45deg) scale(.75);transition:opacity .12s var(--ease),transform .18s var(--ease);}
 .app .result-items .product-card:hover>input,.app .result-items .product-card>input:focus-visible,.app .result-items:has(.product-card.selected~.product-card.selected) .product-card>input{opacity:1;}
@@ -330,6 +336,9 @@
 .app .result-workspace>.empty-state{gap:10px;animation:calm-fade-up .5s var(--ease) backwards;}
 .app .empty-state>svg{width:44px;height:44px;color:var(--faint);stroke-width:1.4;opacity:1;}
 .app .empty-state h2{font-size:15px;font-weight:700;}
+/* A pending query fades in late, so a quick answer never flashes a placeholder. */
+.app .result-workspace>.empty-state.results-loading{animation:calm-fade-in .3s var(--ease) .15s backwards;}
+.app .results-loading>svg{color:var(--muted);}
 
 /* ---------- results: footer and selection dock ---------- */
 .app .result-footer{position:relative;padding:0 10px;border-top:1px solid var(--line);background:color-mix(in oklab,var(--panel) 90%,var(--bg));transition:background-color .45s;}
@@ -433,6 +442,10 @@
 .app .asset-inspector-tags>button:hover{background:var(--acc-1);color:var(--accent);}
 .app .asset-inspector-tags>.asset-inspector-tag-add{width:24px;min-width:24px;padding:0;background:transparent;box-shadow:inset 0 0 0 1px var(--line-2);color:var(--muted);}
 .app .asset-inspector-tags>.asset-inspector-tag-add svg{width:13px;height:13px;}
+.app .asset-inspector-tags-frame.clamped{transition:max-height .32s var(--ease);}
+.app .asset-inspector-tags-toggle{min-height:24px;margin:6px 0 0 -6px;padding:0 8px 0 6px;gap:3px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11.5px;font-weight:650;}
+.app .asset-inspector-tags-toggle:hover{background:var(--hover);color:var(--text);}
+.app .asset-inspector-tags-toggle>svg{width:13px;height:13px;transition:transform .28s var(--ease);}
 .app .asset-inspector-note{font-size:12.5px;line-height:1.65;}
 .app .asset-inspector-metadata>div{grid-template-columns:auto minmax(0,1fr);gap:16px;padding:8px 0;border-bottom:1px solid var(--line);font-size:12.5px;align-items:baseline;}
 .app .asset-inspector-metadata>div:last-child{border-bottom:0;}
@@ -599,7 +612,7 @@
 .app .activity-history>.toolbar{min-height:0;padding:16px 16px 12px;gap:12px;}
 .app .activity-history>.toolbar h1{font-size:19px;font-weight:700;letter-spacing:-.015em;line-height:1.3;}
 .app.corrected-shell .activity-list{display:flex;flex-direction:column;gap:8px;padding:0 12px 18px;}
-.app .activity-row{gap:12px;padding:12px;border:1px solid var(--line);border-radius:13px;background:var(--raised);animation:calm-fade-up .45s var(--ease) backwards;transition:border-color .2s,background-color .45s;}
+.app .activity-row{gap:6px 12px;padding:12px;border:1px solid var(--line);border-radius:13px;background:var(--raised);animation:calm-fade-up .45s var(--ease) backwards;transition:border-color .2s,background-color .45s;}
 .app .activity-row:nth-child(2){animation-delay:35ms;}
 .app .activity-row:nth-child(3){animation-delay:70ms;}
 .app .activity-row:nth-child(4){animation-delay:105ms;}
@@ -608,7 +621,7 @@
 .app .activity-row:has(progress){border-color:color-mix(in oklab,var(--accent) 40%,var(--line));}
 .app .activity-row .activity-info strong{font-size:13.5px;font-weight:700;}
 .app .activity-history-meta{gap:3px 10px;font-size:12px;}
-.app .activity-history-meta time{color:var(--faint);font-weight:600;}
+.app .activity-history-time{color:var(--faint);font-weight:600;}
 .app .activity-row progress{margin-top:9px;max-width:none;}
 .app .activity-history-reason{color:var(--muted);font-size:12px;}
 .app .activity-history-failures{margin-top:6px;padding:8px 10px;border:0;border-radius:9px;background:var(--hover);}
@@ -707,10 +720,12 @@
 @keyframes calm-boot-up{from{opacity:0;transform:translateY(16px)}}
 @media (prefers-reduced-motion:reduce){
  .app,.app *,.app *::before,.app *::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}
+ /* Progress indicators keep moving slowly; they report state rather than decorate. */
+ .app .sync-spinning,.app .progress-spin,.app progress:indeterminate{animation-duration:3s!important;animation-iteration-count:infinite!important;}
 }
 .app.reduce-motion,.app.reduce-motion *,.app.reduce-motion *::before,.app.reduce-motion *::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}
 /* Progress indicators keep moving slowly; they report state rather than decorate. */
-.app.reduce-motion .sync-spinning{animation-duration:3s!important;animation-iteration-count:infinite!important;}
+.app.reduce-motion .sync-spinning,.app.reduce-motion .progress-spin{animation-duration:3s!important;animation-iteration-count:infinite!important;}
 .app.reduce-motion progress:indeterminate{animation-duration:3s!important;animation-iteration-count:infinite!important;}
 .app.reduce-motion .spending-fireworks{display:none;}
 .app.reduce-motion .spending-totals-celebration>strong{animation:none;}

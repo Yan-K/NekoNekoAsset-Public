@@ -1,5 +1,5 @@
-import {useEffect,useRef,useState,type ReactNode} from 'react';
-import {FileArchive,FileBox,RefreshCw,Download,Plus,SlidersHorizontal,FolderOpen,ExternalLink,Trash2,Check,X} from 'lucide-react';
+import {useEffect,useId,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
+import {FileArchive,FileBox,RefreshCw,Download,Plus,SlidersHorizontal,FolderOpen,ExternalLink,Trash2,Check,X,ChevronDown} from 'lucide-react';
 import type {Product,Locale,Account} from './model';
 import {getProductDisplayStatus,getEffectiveTags,getEffectiveAvatarTags,sourceCategoryLabel,isFileDownloaded,isProductDownloaded,priceLabel,currentPriceLabel,fileCountLabel} from './model';
 import {t} from './i18n';
@@ -53,6 +53,24 @@ export default function AssetInspector({product:p,locale,wide,tab,onTabChange,se
  const [removingFile,setRemovingFile]=useState<string|null>(null);
  useEffect(()=>{setRemovingFile(null);},[p.id]);
  useEffect(()=>{detailScroll.current?.scrollTo(0,0);fileScroll.current?.scrollTo(0,0);},[p.id]);
+ // Tags show three rows and fold the rest behind "Show all". Rows are read from layout,
+ // so a long tag that wraps still counts as one row and the clamp never cuts a tag.
+ const tags=getEffectiveTags(p),tagKey=JSON.stringify([p.id,tags]),tagsId=useId();
+ const [tagList,setTagList]=useState<HTMLDivElement|null>(null);
+ const [tagRows,setTagRows]=useState<{key:string;clamp:number;full:number}|null>(null),[expandedTags,setExpandedTags]=useState('');
+ useLayoutEffect(()=>{
+  if(!tagList)return;
+  const measure=()=>{
+   let rows=0,left=Infinity,clamp=0;
+   for(const item of Array.from(tagList.children) as HTMLElement[]){if(item.offsetLeft<=left)rows++;left=item.offsetLeft;if(rows<=3)clamp=Math.max(clamp,item.offsetTop+item.offsetHeight);}
+   const full=tagList.offsetHeight;
+   setTagRows(old=>rows<=3?null:old?.key===tagKey&&old.clamp===clamp&&old.full===full?old:{key:tagKey,clamp,full});
+  };
+  measure();
+  const observer=new ResizeObserver(measure);observer.observe(tagList);
+  return()=>observer.disconnect();
+ },[tagList,tagKey]);
+ const tagClamp=tagRows?.key===tagKey?tagRows:null,tagsExpanded=!!tagClamp&&expandedTags===p.id;
  const status=getProductDisplayStatus(p),owned=getEffectiveAvatarTags(p,accountIds),image=p.thumbnailHidden?undefined:p.thumbnailOverrideUrl??p.previewUrl;
  const blocked=p.sensitive&&sensitiveMode==='blur'&&!revealed;
  const pageAvailable=canOpenProductPage(p)&&!!onOpenProductPage;
@@ -77,7 +95,7 @@ export default function AssetInspector({product:p,locale,wide,tab,onTabChange,se
     <span className={'asset-inspector-state '+(status==='ready'?'positive':status==='attention'?'warning':'')} data-status={status}><StatusIcon status={status}/><span>{L(status)}</span></span><span className="asset-inspector-count" title={p.manifestComplete===true?undefined:L('totalUnverified')}>{fileCountLabel(p)}</span>
    </div>
    {actions}
-   <section className="asset-inspector-section"><div className="asset-inspector-label">{L('tags')}</div><div className="asset-inspector-tags">{getEffectiveTags(p).map(tag=><button type="button" key={tag} title={tag} onClick={()=>onTagClick?.(tag)}>{tag}</button>)}<button type="button" className="asset-inspector-tag-add" aria-label={L('edit')+' '+L('tags')} title={L('edit')+' '+L('tags')} onClick={onEdit}><Plus size={12}/></button></div></section>
+   <section className="asset-inspector-section"><div className="asset-inspector-label">{L('tags')}</div><div className={'asset-inspector-tags-frame'+(tagClamp?' clamped':'')} style={tagClamp?{maxHeight:tagsExpanded?tagClamp.full:tagClamp.clamp}:undefined} onFocus={e=>{const item=e.target as HTMLElement;if(tagClamp&&!tagsExpanded&&item.offsetTop+item.offsetHeight>tagClamp.clamp)setExpandedTags(p.id);}}><div className="asset-inspector-tags" id={tagsId} ref={setTagList}>{tags.map(tag=><button type="button" key={tag} title={tag} onClick={()=>onTagClick?.(tag)}>{tag}</button>)}<button type="button" className="asset-inspector-tag-add" aria-label={L('edit')+' '+L('tags')} title={L('edit')+' '+L('tags')} onClick={onEdit}><Plus size={12}/></button></div></div>{tagClamp&&<button type="button" className="asset-inspector-tags-toggle" aria-expanded={tagsExpanded} aria-controls={tagsId} onClick={()=>setExpandedTags(tagsExpanded?'':p.id)}><span>{L(tagsExpanded?'showFewerTags':'showAllTags')}</span><ChevronDown size={13} aria-hidden="true"/></button>}</section>
    <section className="asset-inspector-section"><div className="asset-inspector-label">{L('note')}<button type="button" aria-label={L('edit')+' '+L('note')} title={L('edit')+' '+L('note')} onClick={onEdit}><SlidersHorizontal size={12}/></button></div><p className="asset-inspector-note">{p.note||'—'}</p></section>
    <section className="asset-inspector-section asset-inspector-metadata"><div><span>{L('category')}</span><span>{L(p.category)}</span></div><div><span>{L('acquired')}</span><span>{p.acquired||L('unknown')}</span></div><div><span>{L('currentPrice')}</span>{variantPrices(currentPrices.some(row=>priceLabel(locale,row.price,row.currency))?currentPrices:[],currentPriceLabel(locale,{...p,ownedCurrentPrices:currentPrices}))}</div><div><span>{L('paidPrice')}</span>{variantPrices(paidPrices,priceLabel(locale,p.paidPrice,p.paidCurrency))}</div></section>
    <details className="asset-inspector-section asset-inspector-compatibility"><summary>{L('compatibility')}</summary><div className="asset-inspector-metadata"><div><span>{L('yourFiles')}</span><strong>{owned.join(' · ')||L('unknown')}</strong></div><div><span>{L('listing')}</span><span>{p.listingAvatars.join(' · ')||L('unknown')}</span></div><div><span>{L('localEvidence')}</span><span>{L('unknown')}</span></div></div></details>
