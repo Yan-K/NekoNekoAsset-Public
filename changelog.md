@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.2 Beta - 2026-10-31
+
+### Fixed
+
+- Product list: search, compatible-avatar and account filters respond immediately on large libraries kept on a NAS or network share. A filter no longer rereads every product's stored file details, and products changed during a sync or download refresh one at a time instead of the whole list.
+- Japanese text with the built-in fonts no longer breaks inside words, such as すべてのアセット in the sidebar. Product titles and status notices keep their current line breaks.
+- In Japanese, Choose local file in Import stays on one line and the account filter reads 全アカウント instead of being cut off.
+- In narrow windows, Settings tabs and the R-18 modes use two rows instead of cutting off labels, and AI settings show the model beside the provider.
+
+### Release notes
+
+- App and Unity Bridge share version 0.3.2 Beta. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- The first list after opening a library still reads every product once.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.1 Beta - 2026-10-30
 
 ### Fixed
