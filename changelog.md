@@ -6,6 +6,7 @@
 
 - One BOOTH product page that fails to load no longer fails the whole account sync. It is retried once after the other products finish; if it still fails, the sync ends needing action and keeps everything already saved. Responses cut off mid-transfer are retried, and incremental syncs skip product pages BOOTH has already removed.
 - BOOTH music products with per-track downloads are recognized. Every track is listed once in both Library and purchases, and tracks are downloaded as MP3, which Unity imports directly.
+- BOOTH no longer occasionally asks you to sign in again during normal use. When an older copy of BOOTH's sign-in cookie was stored beside the current one, a sync could send only the older copy, fail and then discard the working sign-in.
 - Product list: search, filters, sorting and language changes now respond immediately on large libraries instead of showing No matching assets for a long time.
 - Clear search clears on the first click again; on wide windows the search box no longer slides the button away mid-click.
 

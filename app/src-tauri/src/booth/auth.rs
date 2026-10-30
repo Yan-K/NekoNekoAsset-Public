@@ -103,12 +103,10 @@ pub async fn window(
 }
 pub async fn jar(window: WebviewWindow) -> Result<Arc<reqwest::cookie::Jar>> {
     tauri::async_runtime::spawn_blocking(move || {
-        let jar = Arc::new(reqwest::cookie::Jar::default());
-        let mut count = 0;
+        let mut cookies = Vec::new();
         for origin in ["https://accounts.booth.pm/", "https://booth.pm/"] {
             let url = url::Url::parse(origin).unwrap();
-            let cookies = crate::stores::session::cookies_for_request(&window, &url)?;
-            for cookie in cookies {
+            for cookie in crate::stores::session::cookies_for_request(&window, &url)? {
                 // The jar enforces scope on subsequent redirects; never set Cookie headers globally.
                 if cookie
                     .domain()
@@ -119,20 +117,60 @@ pub async fn jar(window: WebviewWindow) -> Result<Arc<reqwest::cookie::Jar>> {
                 if cookie.name().is_empty() {
                     continue;
                 }
-                jar.add_cookie_str(&cookie.to_string(), &url);
-                count += 1;
+                cookies.push((url.clone(), cookie));
             }
         }
-        if count == 0 {
+        if cookies.is_empty() {
             bail!("AUTH_REQUIRED");
         }
-        Ok(jar)
+        Ok(request_jar(cookies))
     })
     .await
     .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?
+}
+/// The jar keys a host-only cookie and a domain cookie for the same host alike, so
+/// the later one replaces the other. BOOTH re-issues its session for .booth.pm; a
+/// same-named host-only booth.pm copy added last left accounts.booth.pm signed out.
+fn request_jar(
+    mut cookies: Vec<(url::Url, tauri::webview::Cookie<'static>)>,
+) -> Arc<reqwest::cookie::Jar> {
+    cookies.sort_by_key(|(_, cookie)| cookie.domain().is_some());
+    let jar = Arc::new(reqwest::cookie::Jar::default());
+    for (url, cookie) in cookies {
+        jar.add_cookie_str(&cookie.to_string(), &url);
+    }
+    jar
 }
 pub async fn disconnect(app: &AppHandle, data_dir: &Path, account: &str) -> Result<()> {
     let window = window(app, data_dir, account, false).await?;
     crate::stores::session::forget(data_dir, crate::stores::StoreProvider::Booth, account)?;
     crate::stores::session::disconnect(window).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::cookie::CookieStore;
+
+    #[test]
+    fn domain_session_cookie_wins_over_a_same_named_host_only_copy() {
+        let apex = url::Url::parse("https://booth.pm/").unwrap();
+        let current = tauri::webview::Cookie::build(("authored_session", "CURRENT"))
+            .domain("booth.pm")
+            .path("/")
+            .secure(true)
+            .build();
+        let stale = tauri::webview::Cookie::build(("authored_session", "STALE"))
+            .path("/")
+            .secure(true)
+            .build();
+        // The login window can return the two copies in either order.
+        for order in [[current.clone(), stale.clone()], [stale.clone(), current.clone()]] {
+            let jar = request_jar(order.into_iter().map(|cookie| (apex.clone(), cookie)).collect());
+            for url in ["https://accounts.booth.pm/library?page=1", "https://booth.pm/downloadables/1"] {
+                let header = jar.cookies(&url::Url::parse(url).unwrap());
+                assert_eq!(header.as_ref().and_then(|v| v.to_str().ok()), Some("authored_session=CURRENT"));
+            }
+        }
+    }
 }
