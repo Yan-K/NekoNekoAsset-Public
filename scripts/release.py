@@ -5,6 +5,7 @@ import argparse
 import base64
 from datetime import datetime, timezone
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -27,9 +28,11 @@ BUILD_PREFIXES = ("app/", f"unity/Packages/{PACKAGE}/", "unity/scripts/package_b
                   ".gitattributes", "changelog.md")
 FORBIDDEN_PREFIXES = ("AgentDocs/", ".tools/", ".local/", "work/", "tools/",
                       "unity/verification/", "app/verification/", "app/checks/", "app/portable/")
-FORBIDDEN_FILES = {"AGENTS.md", "README.md", "app/scripts/test-native.ps1",
-                   "app/scripts/package-portable.ps1"}
+FORBIDDEN_FILES = {"AGENTS.md", "app/scripts/test-native.ps1", "app/scripts/package-portable.ps1"}
 MARKER = "release/verification.json"
+# Landing page languages and their Pages paths; the site never writes under app/ or bridge/.
+SITE_PAGES = {"en": "", "zh-TW": "zh-tw/", "ja": "ja/"}
+PLACEHOLDER = re.compile(r"\{\{([a-z0-9_]+)\}\}")
 
 
 def git(*args: str) -> bytes:
@@ -390,7 +393,26 @@ def pages(output: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / ".nojekyll").write_text("", encoding="utf-8")
-    print(f"Pages feed regenerated from highest published version {current} (including Beta releases).")
+    render_site(output, {"version_label": f"v{current}" + (" Beta" if release["prerelease"] else ""),
+                         "installer_url": html.escape(assets[installer]["browser_download_url"]),
+                         "installer_size": f"{assets[installer]['size'] / 1048576:.1f} MB",
+                         "release_url": html.escape(release["html_url"])})
+    print(f"Pages feed and site regenerated from highest published version {current} (including Beta releases).")
+
+
+def render_site(output: Path, facts: dict[str, str]) -> None:
+    template = (ROOT / "site/index.html").read_text(encoding="utf-8")
+    strings = {language: read_json(f"site/strings/{language}.json") for language in SITE_PAGES}
+    if any(set(table) != set(strings["en"]) for table in strings.values()):
+        raise ValueError("Every site language needs the same string keys")
+    for language, path in SITE_PAGES.items():
+        values = {**strings[language], **facts, "path": path, "base": "../" if path else "./", "site_url": PAGES + "/"}
+        # A missing key raises KeyError, so an incomplete page is never deployed.
+        page = PLACEHOLDER.sub(lambda match: values[match.group(1)], template)
+        target = output / path / "index.html"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(page, encoding="utf-8", newline="\n")
+    shutil.copytree(ROOT / "site/assets", output / "assets", dirs_exist_ok=True)
 
 
 def main() -> None:

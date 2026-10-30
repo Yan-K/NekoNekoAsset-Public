@@ -203,10 +203,21 @@ class ReleaseChecks(unittest.TestCase):
     def published(self, current, draft=False):
         return {"tag_name": "v" + current, "draft": draft, "prerelease": True, "body": "Authored notes",
                 "published_at": "2026-01-01T00:00:00Z", "html_url": "https://github.com/example/releases/v" + current,
-                "assets": [{"name": name, "state": "uploaded", "browser_download_url": "https://example.test/" + name}
+                "assets": [{"name": name, "state": "uploaded", "size": 27746472, "browser_download_url": "https://example.test/" + name}
                            for name in sorted(release.asset_names(current))]}
 
+    def write_site(self):
+        (self.root / "site/assets").mkdir(parents=True)
+        (self.root / "site/assets/icon.png").write_bytes(b"authored icon")
+        (self.root / "site/index.html").write_text(
+            '<html lang="{{html_lang}}"><a href="{{installer_url}}">{{download}}</a> {{version_label}} {{installer_size}}'
+            '<a href="{{release_url}}"></a><link href="{{site_url}}{{path}}"><img src="{{base}}assets/icon.png"></html>',
+            encoding="utf-8")
+        for language, word in (("en", "Download"), ("zh-TW", "下載"), ("ja", "ダウンロード")):
+            self.write_json(f"site/strings/{language}.json", {"html_lang": language, "download": word})
+
     def test_pages_selects_numeric_highest_prerelease_and_ignores_draft(self):
+        self.write_site()
         records = [self.published("0.9.0"), self.published("0.20.0", draft=True), self.published("0.10.0")]
         fake_api = unittest.mock.Mock(spec=release.GitHub)
         fake_api.request.return_value = records
@@ -221,6 +232,30 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(set(app["platforms"]), {"windows-x86_64"})
         self.assertEqual(bridge["version"], app["version"])
         self.assertTrue(bridge["unitypackageUrl"].endswith(".unitypackage"))
+
+    def test_pages_renders_every_site_language_beside_both_feeds(self):
+        self.write_site()
+        fake_api = unittest.mock.Mock(spec=release.GitHub)
+        fake_api.request.return_value = [self.published("0.3.1")]
+        output = self.root / "pages"
+        with patch.object(release, "GitHub", return_value=fake_api), \
+                patch.object(release.urllib.request, "urlopen", return_value=io.BytesIO(authored_signature("0.3.1").encode())):
+            release.pages(output)
+        for feed in ("app/latest.json", "bridge/latest.json"):
+            self.assertEqual(json.loads((output / feed).read_text(encoding="utf-8"))["version"], "0.3.1")
+        installer = "https://example.test/NekoNekoAsset_0.3.1_x64-setup.exe"
+        for path, word in (("", "Download"), ("zh-tw/", "下載"), ("ja/", "ダウンロード")):
+            page = (output / path / "index.html").read_text(encoding="utf-8")
+            self.assertIn(f'<a href="{installer}">{word}</a> v0.3.1 Beta 26.5 MB', page)
+            self.assertIn(f'<link href="{release.PAGES}/{path}">', page)
+            self.assertNotIn("{{", page)
+        self.assertEqual((output / "assets/icon.png").read_bytes(), b"authored icon")
+
+    def test_site_language_missing_a_string_blocks_pages(self):
+        self.write_site()
+        self.write_json("site/strings/ja.json", {"html_lang": "ja"})
+        with self.assertRaises(ValueError):
+            release.render_site(self.root / "pages", {})
 
     def test_incomplete_latest_release_retains_existing_feed(self):
         latest = self.published("0.3.0")

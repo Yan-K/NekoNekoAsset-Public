@@ -65,7 +65,6 @@ obj/
 /Claude outputs/
 /.agents/
 /.codex/
-/README.md
 /app/README.md
 /app/.gitignore
 /app/checks/

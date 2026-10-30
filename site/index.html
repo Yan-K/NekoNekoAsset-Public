@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="{{html_lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{title}}</title>
+<meta name="description" content="{{description}}">
+<link rel="canonical" href="{{site_url}}{{path}}">
+<link rel="alternate" hreflang="en" href="{{site_url}}">
+<link rel="alternate" hreflang="zh-Hant-TW" href="{{site_url}}zh-tw/">
+<link rel="alternate" hreflang="ja" href="{{site_url}}ja/">
+<link rel="alternate" hreflang="x-default" href="{{site_url}}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="NekoNekoAsset">
+<meta property="og:title" content="{{title}}">
+<meta property="og:description" content="{{description}}">
+<meta property="og:url" content="{{site_url}}{{path}}">
+<meta property="og:image" content="{{site_url}}assets/og.png">
+<meta property="og:locale" content="{{og_locale}}">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="{{base}}assets/icon.png">
+<link rel="apple-touch-icon" href="{{base}}assets/icon.png">
+{{lang_redirect}}
+<style>
+:root{--pop:#FF5FA2}
+@font-face{font-family:'Fredoka';src:url('{{base}}assets/fonts/fredoka-latin.woff2') format('woff2');font-weight:300 700;font-display:swap}
+@font-face{font-family:'Nunito';src:url('{{base}}assets/fonts/nunito-latin.woff2') format('woff2');font-weight:200 1000;font-display:swap}
+@font-face{font-family:'Chiron GoRound TC';src:url('{{base}}assets/fonts/chiron-goround-tc.woff2') format('woff2');font-weight:400 900;font-display:swap}
+@font-face{font-family:'Zen Maru Gothic';src:url('{{base}}assets/fonts/zen-maru-gothic-500.woff2') format('woff2');font-weight:500;font-display:swap}
+@font-face{font-family:'Zen Maru Gothic';src:url('{{base}}assets/fonts/zen-maru-gothic-700.woff2') format('woff2');font-weight:700;font-display:swap}
+@font-face{font-family:'Zen Maru Gothic';src:url('{{base}}assets/fonts/zen-maru-gothic-900.woff2') format('woff2');font-weight:900;font-display:swap}
+body{margin:0;background:#FFF6E9}
+a{color:#241B35}
+a:hover{color:#B02A6B}
+.nna{font-family:'Nunito','Chiron GoRound TC','Microsoft JhengHei','PingFang TC',sans-serif;color:#241B35;-webkit-font-smoothing:antialiased}
+.nna *,.nna *::before,.nna *::after{box-sizing:border-box}
+.nna h1,.nna h2,.nna h3,.nna p,.nna ul,.nna ol{margin:0}
+.nna p{text-wrap:pretty}
+.disp{font-family:'Fredoka','Chiron GoRound TC','Microsoft JhengHei','PingFang TC',sans-serif}
+.ic{fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.icf{stroke:#241B35;stroke-width:1.8;stroke-linejoin:round;flex:none}
+.m-ink{stroke:#241B35;stroke-width:7;stroke-linecap:round;stroke-linejoin:round}
+.m-line{fill:none;stroke:#241B35;stroke-width:5;stroke-linecap:round;stroke-linejoin:round}
+.wm{font-size:22px}
+.hdr-row{gap:16px}
+.nav-links{display:flex}
+.nav-link{padding:10px 14px;border-radius:999px;font-weight:800;font-size:16px;text-decoration:none;color:#241B35}
+.nav-link:hover{background:#FFE3EF;color:#241B35}
+.pop-btn{transition:transform .18s cubic-bezier(.22,1,.36,1),box-shadow .18s cubic-bezier(.22,1,.36,1)}
+.pop-btn:hover{transform:translate(-2px,-2px);box-shadow:7px 7px 0 #241B35 !important}
+.pop-btn:active{transform:translate(3px,3px);box-shadow:1px 1px 0 #241B35 !important}
+.nna a:focus-visible,.nna button:focus-visible,.nna summary:focus-visible{outline:3px solid #6C4BFF;outline-offset:3px}
+.lift{transition:transform .25s cubic-bezier(.22,1,.36,1),box-shadow .25s cubic-bezier(.22,1,.36,1)}
+.lift:hover{transform:translate(-3px,-3px);box-shadow:9px 9px 0 #241B35 !important}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:2.5px solid #241B35;border-radius:999px;font-weight:800;font-size:14px;line-height:1.3;background:#FFFFFF;white-space:nowrap}
+.tile{flex:none;width:52px;height:52px;border-radius:16px;border:3px solid #241B35;display:grid;place-items:center;box-shadow:3px 3px 0 #241B35}
+.mock-side{display:flex}
+.bob{animation:bob 5.5s ease-in-out infinite}
+.bob2{animation:bob 6.5s ease-in-out -2s infinite}
+.marquee{animation:marquee 34s linear infinite}
+.blink{transform-box:fill-box;transform-origin:center;animation:blink 5s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+@keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@keyframes blink{0%,90%,100%{transform:scaleY(1)}94%{transform:scaleY(.12)}}
+.faq{background:#FFFFFF;border:3px solid #241B35;border-radius:20px;box-shadow:5px 5px 0 #241B35;overflow:hidden}
+.faq summary{display:flex;align-items:center;gap:14px;padding:18px 20px;font-weight:800;font-size:18px;line-height:1.45;cursor:pointer;list-style:none}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary:hover{background:#FFF3C4}
+.faq .q{flex:none;width:36px;height:36px;border-radius:50%;border:3px solid #241B35;display:grid;place-items:center;font-family:'Nunito',sans-serif;font-weight:900;font-size:16px;background:#FFD3E6}
+.faq .chev{margin-left:auto;transition:transform .25s cubic-bezier(.22,1,.36,1)}
+.faq[open] .chev{transform:rotate(180deg)}
+.faq .a{padding:0 26px 22px 70px;font-size:16px;line-height:1.85;color:#4A3F5C;display:flex;flex-direction:column;gap:10px}
+.faq .a strong,.hero-lead strong{color:#241B35}
+.faq .a ul{padding-left:1.2em;display:flex;flex-direction:column;gap:4px}
+@media (max-width:900px){.nav-links{display:none}}
+@media (max-width:640px){.mock-side,.hide-sm{display:none}.faq .a{padding:0 18px 20px 18px}.faq summary{font-size:16px;padding:16px}}
+@media (max-width:520px){.wm{font-size:18px}.hdr-row{gap:8px;padding:10px 16px !important}.lang-txt,.lang-chev,.dl-ic{display:none}.lang-btn{padding:0 10px !important}}
+@media (max-width:380px){.dl-txt{display:none}.dl-ic{display:block !important}.hdr-dl{padding:0 12px !important}}
+@media (prefers-reduced-motion:reduce){.bob,.bob2,.marquee,.blink{animation:none}.pop-btn,.lift,.faq .chev{transition:none}}
+html[lang="ja"] .nna{font-family:'Nunito','Zen Maru Gothic','Yu Gothic UI','Hiragino Sans','Meiryo',sans-serif}
+html[lang="ja"] .disp{font-family:'Fredoka','Zen Maru Gothic','Yu Gothic UI','Hiragino Sans','Meiryo',sans-serif}
+html[lang="ja"] .disp,html[lang="ja"] .faq summary{font-feature-settings:"palt"}
+.nw{white-space:nowrap}
+.mark{position:relative;display:inline-block;z-index:0;padding:0 .04em}
+.mark::after{content:"";position:absolute;left:-.04em;right:-.04em;bottom:.1em;height:.4em;background:#FFD43B;border-radius:.18em;z-index:-1;transform:rotate(-2deg)}
+.hl{color:#FFD43B}
+.hero-title{font-weight:900;font-size:clamp(38px,5.4vw,72px);line-height:1.14;letter-spacing:-.005em}
+html[lang="ja"] .hero-title{font-size:clamp(34px,4.9vw,64px)}
+html[lang="en"] .hero-title{font-size:clamp(32px,4.3vw,56px);line-height:1.1;letter-spacing:-.01em;text-wrap:balance}
+.privacy-title{font-weight:900;font-size:clamp(34px,4.4vw,54px);line-height:1.18}
+html[lang="ja"] .privacy-title{font-size:clamp(28px,3.9vw,48px)}
+html[lang="en"] .privacy-title{font-size:clamp(32px,3.9vw,50px);line-height:1.12}
+.lang{position:relative}
+.lang-btn{display:flex;align-items:center;gap:6px;height:44px;padding:0 14px;border:3px solid #241B35;border-radius:999px;background:#FFFFFF;color:#241B35;font-weight:800;font-size:15px;cursor:pointer;list-style:none;white-space:nowrap}
+.lang-btn::-webkit-details-marker{display:none}
+.lang-btn:hover{background:#FFE3EF}
+.lang[open] .lang-chev{transform:rotate(180deg)}
+.lang-menu{position:absolute;right:0;top:calc(100% + 8px);z-index:40;min-width:168px;display:flex;flex-direction:column;gap:2px;padding:6px;background:#FFFFFF;border:3px solid #241B35;border-radius:16px;box-shadow:4px 4px 0 #241B35}
+.lang-menu a{padding:10px 12px;border-radius:10px;font-weight:800;font-size:15px;text-decoration:none;color:#241B35}
+.lang-menu a:hover{background:#FFE3EF;color:#241B35}
+html[lang="en"] .lang-menu a[lang="en"],html[lang="zh-Hant-TW"] .lang-menu a[lang="zh-Hant-TW"],html[lang="ja"] .lang-menu a[lang="ja"]{background:#FFF3C4}
+</style>
+</head>
+<body>
+
+<div class="nna" style="min-height: 100vh; background: #FFF6E9; overflow-x: clip;">
+
+<header style="position: sticky; top: 0; z-index: 30; background: rgba(255, 246, 233, 0.94); border-bottom: 3px solid #241B35; backdrop-filter: blur(10px);">
+<div class="hdr-row" style="max-width: 1200px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center;">
+<a href="#top" aria-label="{{home_aria}}" style="display: flex; align-items: center; gap: 10px; text-decoration: none; color: #241B35;">
+<img src="{{base}}assets/icon.png" alt="" width="40" height="40" style="display: block; width: 40px; height: 40px; border-radius: 12px; border: 3px solid #241B35; box-shadow: 3px 3px 0 #241B35;">
+<span class="disp wm" style="font-weight: 700; letter-spacing: -0.01em; white-space: nowrap;">NekoNeko<span style="color: #D6337A;">Asset</span></span>
+</a>
+<div style="flex: 1 1 auto;"></div>
+<nav class="nav-links" aria-label="{{nav_aria}}" style="align-items: center; gap: 4px;">
+<a class="nav-link" href="#features">{{nav_features}}</a>
+<a class="nav-link" href="#privacy">{{nav_privacy}}</a>
+<a class="nav-link" href="#faq">{{nav_faq}}</a>
+<a class="nav-link" href="https://github.com/Yan-K/NekoNekoAsset-Public">GitHub</a>
+</nav>
+<details class="lang">
+<summary class="lang-btn" aria-label="{{lang_aria}}">
+<svg class="ic" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg>
+<span class="lang-txt">{{lang_name}}</span>
+<svg class="ic lang-chev" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+</summary>
+<div class="lang-menu">
+<a href="{{base}}" lang="en" hreflang="en" data-lang="en">English</a>
+<a href="{{base}}zh-tw/" lang="zh-Hant-TW" hreflang="zh-Hant-TW" data-lang="zh-TW">繁體中文</a>
+<a href="{{base}}ja/" lang="ja" hreflang="ja" data-lang="ja">日本語</a>
+</div>
+</details>
+<a class="pop-btn hdr-dl" href="{{installer_url}}" aria-label="{{download}}" style="display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border: 3px solid #241B35; border-radius: 999px; background: var(--pop); color: #241B35; text-decoration: none; font-weight: 900; font-size: 15px; box-shadow: 4px 4px 0 #241B35; white-space: nowrap;">
+<svg class="ic dl-ic" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+<span class="dl-txt">{{download}}</span>
+</a>
+</div>
+</header>
+
+<section id="top" style="position: relative; overflow: hidden; background-color: #FFF6E9; background-image: radial-gradient(#E8D7BF 1.5px, transparent 1.7px); background-size: 24px 24px;">
+<div style="max-width: 1200px; margin: 0 auto; padding: 72px 24px 104px; display: flex; flex-wrap: wrap; align-items: center; gap: 56px;">
+<div style="flex: 1 1 500px; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 26px;">
+<span class="pill" style="background: #FFF3C4; box-shadow: 3px 3px 0 #241B35;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2EBD8E; border: 2px solid #241B35;"></span>{{version_label}} ・ {{free_open_source}}</span>
+<h1 class="disp hero-title">{{hero_title}}</h1>
+<p class="hero-lead" style="font-size: 19px; line-height: 1.8; color: #4A3F5C; max-width: 32em; text-wrap: pretty;">{{hero_lead}}</p>
+<div style="display: flex; flex-wrap: wrap; gap: 14px;">
+<a class="pop-btn" href="{{installer_url}}" style="display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 0 28px; border: 3px solid #241B35; border-radius: 999px; background: var(--pop); color: #241B35; text-decoration: none; font-weight: 900; font-size: 19px; box-shadow: 5px 5px 0 #241B35;">
+<svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+{{download_windows}}
+</a>
+<a class="pop-btn" href="https://github.com/Yan-K/NekoNekoAsset-Public" style="display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 0 26px; border: 3px solid #241B35; border-radius: 999px; background: #FFFFFF; color: #241B35; text-decoration: none; font-weight: 900; font-size: 19px; box-shadow: 5px 5px 0 #241B35;">
+<svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+{{hero_source}}
+</a>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; font-size: 15px; font-weight: 700; color: #4A3F5C;">
+<span style="display: flex; align-items: center; gap: 6px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>{{windows_64}}</span>
+<span style="display: flex; align-items: center; gap: 6px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>{{installer_size}}</span>
+<span style="display: flex; align-items: center; gap: 6px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>{{mit_license}}</span>
+</div>
+</div>
+
+<div style="flex: 1 1 480px; min-width: 0; position: relative; padding: 44px 12px 76px 12px;">
+<div style="position: relative; z-index: 1; transform: rotate(1.5deg); background: #FFFFFF; border: 3px solid #241B35; border-radius: 22px; box-shadow: 10px 10px 0 #241B35; overflow: hidden;">
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 3px solid #241B35; background: #FFE3EF;">
+<img src="{{base}}assets/icon.png" alt="" width="22" height="22" style="display: block; width: 22px; height: 22px; border-radius: 6px;">
+<span class="disp" style="font-weight: 700; font-size: 14px; white-space: nowrap;">NekoNekoAsset</span>
+<div style="flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; margin: 0 6px; background: #FFFFFF; border: 2px solid #241B35; border-radius: 10px; font-size: 13px; color: #6B6080; overflow: hidden; white-space: nowrap;">
+<svg class="ic" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+{{mock_search}}
+</div>
+<div aria-hidden="true" style="display: flex; gap: 10px; color: #241B35;">
+<svg class="ic" viewBox="0 0 24 24" width="14" height="14"><path d="M5 12h14"></path></svg>
+<svg class="ic" viewBox="0 0 24 24" width="14" height="14"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>
+<svg class="ic" viewBox="0 0 24 24" width="14" height="14"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+</div>
+</div>
+<div style="display: flex; min-height: 300px;">
+<div class="mock-side" aria-hidden="true" style="flex: none; width: 124px; flex-direction: column; gap: 4px; padding: 12px 8px; border-right: 3px solid #241B35; background: #FFF9F1; font-size: 13px; font-weight: 800;">
+<span style="padding: 7px 10px; border-radius: 10px; background: var(--pop); border: 2px solid #241B35;">{{cat_all}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_clothing}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_hair}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_accessories}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_textures}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_motions}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_shaders}}</span>
+<span style="padding: 7px 10px; border-radius: 10px; border: 2px solid transparent; color: #4A3F5C;">{{cat_tools}}</span>
+</div>
+<div aria-hidden="true" style="flex: 1 1 auto; min-width: 0; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; align-content: start;">
+<div style="border: 2px solid #241B35; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+<div style="aspect-ratio: 1 / 1; display: grid; place-items: center; background: #FFD3E6; border-bottom: 2px solid #241B35;"><svg class="ic" viewBox="0 0 24 24" width="40" height="40" style="color: #241B35;"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"></path></svg></div>
+<div style="padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 4px;">
+<span lang="ja" style="font-size: 12px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">ふわもこ猫耳パーカー</span>
+<span style="font-size: 11px; color: #6B6080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Studio Meow</span>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #CFF5E7; border: 1.5px solid #241B35; font-size: 10.5px; font-weight: 800;"><svg class="ic" viewBox="0 0 24 24" width="11" height="11"><path d="M20 6 9 17l-5-5"></path></svg>{{st_downloaded}}</span>
+</div>
+</div>
+<div style="border: 2px solid #241B35; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+<div style="aspect-ratio: 1 / 1; display: grid; place-items: center; background: #E6DCFF; border-bottom: 2px solid #241B35;"><svg class="ic" viewBox="0 0 24 24" width="40" height="40" style="color: #241B35;"><path d="M12 12 L4.5 7.2 Q3 6.4 3 8.2 V15.8 Q3 17.6 4.5 16.8 Z"></path><path d="M12 12 L19.5 7.2 Q21 6.4 21 8.2 V15.8 Q21 17.6 19.5 16.8 Z"></path><circle cx="12" cy="12" r="2.2"></circle></svg></div>
+<div style="padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 4px;">
+<span lang="ja" style="font-size: 12px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">リボンツインテール</span>
+<span style="font-size: 11px; color: #6B6080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Mochi Works</span>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #CFF5E7; border: 1.5px solid #241B35; font-size: 10.5px; font-weight: 800;"><svg class="ic" viewBox="0 0 24 24" width="11" height="11"><path d="M20 6 9 17l-5-5"></path></svg>{{st_downloaded}}</span>
+</div>
+</div>
+<div style="border: 2px solid #241B35; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+<div style="aspect-ratio: 1 / 1; display: grid; place-items: center; background: #D6EEFF; border-bottom: 2px solid #241B35;"><svg class="ic" viewBox="0 0 24 24" width="40" height="40" style="color: #241B35;"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path></svg></div>
+<div style="padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 4px;">
+<span lang="ja" style="font-size: 12px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">星空ネイルセット</span>
+<span style="font-size: 11px; color: #6B6080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Kirakira Lab</span>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #D6EEFF; border: 1.5px solid #241B35; font-size: 10.5px; font-weight: 800;"><svg class="ic" viewBox="0 0 24 24" width="11" height="11"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>{{st_downloading}}</span>
+</div>
+</div>
+<div style="border: 2px solid #241B35; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+<div style="aspect-ratio: 1 / 1; display: grid; place-items: center; background: #FFF0B3; border-bottom: 2px solid #241B35;"><svg class="ic" viewBox="0 0 24 24" width="40" height="40" style="color: #241B35;"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path><path d="M6.5 5.6 5.6 2.2 9 3.6"></path><path d="M17.5 5.6 18.4 2.2 15 3.6"></path></svg></div>
+<div style="padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 4px;">
+<span style="font-size: 12px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Kitty Headphones</span>
+<span style="font-size: 11px; color: #6B6080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Pawprint</span>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #EEEAF3; border: 1.5px solid #241B35; font-size: 10.5px; font-weight: 800;"><svg class="ic" viewBox="0 0 24 24" width="11" height="11"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path></svg>{{st_not_downloaded}}</span>
+</div>
+</div>
+<div class="hide-sm" style="border: 2px solid #241B35; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+<div style="aspect-ratio: 1 / 1; display: grid; place-items: center; background: #CFF5E7; border-bottom: 2px solid #241B35;"><svg class="ic" viewBox="0 0 24 24" width="40" height="40" style="color: #241B35;"><path d="M12 3 C12.6 8 16 11.4 21 12 C16 12.6 12.6 16 12 21 C11.4 16 8 12.6 3 12 C8 11.4 11.4 8 12 3 Z"></path></svg></div>
+<div style="padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 4px;">
+<span style="font-size: 12px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Sakura Toon Shader</span>
+<span style="font-size: 11px; color: #6B6080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Hana Tech</span>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #CFF5E7; border: 1.5px solid #241B35; font-size: 10.5px; font-weight: 800;"><svg class="ic" viewBox="0 0 24 24" width="11" height="11"><path d="M20 6 9 17l-5-5"></path></svg>{{st_downloaded}}</span>
+</div>
+</div>
+<div class="hide-sm" style="border: 2px solid #241B35; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+<div style="aspect-ratio: 1 / 1; display: grid; place-items: center; background: #FFE0CC; border-bottom: 2px solid #241B35;"><svg class="ic" viewBox="0 0 24 24" width="40" height="40" style="color: #241B35;"><circle cx="12" cy="12" r="9"></circle><path d="M10 8.5 15.5 12 10 15.5Z"></path></svg></div>
+<div style="padding: 7px 8px 8px; display: flex; flex-direction: column; gap: 4px;">
+<span style="font-size: 12px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Idle Motion Pack</span>
+<span style="font-size: 11px; color: #6B6080; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Nyan Motion</span>
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; background: #FFF0B3; border: 1.5px solid #241B35; font-size: 10.5px; font-weight: 800;"><svg class="ic" viewBox="0 0 24 24" width="11" height="11"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>{{st_partial}}</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div style="position: absolute; top: 2px; left: 0; z-index: 3; transform: rotate(-7deg);">
+<div class="bob" style="display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #FFD43B; border: 3px solid #241B35; border-radius: 16px; box-shadow: 4px 4px 0 #241B35; font-weight: 900; font-size: 16px; white-space: nowrap;"><svg class="ic" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>{{sticker_names}}</div>
+</div>
+<div class="hide-sm" style="position: absolute; top: 46%; right: -6px; z-index: 3; transform: rotate(6deg);">
+<div class="bob2" style="display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #E6DCFF; border: 3px solid #241B35; border-radius: 16px; box-shadow: 4px 4px 0 #241B35; font-weight: 900; font-size: 16px; white-space: nowrap;">{{one_click_unity}}<svg class="ic" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></div>
+</div>
+<div class="hide-sm" style="position: absolute; bottom: 22px; left: 0; z-index: 3; transform: rotate(-4deg);">
+<div class="bob" style="display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 16px; box-shadow: 4px 4px 0 #241B35; font-weight: 900; font-size: 15px; white-space: nowrap;"><svg class="ic" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>BOOTH ・ Gumroad ・ Jinxxy</div>
+</div>
+<svg class="hide-sm" viewBox="0 0 24 24" width="34" height="34" aria-hidden="true" style="position: absolute; top: 0; right: 22%; z-index: 3;"><path class="icf" fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<svg class="hide-sm" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="position: absolute; top: 34px; right: 14%; z-index: 3;"><path class="icf" fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<div style="position: absolute; right: -6px; bottom: -8px; z-index: 4; width: clamp(150px, 36%, 220px);">
+<div class="bob2">
+<svg viewBox="0 0 320 300" role="img" aria-label="{{mascot_alt}}" style="display: block; width: 100%; height: auto; overflow: visible;">
+<defs><clipPath id="nnaCatHero"><path d="M80 206 C70 194 68 178 70 160 C72 136 84 114 100 98 L103 74 Q105 60 117 67 L137 82 Q160 75 183 82 L203 67 Q215 60 217 74 L220 98 C236 114 248 136 250 160 C252 180 249 194 241 202 C240 208 234 211 224 211 C216 211 212 214 212 220 C212 228 211 236 205 239 C198 243 188 241 187 233 C186 225 186 217 180 213 C172 208 148 208 140 213 C134 217 134 225 133 231 C132 239 122 242 115 238 C109 235 108 228 108 221 C108 214 104 211 96 211 C88 211 82 210 80 206 Z"></path></clipPath></defs>
+<ellipse cx="160" cy="291" rx="122" ry="8" fill="#241B35" opacity="0.16"></ellipse>
+<path class="m-ink" fill="#E9A23B" d="M62 178 L26 142 L80 126 L104 176 Z"></path>
+<path class="m-ink" fill="#E9A23B" d="M258 178 L294 142 L240 126 L216 176 Z"></path>
+<path d="M238 142 C264 134 280 114 278 90 C277 78 270 72 262 76" fill="none" stroke="#241B35" stroke-width="23" stroke-linecap="round"></path>
+<path d="M238 142 C264 134 280 114 278 90 C277 78 270 72 262 76" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"></path>
+<rect class="m-ink" x="56" y="176" width="208" height="106" rx="12" fill="#F4B942"></rect>
+<rect class="m-ink" x="142" y="176" width="36" height="106" fill="#FFE08A"></rect>
+<path fill="#E8E4F2" d="M80 206 C70 194 68 178 70 160 C72 136 84 114 100 98 L103 74 Q105 60 117 67 L137 82 Q160 75 183 82 L203 67 Q215 60 217 74 L220 98 C236 114 248 136 250 160 C252 180 249 194 241 202 C240 208 234 211 224 211 C216 211 212 214 212 220 C212 228 211 236 205 239 C198 243 188 241 187 233 C186 225 186 217 180 213 C172 208 148 208 140 213 C134 217 134 225 133 231 C132 239 122 242 115 238 C109 235 108 228 108 221 C108 214 104 211 96 211 C88 211 82 210 80 206 Z"></path>
+<g clip-path="url(#nnaCatHero)"><path fill="#FFFFFF" transform="translate(-10 -9)" d="M80 206 C70 194 68 178 70 160 C72 136 84 114 100 98 L103 74 Q105 60 117 67 L137 82 Q160 75 183 82 L203 67 Q215 60 217 74 L220 98 C236 114 248 136 250 160 C252 180 249 194 241 202 C240 208 234 211 224 211 C216 211 212 214 212 220 C212 228 211 236 205 239 C198 243 188 241 187 233 C186 225 186 217 180 213 C172 208 148 208 140 213 C134 217 134 225 133 231 C132 239 122 242 115 238 C109 235 108 228 108 221 C108 214 104 211 96 211 C88 211 82 210 80 206 Z"></path></g>
+<path class="m-ink" fill="none" d="M80 206 C70 194 68 178 70 160 C72 136 84 114 100 98 L103 74 Q105 60 117 67 L137 82 Q160 75 183 82 L203 67 Q215 60 217 74 L220 98 C236 114 248 136 250 160 C252 180 249 194 241 202 C240 208 234 211 224 211 C216 211 212 214 212 220 C212 228 211 236 205 239 C198 243 188 241 187 233 C186 225 186 217 180 213 C172 208 148 208 140 213 C134 217 134 225 133 231 C132 239 122 242 115 238 C109 235 108 228 108 221 C108 214 104 211 96 211 C88 211 82 210 80 206 Z"></path>
+<ellipse class="blink" cx="142" cy="131" rx="5.4" ry="6.8" fill="#241B35"></ellipse>
+<ellipse class="blink" cx="178" cy="131" rx="5.4" ry="6.8" fill="#241B35"></ellipse>
+<path class="m-line" d="M146 142 Q146 153 153 153 Q160 153 160 144 Q160 153 167 153 Q174 153 174 142"></path>
+<path class="m-line" d="M105 133 L124 136 M103 142 L124 142 M105 151 L124 148 M196 136 L215 133 M196 142 L217 142 M196 148 L215 151"></path>
+</svg>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<div aria-hidden="true" style="overflow: hidden; padding: 26px 0; margin-top: -34px; position: relative; z-index: 2;">
+<div style="transform: rotate(-1.8deg); margin: 0 -24px; background: #241B35; border-top: 3px solid #241B35; border-bottom: 3px solid #241B35; box-shadow: 0 7px 0 var(--pop);">
+<div class="marquee" style="display: flex; width: max-content;">
+<div class="disp" style="display: flex; align-items: center; gap: 26px; padding: 16px 13px; color: #FFF6E9; font-weight: 700; font-size: 24px; white-space: nowrap;">
+<span>BOOTH</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>Gumroad</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>Jinxxy</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#7FE0C0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{mq_autodl}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{mq_extract}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{one_click_unity}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#7FE0C0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{mq_local}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{free_open_source}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+</div>
+<div class="disp" style="display: flex; align-items: center; gap: 26px; padding: 16px 13px; color: #FFF6E9; font-weight: 700; font-size: 24px; white-space: nowrap;">
+<span>BOOTH</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>Gumroad</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>Jinxxy</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#7FE0C0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{mq_autodl}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{mq_extract}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{one_click_unity}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#7FE0C0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{mq_local}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<span>{{free_open_source}}</span><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+</div>
+</div>
+</div>
+</div>
+
+<section style="max-width: 1200px; margin: 0 auto; padding: 80px 24px 96px;">
+<div style="display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center;">
+<span class="pill" style="background: #E6DCFF;">{{stores_pill}}</span>
+<h2 class="disp" style="font-weight: 900; font-size: clamp(34px, 4.4vw, 56px); line-height: 1.15; text-wrap: balance;">{{stores_title}}</h2>
+<p style="font-size: 18px; line-height: 1.75; color: #4A3F5C; max-width: 36em;">{{stores_lead}}</p>
+</div>
+<div style="margin-top: 48px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 24px;">
+<div class="lift" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 24px; box-shadow: 6px 6px 0 #241B35;">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+<h3 class="disp" style="font-weight: 700; font-size: 28px;">BOOTH</h3>
+<span class="tile" style="background: #FFD3E6;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"></path><path d="M3 6h18"></path><path d="M16 10a4 4 0 0 1-8 0"></path></svg></span>
+</div>
+<p style="font-size: 16px; line-height: 1.7; color: #4A3F5C;">{{booth_desc}}</p>
+<ul aria-label="{{booth_scope}}" style="list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto;">
+<li class="pill" style="background: #FFE3EF;">{{booth_library}}</li>
+<li class="pill" style="background: #FFE3EF;">{{booth_purchases}}</li>
+<li class="pill" style="background: #FFE3EF;">{{booth_gifts}}</li>
+<li class="pill" style="background: #FFE3EF;">{{booth_free}}</li>
+</ul>
+</div>
+<div class="lift" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 24px; box-shadow: 6px 6px 0 #241B35;">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+<h3 class="disp" style="font-weight: 700; font-size: 28px;">Gumroad</h3>
+<span class="tile" style="background: #FFF0B3;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 7v14"></path><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"></path></svg></span>
+</div>
+<p style="font-size: 16px; line-height: 1.7; color: #4A3F5C;">{{gumroad_desc}}</p>
+<ul aria-label="{{gumroad_scope}}" style="list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto;">
+<li class="pill" style="background: #FFF3C4;">Library</li>
+<li class="pill" style="background: #FFF3C4;">Bundle</li>
+</ul>
+</div>
+<div class="lift" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 24px; box-shadow: 6px 6px 0 #241B35;">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+<h3 class="disp" style="font-weight: 700; font-size: 28px;">Jinxxy</h3>
+<span class="tile" style="background: #E6DCFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M4 10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"></path><path d="M8 10h8"></path><path d="M8 18h8"></path><path d="M8 22v-6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg></span>
+</div>
+<p style="font-size: 16px; line-height: 1.7; color: #4A3F5C;">{{jinxxy_desc}}</p>
+<ul aria-label="{{jinxxy_scope}}" style="list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto;">
+<li class="pill" style="background: #EFE8FF;">Inventory</li>
+</ul>
+</div>
+<div class="lift" style="display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 24px; box-shadow: 6px 6px 0 #241B35;">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{local_title}}</h3>
+<span class="tile" style="background: #CFF5E7;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg></span>
+</div>
+<p style="font-size: 16px; line-height: 1.7; color: #4A3F5C;">{{local_desc}}</p>
+<ul aria-label="{{local_scope}}" style="list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto;">
+<li class="pill" style="background: #DDF8EE;">{{local_folders}}</li>
+<li class="pill" style="background: #DDF8EE;">ZIP</li>
+<li class="pill" style="background: #DDF8EE;">{{local_files}}</li>
+</ul>
+</div>
+</div>
+</section>
+
+<div id="features" style="background: #FFFDF8; border-top: 3px solid #241B35; border-bottom: 3px solid #241B35; scroll-margin-top: 72px;">
+<section style="max-width: 1200px; margin: 0 auto; padding: 96px 24px 104px;">
+<div style="display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center;">
+<span class="pill" style="background: #CFF5E7;">{{feat_pill}}</span>
+<h2 class="disp" style="font-weight: 900; font-size: clamp(34px, 4.4vw, 56px); line-height: 1.15; text-wrap: balance;">{{feat_title}}</h2>
+<p style="font-size: 18px; line-height: 1.75; color: #4A3F5C; max-width: 34em;">{{feat_lead}}</p>
+</div>
+<div style="margin-top: 52px; display: flex; flex-wrap: wrap; gap: 24px;">
+
+<div class="lift" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFE3EF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{sync_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C; max-width: 34em;">{{sync_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px;">
+<div style="display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 15px;">
+<span style="width: 12px; height: 12px; border-radius: 50%; background: #3FA9F5; border: 2px solid #241B35;"></span>
+{{sync_status}}
+<span style="margin-left: auto; font-size: 13px; color: #6B6080;">{{sync_pages}}</span>
+</div>
+<div style="height: 16px; border: 2.5px solid #241B35; border-radius: 999px; background: #FFF6E9; overflow: hidden;"><div style="width: 62%; height: 100%; background: var(--pop); border-right: 2.5px solid #241B35;"></div></div>
+<div style="font-size: 13px; font-weight: 700; color: #6B6080;">{{sync_details}}</div>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 14px; font-size: 14px; font-weight: 700;">
+<span style="flex: none; padding: 2px 8px; border-radius: 999px; background: #FFD43B; border: 2px solid #241B35; font-size: 12px; font-weight: 900;">NEW</span>
+<span lang="ja" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">ふわもこ猫耳パーカー</span>
+<span style="margin-left: auto; flex: none; font-size: 12px; color: #6B6080;">BOOTH</span>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 14px; font-size: 14px; font-weight: 700;">
+<span style="flex: none; padding: 2px 8px; border-radius: 999px; background: #FFD43B; border: 2px solid #241B35; font-size: 12px; font-weight: 900;">NEW</span>
+<span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Kitty Headphones</span>
+<span style="margin-left: auto; flex: none; font-size: 12px; color: #6B6080;">Gumroad</span>
+</div>
+</div>
+</div>
+
+<div class="lift" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFF3C4; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="2" y="3" width="20" height="5" rx="1"></rect><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path><path d="M10 12h4"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{dl_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{dl_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px; font-size: 14px; font-weight: 700;">
+<div style="display: flex; align-items: center; gap: 8px;"><svg class="ic" viewBox="0 0 24 24" width="18" height="18"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg><span lang="ja" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">ふわもこ猫耳パーカー_v1.2</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding-left: 24px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg><span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Hoodie_v1.2.unitypackage</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding-left: 24px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg><span lang="ja">テクスチャ</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding-left: 24px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg><span lang="ja">説明書.pdf</span></div>
+</div>
+</div>
+
+<div class="lift" style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #DDF8EE; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{find_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{find_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 10px;">
+<div style="display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 14px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 14px; font-weight: 800;">
+<svg class="ic" viewBox="0 0 24 24" width="18" height="18"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+<span lang="ja">猫耳</span>
+<span style="margin-left: auto; font-size: 13px; color: #6B6080;">{{find_count}}</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px;">
+<span class="pill" style="background: var(--pop);">{{cat_clothing}}</span>
+<span class="pill">{{cat_hair}}</span>
+<span class="pill">{{cat_accessories}}</span>
+<span class="pill" style="background: #FFF3C4;"><svg class="ic" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg>{{find_avatar}}</span>
+</div>
+</div>
+</div>
+
+<div class="lift" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #EFE8FF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{one_click_unity}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C; max-width: 34em;">{{unity_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
+<div style="flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px; font-size: 14px; font-weight: 700;">
+<span style="font-size: 12px; font-weight: 900; letter-spacing: 0.06em; color: #6B6080;">NEKONEKOASSET</span>
+<span style="display: flex; align-items: center; gap: 8px;"><span style="flex: none; width: 18px; height: 18px; border-radius: 6px; border: 2px solid #241B35; background: #241B35; color: #FFFFFF; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="12" height="12"><path d="M20 6 9 17l-5-5"></path></svg></span><span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Hoodie_v1.2.unitypackage</span></span>
+<span style="display: flex; align-items: center; gap: 8px;"><span style="flex: none; width: 18px; height: 18px; border-radius: 6px; border: 2px solid #241B35; background: #241B35; color: #FFFFFF; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="12" height="12"><path d="M20 6 9 17l-5-5"></path></svg></span><span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">RibbonHair.unitypackage</span></span>
+</div>
+<span style="flex: none; width: 44px; height: 44px; border-radius: 50%; background: var(--pop); border: 2.5px solid #241B35; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="22" height="22"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></span>
+<div style="flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px; font-size: 14px; font-weight: 700;">
+<span style="font-size: 12px; font-weight: 900; letter-spacing: 0.06em; color: #6B6080;">{{unity_preview}}</span>
+<span style="display: flex; align-items: center; gap: 8px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>Assets/Hoodie</span>
+<span style="display: flex; align-items: center; gap: 8px;"><svg class="ic" viewBox="0 0 24 24" width="16" height="16"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>Assets/RibbonHair</span>
+<span style="align-self: flex-end; padding: 5px 14px; border-radius: 999px; border: 2px solid #241B35; background: #B79CFF; font-size: 13px; font-weight: 900;">{{unity_import}}</span>
+</div>
+</div>
+</div>
+
+<div class="lift" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #E1F2FF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFFFFF;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 10v6"></path><path d="M9 13h6"></path><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{import_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{import_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 120px; padding: 16px; border: 3px dashed #241B35; border-radius: 18px; background: #FFFFFF; font-weight: 800; font-size: 15px; text-align: center;">
+<svg class="ic" viewBox="0 0 24 24" width="30" height="30"><path d="M12 10v6"></path><path d="M9 13h6"></path><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>
+{{import_drop}}
+</div>
+</div>
+
+<div class="lift" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFE9DB; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFFFFF;"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path class="icf" fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{spend_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{spend_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; position: relative; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 16px;">
+<span style="font-size: 13px; font-weight: 800; color: #6B6080;">{{spend_total}}</span>
+<span class="disp" style="font-size: 34px; font-weight: 700; line-height: 1.2;">¥ 86,500</span>
+<span style="font-size: 13px; font-weight: 800; color: #6B6080;">{{spend_other}}</span>
+<svg viewBox="0 0 24 24" width="28" height="28" style="position: absolute; top: 10px; right: 14px;"><path class="icf" fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<svg viewBox="0 0 24 24" width="18" height="18" style="position: absolute; top: 40px; right: 46px;"><path class="icf" fill="#7FE0C0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+</div>
+</div>
+
+<div class="lift" style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 28px; box-shadow: 6px 6px 0 #241B35;">
+<span class="tile" style="background: #FFD3E6;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="13.5" cy="6.5" r="1"></circle><circle cx="17.5" cy="10.5" r="1"></circle><circle cx="8.5" cy="7.5" r="1"></circle><circle cx="6.5" cy="12.5" r="1"></circle><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 26px;">{{theme_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{theme_desc}}</p>
+<div aria-hidden="true" style="margin-top: auto; display: flex; flex-direction: column; gap: 12px;">
+<div style="display: flex; flex-wrap: wrap; gap: 8px;">
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #F7B2CC;"></span>
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #FFE27A;"></span>
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #FFC4A3;"></span>
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #CDB8FF;"></span>
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #8FD3FF;"></span>
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #8FD9A8;"></span>
+<span style="width: 34px; height: 34px; border-radius: 50%; border: 2.5px solid #241B35; background: #2B2B2B;"></span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px;">
+<span class="pill" style="padding: 4px 10px; font-size: 13px;">繁中</span>
+<span class="pill" style="padding: 4px 10px; font-size: 13px;">简中</span>
+<span class="pill" lang="ja" style="padding: 4px 10px; font-size: 13px;">日本語</span>
+<span class="pill" lang="ko" style="padding: 4px 10px; font-size: 13px;">한국어</span>
+<span class="pill" lang="en" style="padding: 4px 10px; font-size: 13px;">English</span>
+</div>
+</div>
+</div>
+</div>
+
+<div style="margin-top: 36px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px;">
+<span style="font-weight: 900; font-size: 16px; margin-right: 4px;">{{more_label}}</span>
+<span class="pill">{{more_accounts}}</span>
+<span class="pill">{{more_nas}}</span>
+<span class="pill">{{more_single}}</span>
+<span class="pill">{{more_r18}}</span>
+<span class="pill">{{more_collections}}</span>
+<span class="pill" style="background: #FFF3C4;">{{more_ai}}</span>
+</div>
+</section>
+</div>
+
+<section style="max-width: 1200px; margin: 0 auto; padding: 96px 24px 112px;">
+<div style="display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center;">
+<span class="pill" style="background: #FFF3C4;">{{steps_pill}}</span>
+<h2 class="disp" style="font-weight: 900; font-size: clamp(34px, 4.4vw, 56px); line-height: 1.15;">{{steps_title}}</h2>
+</div>
+<ol style="list-style: none; padding: 0; margin: 64px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 44px 24px;">
+<li style="position: relative; display: flex; flex-direction: column; gap: 12px; padding: 40px 26px 28px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 26px; box-shadow: 6px 6px 0 #241B35;">
+<span class="disp" aria-hidden="true" style="position: absolute; top: -28px; left: 22px; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: #FFD43B; border: 3px solid #241B35; box-shadow: 3px 3px 0 #241B35; font-weight: 700; font-size: 28px;">1</span>
+<h3 class="disp" style="font-weight: 800; font-size: 24px;">{{step1_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{step1_desc}}</p>
+</li>
+<li style="position: relative; display: flex; flex-direction: column; gap: 12px; padding: 40px 26px 28px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 26px; box-shadow: 6px 6px 0 #241B35;">
+<span class="disp" aria-hidden="true" style="position: absolute; top: -28px; left: 22px; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--pop); border: 3px solid #241B35; box-shadow: 3px 3px 0 #241B35; font-weight: 700; font-size: 28px;">2</span>
+<h3 class="disp" style="font-weight: 800; font-size: 24px;">{{step2_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{step2_desc}}</p>
+</li>
+<li style="position: relative; display: flex; flex-direction: column; gap: 12px; padding: 40px 26px 28px; background: #FFFFFF; border: 3px solid #241B35; border-radius: 26px; box-shadow: 6px 6px 0 #241B35;">
+<span class="disp" aria-hidden="true" style="position: absolute; top: -28px; left: 22px; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: #7FE0C0; border: 3px solid #241B35; box-shadow: 3px 3px 0 #241B35; font-weight: 700; font-size: 28px;">3</span>
+<h3 class="disp" style="font-weight: 800; font-size: 24px;">{{step3_title}}</h3>
+<p style="font-size: 16px; line-height: 1.75; color: #4A3F5C;">{{step3_desc}}</p>
+</li>
+</ol>
+</section>
+
+<section id="privacy" style="position: relative; overflow: hidden; background: #241B35; color: #FFF6E9; scroll-margin-top: 72px;">
+<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" style="position: absolute; top: 40px; left: 49%;"><path class="icf" fill="#FFD43B" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" style="position: absolute; top: 92px; left: 53%;"><path class="icf" fill="#FF8DC0" d="M12 2 C12.7 8.2 15.8 11.3 22 12 C15.8 12.7 12.7 15.8 12 22 C11.3 15.8 8.2 12.7 2 12 C8.2 11.3 11.3 8.2 12 2 Z"></path></svg>
+<div style="max-width: 1200px; margin: 0 auto; padding: 112px 24px; display: flex; flex-wrap: wrap; gap: 56px; align-items: flex-start;">
+<div style="flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 22px;">
+<span class="pill" style="background: #FFD43B; color: #241B35;"><svg class="ic" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>{{privacy_pill}}</span>
+<h2 class="disp privacy-title">{{privacy_title}}</h2>
+<p style="font-size: 18px; line-height: 1.8; color: #DDD4EC; max-width: 30em;">{{privacy_lead}}</p>
+<div style="width: 100%; margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 16px;">
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #2E2443; border: 2.5px solid #5A4C73; border-radius: 20px;">
+<span class="tile" style="width: 46px; height: 46px; background: #FF8DC0; color: #241B35; border-color: #FFF6E9; box-shadow: none;"><svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"></path><path d="m21 2-9.6 9.6"></path><circle cx="7.5" cy="15.5" r="5.5"></circle></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 20px;">{{p_pw_title}}</h3>
+<p style="font-size: 15px; line-height: 1.75; color: #DDD4EC;">{{p_pw_desc}}</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #2E2443; border: 2.5px solid #5A4C73; border-radius: 20px;">
+<span class="tile" style="width: 46px; height: 46px; background: #7FE0C0; color: #241B35; border-color: #FFF6E9; box-shadow: none;"><svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><line x1="22" x2="2" y1="12" y2="12"></line><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path><line x1="6" x2="6.01" y1="16" y2="16"></line><line x1="10" x2="10.01" y1="16" y2="16"></line></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 20px;">{{p_cloud_title}}</h3>
+<p style="font-size: 15px; line-height: 1.75; color: #DDD4EC;">{{p_cloud_desc}}</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #2E2443; border: 2.5px solid #5A4C73; border-radius: 20px;">
+<span class="tile" style="width: 46px; height: 46px; background: #8FD3FF; color: #241B35; border-color: #FFF6E9; box-shadow: none;"><svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"></path><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"></path><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"></path><path d="m2 2 20 20"></path></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 20px;">{{p_track_title}}</h3>
+<p style="font-size: 15px; line-height: 1.75; color: #DDD4EC;">{{p_track_desc}}</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 20px; background: #2E2443; border: 2.5px solid #5A4C73; border-radius: 20px;">
+<span class="tile" style="width: 46px; height: 46px; background: #FFD43B; color: #241B35; border-color: #FFF6E9; box-shadow: none;"><svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg></span>
+<h3 class="disp" style="font-weight: 800; font-size: 20px;">{{p_open_title}}</h3>
+<p style="font-size: 15px; line-height: 1.75; color: #DDD4EC;">{{p_open_desc}}</p>
+</div>
+</div>
+</div>
+
+<div style="flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 28px; background: #FFF6E9; color: #241B35; border: 3px solid #FFF6E9; border-radius: 28px; box-shadow: 10px 10px 0 var(--pop);">
+<div style="display: flex; align-items: center; gap: 14px;">
+<span class="tile" style="background: #FFD43B;"><svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg></span>
+<div style="display: flex; flex-direction: column; gap: 2px;">
+<h3 class="disp" style="font-weight: 800; font-size: 24px;">{{conn_title}}</h3>
+<p style="font-size: 15px; color: #4A3F5C;">{{conn_lead}}</p>
+</div>
+</div>
+<ul style="list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px;">
+<li style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 18px;">
+<span style="flex: none; width: 42px; height: 42px; border-radius: 12px; border: 2.5px solid #241B35; background: #FFD3E6; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"></path><path d="M3 6h18"></path><path d="M16 10a4 4 0 0 1-8 0"></path></svg></span>
+<div style="flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px;">
+<strong style="font-size: 16px;">BOOTH・Gumroad・Jinxxy</strong>
+<span style="font-size: 14px; line-height: 1.6; color: #4A3F5C;">{{conn_stores_desc}}</span>
+</div>
+<span style="flex: none; padding: 4px 10px; border-radius: 999px; border: 2px solid #241B35; background: #CFF5E7; font-size: 12px; font-weight: 900;">{{conn_stores_when}}</span>
+</li>
+<li style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 18px;">
+<span style="flex: none; width: 42px; height: 42px; border-radius: 12px; border: 2.5px solid #241B35; background: #D6EEFF; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg></span>
+<div style="flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px;">
+<strong style="font-size: 16px;">GitHub</strong>
+<span style="font-size: 14px; line-height: 1.6; color: #4A3F5C;">{{conn_github_desc}}</span>
+</div>
+<span style="flex: none; padding: 4px 10px; border-radius: 999px; border: 2px solid #241B35; background: #D6EEFF; font-size: 12px; font-weight: 900;">{{conn_github_when}}</span>
+</li>
+<li style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 18px;">
+<span style="flex: none; width: 42px; height: 42px; border-radius: 12px; border: 2.5px solid #241B35; background: #E6DCFF; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 8V4H8"></path><rect x="4" y="8" width="16" height="12" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg></span>
+<div style="flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px;">
+<strong style="font-size: 16px;">{{conn_ai_name}}</strong>
+<span style="font-size: 14px; line-height: 1.6; color: #4A3F5C;">{{conn_ai_desc}}</span>
+</div>
+<span style="flex: none; padding: 4px 10px; border-radius: 999px; border: 2px solid #241B35; background: #FFF3C4; font-size: 12px; font-weight: 900;">{{conn_ai_when}}</span>
+</li>
+<li style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; background: #FFFFFF; border: 2.5px solid #241B35; border-radius: 18px;">
+<span style="flex: none; width: 42px; height: 42px; border-radius: 12px; border: 2.5px solid #241B35; background: #CFF5E7; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg></span>
+<div style="flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px;">
+<strong style="font-size: 16px;">Unity Bridge</strong>
+<span style="font-size: 14px; line-height: 1.6; color: #4A3F5C;">{{conn_bridge_desc}}</span>
+</div>
+<span style="flex: none; padding: 4px 10px; border-radius: 999px; border: 2px solid #241B35; background: #CFF5E7; font-size: 12px; font-weight: 900;">{{conn_bridge_when}}</span>
+</li>
+<li style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; background: #FFF6E9; border: 2.5px dashed #241B35; border-radius: 18px;">
+<span style="flex: none; width: 42px; height: 42px; border-radius: 12px; border: 2.5px solid #241B35; background: #EEEAF3; display: grid; place-items: center;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="2" y="3" width="20" height="8" rx="2"></rect><rect x="2" y="13" width="20" height="8" rx="2"></rect><path d="M6 7h.01"></path><path d="M6 17h.01"></path><path d="m2 2 20 20"></path></svg></span>
+<div style="flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 2px;">
+<strong style="font-size: 16px; text-decoration: line-through; text-decoration-thickness: 3px;">{{conn_server_name}}</strong>
+<span style="font-size: 14px; line-height: 1.6; color: #4A3F5C;">{{conn_server_desc}}</span>
+</div>
+<span style="flex: none; padding: 4px 10px; border-radius: 999px; border: 2px solid #241B35; background: #FFD3E6; font-size: 12px; font-weight: 900;">{{conn_server_when}}</span>
+</li>
+</ul>
+<p style="font-size: 13px; line-height: 1.7; color: #4A3F5C;">{{conn_note}}</p>
+</div>
+</div>
+</section>
+
+<section id="faq" style="max-width: 900px; margin: 0 auto; padding: 112px 24px 96px; scroll-margin-top: 72px;">
+<div style="display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center;">
+<span class="pill" style="background: #FFD3E6;">FAQ</span>
+<h2 class="disp" style="font-weight: 900; font-size: clamp(34px, 4.4vw, 56px); line-height: 1.15;">{{faq_title}}</h2>
+<p style="font-size: 18px; line-height: 1.75; color: #4A3F5C; max-width: 32em;">{{faq_lead}}</p>
+</div>
+
+<h3 class="disp" style="margin-top: 56px; display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 24px;"><span class="tile" style="width: 44px; height: 44px; background: #FFD43B;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></span>{{faq_privacy_heading}}</h3>
+<div style="margin-top: 20px; display: flex; flex-direction: column; gap: 14px;">
+<details class="faq" open>
+<summary><span class="q">Q</span><span>{{faq1_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq1_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq2_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq2_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq3_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq3_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq4_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq4_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq5_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq5_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq6_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq6_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq7_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq7_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq8_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq8_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq9_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq9_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq10_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq10_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq11_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq11_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq12_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq12_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q">Q</span><span>{{faq13_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq13_a}}</div>
+</details>
+</div>
+
+<h3 class="disp" style="margin-top: 56px; display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 24px;"><span class="tile" style="width: 44px; height: 44px; background: #7FE0C0;"><svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg></span>{{faq_usage_heading}}</h3>
+<div style="margin-top: 20px; display: flex; flex-direction: column; gap: 14px;">
+<details class="faq">
+<summary><span class="q" style="background: #CFF5E7;">Q</span><span>{{faq14_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq14_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q" style="background: #CFF5E7;">Q</span><span>{{faq15_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq15_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q" style="background: #CFF5E7;">Q</span><span>{{faq16_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq16_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q" style="background: #CFF5E7;">Q</span><span>{{faq17_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq17_a}}</div>
+</details>
+<details class="faq">
+<summary><span class="q" style="background: #CFF5E7;">Q</span><span>{{faq18_q}}</span><svg class="ic chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<div class="a">{{faq18_a}}</div>
+</details>
+</div>
+<p style="margin-top: 40px; text-align: center; font-size: 16px; font-weight: 700; color: #4A3F5C;">{{faq_more}}<a href="https://github.com/Yan-K/NekoNekoAsset-Public/issues" style="font-weight: 900;">{{faq_more_link}}</a></p>
+</section>
+
+<section id="download" style="padding: 24px 24px 120px; scroll-margin-top: 72px;">
+<div style="position: relative; max-width: 1120px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 24px 40px; padding: clamp(32px, 5vw, 64px); background: var(--pop); border: 3px solid #241B35; border-radius: 40px; box-shadow: 12px 12px 0 #241B35; overflow: hidden;">
+<div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 20px;">
+<h2 class="disp" style="font-weight: 900; font-size: clamp(34px, 4.6vw, 58px); line-height: 1.15;">{{cta_title}}</h2>
+<p style="font-size: 18px; line-height: 1.75; font-weight: 700; max-width: 30em;">{{cta_lead}}</p>
+<div style="display: flex; flex-wrap: wrap; gap: 14px;">
+<a class="pop-btn" href="{{installer_url}}" style="display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 0 28px; border: 3px solid #241B35; border-radius: 999px; background: #241B35; color: #FFF6E9; text-decoration: none; font-weight: 900; font-size: 19px; box-shadow: 5px 5px 0 #FFFFFF;">
+<svg class="ic" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" x2="12" y1="15" y2="3"></line></svg>
+{{download_windows}}
+</a>
+<a class="pop-btn" href="{{release_url}}" style="display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 0 26px; border: 3px solid #241B35; border-radius: 999px; background: #FFFFFF; color: #241B35; text-decoration: none; font-weight: 900; font-size: 19px; box-shadow: 5px 5px 0 #241B35;">{{cta_notes}}</a>
+</div>
+<p style="display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; font-weight: 800;"><span style="white-space: nowrap;">{{cta_latest}} {{version_label}}</span><span style="white-space: nowrap;">{{windows_64}}</span><span style="white-space: nowrap;">{{installer_size}}</span></p>
+</div>
+<div aria-hidden="true" style="flex: 0 1 340px; min-width: 220px; margin: 0 auto;">
+<div class="bob">
+<svg viewBox="0 0 340 230" style="display: block; width: 100%; height: auto; overflow: visible;">
+<defs><clipPath id="nnaCatCta"><path d="M40 172 C28 156 26 126 34 106 C38 98 42 94 46 90 L50 64 Q52 50 64 57 L84 72 Q106 66 128 72 L148 57 Q160 50 161 64 L164 94 C176 108 200 114 228 112 C256 110 272 102 288 104 C304 106 310 120 308 136 C307 150 304 160 300 166 C300 180 300 194 295 199 C290 204 282 203 281 195 C280 187 279 178 275 177 C271 177 270 184 270 192 C270 199 266 203 260 202 C254 201 252 195 252 187 C252 181 248 177 240 177 C210 177 170 183 146 182 C142 182 140 187 140 195 C140 202 136 206 130 206 C124 206 122 201 122 194 C122 188 120 184 117 184 C114 184 113 190 113 198 C113 205 109 209 103 209 C97 209 95 204 95 197 C95 188 92 182 86 181 C70 180 52 182 40 172 Z"></path></clipPath></defs>
+<ellipse cx="172" cy="217" rx="146" ry="8" fill="#241B35" opacity="0.2"></ellipse>
+<path d="M296 124 C320 112 330 88 322 64 C318 52 306 50 302 58" fill="none" stroke="#241B35" stroke-width="23" stroke-linecap="round"></path>
+<path d="M296 124 C320 112 330 88 322 64 C318 52 306 50 302 58" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"></path>
+<path fill="#E8E4F2" d="M40 172 C28 156 26 126 34 106 C38 98 42 94 46 90 L50 64 Q52 50 64 57 L84 72 Q106 66 128 72 L148 57 Q160 50 161 64 L164 94 C176 108 200 114 228 112 C256 110 272 102 288 104 C304 106 310 120 308 136 C307 150 304 160 300 166 C300 180 300 194 295 199 C290 204 282 203 281 195 C280 187 279 178 275 177 C271 177 270 184 270 192 C270 199 266 203 260 202 C254 201 252 195 252 187 C252 181 248 177 240 177 C210 177 170 183 146 182 C142 182 140 187 140 195 C140 202 136 206 130 206 C124 206 122 201 122 194 C122 188 120 184 117 184 C114 184 113 190 113 198 C113 205 109 209 103 209 C97 209 95 204 95 197 C95 188 92 182 86 181 C70 180 52 182 40 172 Z"></path>
+<g clip-path="url(#nnaCatCta)"><path fill="#FFFFFF" transform="translate(-10 -9)" d="M40 172 C28 156 26 126 34 106 C38 98 42 94 46 90 L50 64 Q52 50 64 57 L84 72 Q106 66 128 72 L148 57 Q160 50 161 64 L164 94 C176 108 200 114 228 112 C256 110 272 102 288 104 C304 106 310 120 308 136 C307 150 304 160 300 166 C300 180 300 194 295 199 C290 204 282 203 281 195 C280 187 279 178 275 177 C271 177 270 184 270 192 C270 199 266 203 260 202 C254 201 252 195 252 187 C252 181 248 177 240 177 C210 177 170 183 146 182 C142 182 140 187 140 195 C140 202 136 206 130 206 C124 206 122 201 122 194 C122 188 120 184 117 184 C114 184 113 190 113 198 C113 205 109 209 103 209 C97 209 95 204 95 197 C95 188 92 182 86 181 C70 180 52 182 40 172 Z"></path></g>
+<path class="m-ink" fill="none" d="M40 172 C28 156 26 126 34 106 C38 98 42 94 46 90 L50 64 Q52 50 64 57 L84 72 Q106 66 128 72 L148 57 Q160 50 161 64 L164 94 C176 108 200 114 228 112 C256 110 272 102 288 104 C304 106 310 120 308 136 C307 150 304 160 300 166 C300 180 300 194 295 199 C290 204 282 203 281 195 C280 187 279 178 275 177 C271 177 270 184 270 192 C270 199 266 203 260 202 C254 201 252 195 252 187 C252 181 248 177 240 177 C210 177 170 183 146 182 C142 182 140 187 140 195 C140 202 136 206 130 206 C124 206 122 201 122 194 C122 188 120 184 117 184 C114 184 113 190 113 198 C113 205 109 209 103 209 C97 209 95 204 95 197 C95 188 92 182 86 181 C70 180 52 182 40 172 Z"></path>
+<ellipse class="blink" cx="69" cy="121" rx="5.4" ry="6.8" fill="#241B35"></ellipse>
+<ellipse class="blink" cx="103" cy="121" rx="5.4" ry="6.8" fill="#241B35"></ellipse>
+<path class="m-line" d="M72 132 Q72 143 79 143 Q86 143 86 134 Q86 143 93 143 Q100 143 100 132"></path>
+<path class="m-line" d="M38 124 L52 126 M37 132 L52 132 M38 140 L52 138 M119 125 L139 121 M119 132 L141 132 M119 138 L139 142"></path>
+<path class="icf" fill="#FFD43B" d="M236 34 C237.6 47 244 53.4 257 55 C244 56.6 237.6 63 236 76 C234.4 63 228 56.6 215 55 C228 53.4 234.4 47 236 34 Z"></path>
+<path class="icf" fill="#FFFFFF" d="M22 40 C23 48 27 52 35 53 C27 54 23 58 22 66 C21 58 17 54 9 53 C17 52 21 48 22 40 Z"></path>
+</svg>
+</div>
+</div>
+</div>
+</section>
+
+<footer style="border-top: 3px solid #241B35; background: #FFEFD6;">
+<div style="max-width: 1200px; margin: 0 auto; padding: 40px 24px 24px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 28px 48px;">
+<div style="flex: 1 1 360px; min-width: 0; display: flex; flex-direction: column; gap: 12px;">
+<a href="#top" style="display: flex; align-items: center; gap: 10px; text-decoration: none; color: #241B35;">
+<img src="{{base}}assets/icon.png" alt="" width="34" height="34" style="display: block; width: 34px; height: 34px; border-radius: 10px; border: 2.5px solid #241B35;">
+<span class="disp" style="font-weight: 700; font-size: 20px;">NekoNekoAsset</span>
+</a>
+<p style="font-size: 14px; line-height: 1.75; color: #4A3F5C; max-width: 36em;">{{footer_disclaimer}}</p>
+</div>
+<nav aria-label="{{footer_aria}}" style="display: flex; flex-wrap: wrap; gap: 6px 4px; font-weight: 800; font-size: 15px;">
+<a class="nav-link" href="https://github.com/Yan-K/NekoNekoAsset-Public">GitHub</a>
+<a class="nav-link" href="https://github.com/Yan-K/NekoNekoAsset-Public/releases">{{f_downloads}}</a>
+<a class="nav-link" href="https://github.com/Yan-K/NekoNekoAsset-Public/blob/main/changelog.md">{{f_changelog}}</a>
+<a class="nav-link" href="https://github.com/Yan-K/NekoNekoAsset-Public/issues">{{f_issues}}</a>
+<a class="nav-link" href="https://github.com/Yan-K/NekoNekoAsset-Public/blob/main/LICENSE">{{mit_license}}</a>
+</nav>
+</div>
+<div style="max-width: 1200px; margin: 0 auto; padding: 0 24px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; color: #4A3F5C;">
+Made with
+<svg viewBox="0 0 24 24" width="16" height="16" role="img" aria-label="{{love_aria}}"><path class="icf" fill="var(--pop)" d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>
+by Yan-K ・ © 2026 NekoNekoAsset contributors
+</div>
+</footer>
+
+</div>
+<script>
+(function () {
+  var menu = document.querySelector('.lang');
+  document.addEventListener('click', function (event) {
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && menu.open) { menu.open = false; menu.querySelector('summary').focus(); }
+  });
+  menu.querySelectorAll('a[data-lang]').forEach(function (link) {
+    link.addEventListener('click', function () {
+      try { localStorage.setItem('nna-lang', link.getAttribute('data-lang')); } catch (error) {}
+    });
+  });
+})();
+</script>
+</body>
+</html>
