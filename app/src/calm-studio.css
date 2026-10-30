@@ -734,6 +734,9 @@
  .app,.app *,.app *::before,.app *::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}
  /* Progress indicators keep moving slowly; they report state rather than decorate. */
  .app .sync-spinning,.app .progress-spin,.app progress:indeterminate{animation-duration:3s!important;animation-iteration-count:infinite!important;}
+ /* The global reduced-motion rule clears animation names; restore these two. */
+ .app .sync-spinning,.app .progress-spin{animation-name:sync-rotation!important;animation-timing-function:linear!important;}
+ .app progress:indeterminate{animation-name:calm-indeterminate!important;animation-timing-function:var(--ease)!important;}
 }
 .app.reduce-motion,.app.reduce-motion *,.app.reduce-motion *::before,.app.reduce-motion *::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}
 /* Progress indicators keep moving slowly; they report state rather than decorate. */

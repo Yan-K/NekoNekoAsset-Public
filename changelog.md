@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.1 Beta - 2026-10-30
+
+### Fixed
+
+- One BOOTH product page that fails to load no longer fails the whole account sync. It is retried once after the other products finish; if it still fails, the sync ends needing action and keeps everything already saved. Responses cut off mid-transfer are retried, and incremental syncs skip product pages BOOTH has already removed.
+- BOOTH music products with per-track downloads are recognized. Every track is listed once in both Library and purchases, and tracks are downloaded as MP3, which Unity imports directly.
+- Product list: search, filters, sorting and language changes now respond immediately on large libraries instead of showing No matching assets for a long time.
+- Clear search clears on the first click again; on wide windows the search box no longer slides the button away mid-click.
+
+### Changed
+
+- CJK text in the UI now uses bundled Noto Sans TC, JP, SC and KR; Settings > Appearance > Built-in fonts switches back to the Windows fonts.
+- The processing icon keeps turning, slowly under reduced motion. A pending search shows Searching or Loading instead of an empty result, Activity dates share one right edge, long tag lists fold with Show all, and the blurred R-18 reveal covers the whole thumbnail.
+
+### Release notes
+
+- App and Unity Bridge share version 0.3.1 Beta. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- BOOTH music tracks are kept as MP3 only; FLAC and M4A versions are not downloaded.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.0 Beta - 2026-10-30
 
 ### Changed
