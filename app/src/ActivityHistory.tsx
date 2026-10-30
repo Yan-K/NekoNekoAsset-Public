@@ -11,6 +11,7 @@ import {shellText} from './shell-i18n';
 import {unityText,unityError,unityProgressLabel} from './unity-i18n';
 import {supportText} from './support-i18n';
 import './ActivityHistory.css';
+import {contentLang} from './content-lang';
 
 export interface ActivityHistoryProps {
  locale:Locale;jobs:NativeJob[];accounts:Account[];products:Product[];aiEnabled:boolean;
@@ -150,7 +151,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
       <strong title={identity||jobLabel(job)}>{identity||jobLabel(job)}</strong>
       <div className="activity-history-meta"><span>{jobLabel(job)} · {job.type==='unity:import'?unityProgressLabel(locale,{...job,stage:job.stage??job.state}):isStoreSyncJob(job.type)?syncProgressLabel(locale,job):label(job.state)}</span></div>
       {isStoreJob(job.type)&&names.length===1&&<small className="activity-history-reason">{names[0]}</small>}
-      {names.length>1&&<details className="activity-history-products"><summary>{t(locale,'products')} · {names.length.toLocaleString(locale)}</summary><ul>{ids.map(id=><li key={id}>{title(id)}</li>)}</ul></details>}
+      {names.length>1&&<details className="activity-history-products"><summary>{t(locale,'products')} · {names.length.toLocaleString(locale)}</summary><ul>{ids.map(id=><li key={id} lang={contentLang(title(id))}>{title(id)}</li>)}</ul></details>}
       {active(job)&&<progress aria-label={jobLabel(job)} value={percent===undefined?undefined:Math.max(0,Math.min(100,percent))} max={100}/>}
       {job.type==='unity:import'&&job.resultCounts&&Object.values(job.resultCounts).some(Boolean)&&<small className="activity-history-reason">{(['applied','skipped','failed'] as const).filter(state=>job.resultCounts![state]>0).map(state=>`${unityText(locale,state)} ${job.resultCounts![state].toLocaleString(locale)}`).join(' · ')}</small>}
       {job.errorCode&&<small className="activity-history-reason">{job.type==='unity:import'?unityError(locale,job.errorCode):reason(job.errorCode)}</small>}

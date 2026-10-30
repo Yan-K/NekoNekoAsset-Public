@@ -12,6 +12,7 @@ import Preview from './Preview';
 import {isTauri} from '@tauri-apps/api/core';
 import {getCurrentWebview} from '@tauri-apps/api/webview';
 import './ai-suggestions.css';
+import {contentLang} from './content-lang';
 
 const MAX_IMAGES=4;
 const MAX_IMAGE_BYTES=2*1024*1024;
@@ -209,7 +210,7 @@ export default function AiSuggestions({locale,active=true,frozen=false,onOpenPro
  const apiLabel=(entry:AiEntry)=>{const label=`${entry.provider} · ${entry.model}`;if(entries.filter(value=>value.provider===entry.provider&&value.model===entry.model).length<2)return label;let host='';try{host=new URL(entry.endpoint).host;}catch{}return `${label} · ${host||entry.id.slice(0,6)}${entries.filter(value=>value.provider===entry.provider&&value.model===entry.model&&value.endpoint===entry.endpoint).length>1?' · '+entry.id.slice(0,6):''}`;};
  const resultCard=(result:AiSuggestionResponse['recommendations'][number])=>{
   const source=result.thumbnailPath||result.thumbnailUrl;
-  const body=<><div className="ai-chat-result-image">{source?<Preview src={source} title={result.title} lazy/>:<ImagePlus size={25}/>}<span>{storeLabel(result.provider)}</span></div><div className="ai-chat-result-body"><strong>{result.title}</strong>{result.reason&&<small>{result.reason}</small>}</div></>;
+  const body=<><div className="ai-chat-result-image">{source?<Preview src={source} title={result.title} lazy/>:<ImagePlus size={25}/>}<span>{storeLabel(result.provider)}</span></div><div className="ai-chat-result-body"><strong lang={contentLang(result.title)}>{result.title}</strong>{result.reason&&<small>{result.reason}</small>}</div></>;
   return result.origin==='library'&&result.productId?<button type="button" className="ai-chat-result" key={result.candidateId} title={L('openProduct')} onClick={()=>onOpenProduct(result.productId!)}>{body}</button>:<div className="ai-chat-result" key={result.candidateId}>{body}{result.url&&<button type="button" className="ai-chat-result-action" onClick={()=>void openPage(result.url!)}><ExternalLink size={13}/>{L('openPage')}</button>}</div>;
  };
  const date=(value:string)=>{const parsed=new Date(value);return Number.isNaN(parsed.getTime())?'':new Intl.DateTimeFormat(locale,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(parsed);};

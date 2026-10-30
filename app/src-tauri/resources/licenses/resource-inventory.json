@@ -51,8 +51,8 @@
     },
     {
       "resourcePath": "licenses/dependency-ledger.json",
-      "bytes": 818381,
-      "sha256": "4ba27bffe34f1bb77f85e8c92fd56f814ce701c39b0466765d05aacc417f696f"
+      "bytes": 822999,
+      "sha256": "56d6ab72be4c52e20c5de9c62eed3d3593f6682beb4ef4ce5f13174e03ad3ee5"
     },
     {
       "resourcePath": "licenses/frontend/NOTICES.txt",
@@ -73,6 +73,16 @@
       "resourcePath": "licenses/NekoNekoAsset-LICENSE.txt",
       "bytes": 1084,
       "sha256": "381cb4c0f07d5d83db492b82fa8162217ab1a258776e0b8d91eb2edee1b50274"
+    },
+    {
+      "resourcePath": "licenses/noto-sans-cjk/OFL.txt",
+      "bytes": 4388,
+      "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9"
+    },
+    {
+      "resourcePath": "licenses/noto-sans-cjk/README.md",
+      "bytes": 3225,
+      "sha256": "a4a588ee83f11b83f799808dd98f555e1e8be764818be31f50da5d4c4a75f66f"
     },
     {
       "resourcePath": "licenses/nsis/nsis-3.11-src.tar.bz2",
@@ -666,8 +676,8 @@
     },
     {
       "resourcePath": "licenses/THIRD-PARTY-NOTICE.txt",
-      "bytes": 3991,
-      "sha256": "c7cabd7f8ad3aeeea14b606c8c4114d8ac579449e99663ca87da2fa6286af477"
+      "bytes": 4274,
+      "sha256": "97749c36295316afb94e9a51b8dc7953105d5ab606a94c87792f39edbbe82afa"
     },
     {
       "resourcePath": "tools/7zip/7z.dll",

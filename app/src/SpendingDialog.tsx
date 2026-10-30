@@ -3,6 +3,7 @@ import type {Locale} from './model';
 import {invokeAction,nativeFileAction} from './backend';
 import {isTauri} from '@tauri-apps/api/core';
 import './SpendingDialog.css';
+import {contentLang} from './content-lang';
 
 export interface SpendingTotal {currency:string;amount:string;minorUnits:string;fractionDigits:number}
 export interface SpendingSummary {
@@ -160,7 +161,7 @@ export default function SpendingDialog({locale,productIds,accountIds,onClose}:Sp
       {summary.totals.length?summary.totals.map(total=><strong key={total.currency}>{formatSpendingTotal(total,locale)}</strong>):<span>{L.empty}</span>}
      </div>
      {(summary.skippedCount>0||unknown>0)&&<div className="spending-counts">{summary.skippedCount>0&&<span>{count(L.skipped,summary.skippedCount)}</span>}{unknown>0&&<span>{count(L.unknown,unknown)}</span>}</div>}
-     {summary.products.length>0&&<section className="spending-products" aria-label={L.products}><h3>{L.products}</h3><ul>{summary.products.map(product=><li key={product.productId}><span>{product.title}</span><div>{product.totals.length?product.totals.map(total=><span key={total.currency}>{formatSpendingTotal(total,locale)}</span>):<span>—</span>}</div></li>)}</ul></section>}
+     {summary.products.length>0&&<section className="spending-products" aria-label={L.products}><h3>{L.products}</h3><ul>{summary.products.map(product=><li key={product.productId}><span lang={contentLang(product.title)}>{product.title}</span><div>{product.totals.length?product.totals.map(total=><span key={total.currency}>{formatSpendingTotal(total,locale)}</span>):<span>—</span>}</div></li>)}</ul></section>}
     </>}
    </div>
    <footer className="modal-footer"><span className="spending-share-status" role="status">{shareState?L[shareState]:''}</span><button type="button" disabled={!summary?.totals.length} onClick={()=>void share()}>{L.share}</button><button type="button" onClick={onClose}>{L.close}</button></footer>

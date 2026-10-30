@@ -1,0 +1,10 @@
+/* Bundled CJK UI fonts: Noto Sans TC, JP, SC and KR 2.004 (SIL OFL 1.1), variable weight, repackaged as WOFF2.
+   Provenance and license: src-tauri/resources/licenses/noto-sans-cjk/.
+   These files carry no TrueType hinting instructions, so WebView2 (Skia over DirectWrite) draws them with symmetric
+   smoothing instead of snapping strokes to the pixel grid as it does with the hinted Windows CJK fonts.
+   Each face only claims CJK blocks, so Latin text keeps Segoe UI Variable and never loads these files; only Noto Sans KR
+   claims Hangul because the other three do not contain it. Stacks and the system-font option are in calm-studio.css. */
+@font-face{font-family:"Noto Sans TC";src:url("./fonts/NotoSansTC-VF.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:block;unicode-range:U+2E80-2FDF,U+2FF0-4DBF,U+4E00-9FFF,U+F900-FAFF,U+FE10-FE1F,U+FE30-FE4F,U+FF00-FFEF,U+20000-2FFFF;}
+@font-face{font-family:"Noto Sans JP";src:url("./fonts/NotoSansJP-VF.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:block;unicode-range:U+2E80-2FDF,U+2FF0-4DBF,U+4E00-9FFF,U+F900-FAFF,U+FE10-FE1F,U+FE30-FE4F,U+FF00-FFEF,U+20000-2FFFF;}
+@font-face{font-family:"Noto Sans SC";src:url("./fonts/NotoSansSC-VF.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:block;unicode-range:U+2E80-2FDF,U+2FF0-4DBF,U+4E00-9FFF,U+F900-FAFF,U+FE10-FE1F,U+FE30-FE4F,U+FF00-FFEF,U+20000-2FFFF;}
+@font-face{font-family:"Noto Sans KR";src:url("./fonts/NotoSansKR-VF.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:block;unicode-range:U+1100-11FF,U+2E80-2FDF,U+2FF0-4DBF,U+4E00-9FFF,U+A960-A97F,U+AC00-D7FF,U+F900-FAFF,U+FE10-FE1F,U+FE30-FE4F,U+FF00-FFEF,U+20000-2FFFF;}

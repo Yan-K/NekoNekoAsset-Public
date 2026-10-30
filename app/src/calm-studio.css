@@ -31,7 +31,9 @@
  --spring:cubic-bezier(.34,1.56,.64,1);
  --chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
  --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a1a1a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
- --font-ui:"Segoe UI Variable Text","Segoe UI","Yu Gothic UI","Meiryo","Microsoft JhengHei UI","Microsoft YaHei UI","Malgun Gothic","Noto Sans CJK JP",system-ui,sans-serif;
+ /* Latin stays on Segoe UI Variable; CJK uses the bundled Noto Sans faces (fonts.css), UI language first. */
+ --font-ui:"Segoe UI Variable Text","Segoe UI","Noto Sans JP","Noto Sans TC","Noto Sans SC","Noto Sans KR","Yu Gothic UI","Meiryo","Microsoft JhengHei UI","Microsoft YaHei UI","Malgun Gothic",system-ui,sans-serif;
+ --font-ja:"Segoe UI Variable Text","Segoe UI","Noto Sans JP","Noto Sans TC","Noto Sans SC","Noto Sans KR","Yu Gothic UI","Meiryo",system-ui,sans-serif;
  position:relative;
  color-scheme:dark;
  interpolate-size:allow-keywords;
@@ -52,9 +54,19 @@
  --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23696969' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
  color-scheme:light;
 }
-.app:lang(zh-Hant){--font-ui:"Segoe UI Variable Text","Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei","Yu Gothic UI","PingFang TC","Noto Sans CJK TC",system-ui,sans-serif;}
-.app:lang(zh-Hans){--font-ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei","Yu Gothic UI","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;}
-.app:lang(ko){--font-ui:"Segoe UI Variable Text","Segoe UI","Malgun Gothic","Yu Gothic UI","Apple SD Gothic Neo","Noto Sans CJK KR",system-ui,sans-serif;}
+.app:lang(zh-Hant){--font-ui:"Segoe UI Variable Text","Segoe UI","Noto Sans TC","Noto Sans JP","Noto Sans SC","Noto Sans KR","Microsoft JhengHei UI","Microsoft JhengHei","Yu Gothic UI",system-ui,sans-serif;}
+.app:lang(zh-Hans){--font-ui:"Segoe UI Variable Text","Segoe UI","Noto Sans SC","Noto Sans JP","Noto Sans TC","Noto Sans KR","Microsoft YaHei UI","Microsoft YaHei","Yu Gothic UI",system-ui,sans-serif;}
+.app:lang(ko){--font-ui:"Segoe UI Variable Text","Segoe UI","Noto Sans KR","Noto Sans JP","Noto Sans TC","Noto Sans SC","Malgun Gothic","Yu Gothic UI",system-ui,sans-serif;}
+/* Appearance > Built-in fonts off: the previous Windows system stacks. */
+.app.system-fonts{
+ --font-ui:"Segoe UI Variable Text","Segoe UI","Yu Gothic UI","Meiryo","Microsoft JhengHei UI","Microsoft YaHei UI","Malgun Gothic","Noto Sans CJK JP",system-ui,sans-serif;
+ --font-ja:"Segoe UI Variable Text","Segoe UI","Yu Gothic UI","Meiryo","Microsoft JhengHei UI","Microsoft YaHei UI","Malgun Gothic","Noto Sans CJK JP",system-ui,sans-serif;
+}
+.app.system-fonts:lang(zh-Hant){--font-ui:"Segoe UI Variable Text","Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei","Yu Gothic UI","PingFang TC","Noto Sans CJK TC",system-ui,sans-serif;}
+.app.system-fonts:lang(zh-Hans){--font-ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei","Yu Gothic UI","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;}
+.app.system-fonts:lang(ko){--font-ui:"Segoe UI Variable Text","Segoe UI","Malgun Gothic","Yu Gothic UI","Apple SD Gothic Neo","Noto Sans CJK KR",system-ui,sans-serif;}
+/* Japanese product text (kana, content-lang.ts) keeps Japanese glyph forms in every UI language. */
+.app [lang="ja"]{font-family:var(--font-ja);}
 
 /* ---------- base ---------- */
 .app ::selection{background:var(--acc-2);}

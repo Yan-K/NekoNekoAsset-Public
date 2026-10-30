@@ -38,6 +38,10 @@ and corresponding-source locations are recorded in dependency-ledger.json.
 - nsis-tauri-utils/ preserves the original Tauri0.5.3 installer plug-in terms
   and its cited Chromium BSD/copyright notice. Prebuilt dependency/toolchain
   provenance limits remain explicit; no exact binary dependency lock is claimed.
+- noto-sans-cjk/ preserves the original SIL Open Font License 1.1 text for the
+  bundled Noto Sans TC, JP, SC and KR 2.004 fonts, which are frontend assets
+  embedded in the application. See noto-sans-cjk/README.md for the source
+  commit, hashes and the lossless WOFF2 repackaging.
 
 The original license texts are preserved byte for byte. The surrounding ledger
 and this index describe provenance and scope, not additional license grants.

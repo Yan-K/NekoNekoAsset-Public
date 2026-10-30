@@ -22775,6 +22775,85 @@
     ],
     "scope": "Embedded only in the generated NSIS installer. Original MIT/Apache and cited Chromium BSD/copyright notices are preserved; no plugin DLL is copied into application resources."
   },
+  "notoSansCjk": {
+    "component": "Noto Sans TC, JP, SC and KR variable fonts (CJK user-interface fonts)",
+    "version": "2.004 (name table: Version 2.004-H2)",
+    "declaredLicense": "OFL-1.1",
+    "copyright": "(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.",
+    "reservedFontName": "Source",
+    "distributionRepository": "https://github.com/google/fonts",
+    "distributionCommit": "6157dfaa640ca5738b4d1a7070fe389c3036d7fc",
+    "upstream": {
+      "repository": "https://github.com/notofonts/noto-cjk",
+      "commit": "523d033d6cb47f4a80c58a35753646f5c3608a78",
+      "tag": "Sans2.004",
+      "evidence": "google/fonts METADATA.pb source block and upstream_info.md at the distribution commit"
+    },
+    "license": {
+      "path": "noto-sans-cjk/OFL.txt",
+      "originalPath": "ofl/notosanstc/OFL.txt",
+      "sourceUrl": "https://raw.githubusercontent.com/google/fonts/6157dfaa640ca5738b4d1a7070fe389c3036d7fc/ofl/notosanstc/OFL.txt",
+      "sourceGitBlobSha": "1c9f43281b8f216c5461fe9ac729afbade7724e4",
+      "bytes": 4388,
+      "sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+      "originalBytesPreserved": true,
+      "identicalOriginals": [
+        "ofl/notosansjp/OFL.txt",
+        "ofl/notosanssc/OFL.txt",
+        "ofl/notosanskr/OFL.txt"
+      ]
+    },
+    "provenanceFile": "noto-sans-cjk/README.md",
+    "provenanceFileSha256": "a4a588ee83f11b83f799808dd98f555e1e8be764818be31f50da5d4c4a75f66f",
+    "conversion": "Lossless WOFF2 repackaging with fontTools 4.66.1 and Brotli 1.2.1; decoding reproduces every table except head, where only checkSumAdjustment and flags bit 11 differ as the WOFF2 transform requires. No outlines, metrics, names or OpenType tables were edited.",
+    "fonts": [
+      {
+        "family": "Noto Sans TC",
+        "originalPath": "ofl/notosanstc/NotoSansTC[wght].ttf",
+        "sourceUrl": "https://raw.githubusercontent.com/google/fonts/6157dfaa640ca5738b4d1a7070fe389c3036d7fc/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
+        "sourceGitBlobSha": "82943579ad39c281212df8f14ac999824694a6ab",
+        "sourceBytes": 11941968,
+        "sourceSha256": "864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f",
+        "shippedFile": "app/src/fonts/NotoSansTC-VF.woff2",
+        "shippedBytes": 5424160,
+        "shippedSha256": "37558262fe31587616f0ef047226e6fe86e1d09dfd550acb811f51f92d8974c6"
+      },
+      {
+        "family": "Noto Sans JP",
+        "originalPath": "ofl/notosansjp/NotoSansJP[wght].ttf",
+        "sourceUrl": "https://raw.githubusercontent.com/google/fonts/6157dfaa640ca5738b4d1a7070fe389c3036d7fc/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+        "sourceGitBlobSha": "cdd8f083c1f5928ff3361f8cda4d3fc9462cbe89",
+        "sourceBytes": 9589900,
+        "sourceSha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+        "shippedFile": "app/src/fonts/NotoSansJP-VF.woff2",
+        "shippedBytes": 4350080,
+        "shippedSha256": "6fd94964d1990baa2a392cea7a036683d2b80b9dfd590cb3918e8dab98d8e188"
+      },
+      {
+        "family": "Noto Sans SC",
+        "originalPath": "ofl/notosanssc/NotoSansSC[wght].ttf",
+        "sourceUrl": "https://raw.githubusercontent.com/google/fonts/6157dfaa640ca5738b4d1a7070fe389c3036d7fc/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+        "sourceGitBlobSha": "fb0637bafbcd804fe32152370a1225990745b4bc",
+        "sourceBytes": 17772300,
+        "sourceSha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+        "shippedFile": "app/src/fonts/NotoSansSC-VF.woff2",
+        "shippedBytes": 7782072,
+        "shippedSha256": "aef8c34277afad81ecd0227138a830263c0caea65b7aea66d1195395f097b55a"
+      },
+      {
+        "family": "Noto Sans KR",
+        "originalPath": "ofl/notosanskr/NotoSansKR[wght].ttf",
+        "sourceUrl": "https://raw.githubusercontent.com/google/fonts/6157dfaa640ca5738b4d1a7070fe389c3036d7fc/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf",
+        "sourceGitBlobSha": "b386890ba945e1f39448a6b59f20c5d194f58808",
+        "sourceBytes": 10414588,
+        "sourceSha256": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252",
+        "shippedFile": "app/src/fonts/NotoSansKR-VF.woff2",
+        "shippedBytes": 3908716,
+        "shippedSha256": "f484190a87503ac2af2cf9771ec35122128453fe0cd92f4368117562d99547e6"
+      }
+    ],
+    "scope": "Frontend assets under app/src/fonts, copied by the Vite build into the frontend bundle embedded in the application executable. They are not part of the mapped resources/ directories; the license and provenance files are."
+  },
   "resourceInventory": {
     "path": "resource-inventory.json",
     "scope": "Exact current mapped tools/7zip and licenses source resources, excluding inventory self to avoid a circular checksum. The main application executable and generated NSIS executable require separate final build/checksums."
