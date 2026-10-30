@@ -2,13 +2,13 @@
 .ai-settings .ai-entry {display:flex;align-items:center;gap:10px;width:100%;min-width:0;text-align:left;background:transparent;border-color:transparent;}
 .ai-settings .ai-entry[aria-selected="true"] {background:var(--control);border-color:var(--accent);}
 .ai-settings .ai-entry-provider {flex:0 1 130px;overflow:hidden;text-overflow:ellipsis;}
-.ai-settings .ai-entry-model {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:12px;}
+.ai-settings .ai-entry-model {flex:1;min-width:40px;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:12px;}
 .ai-settings .ai-entry-saved {flex:none;color:var(--positive);}
 .ai-settings .ai-entry-empty {padding:8px;color:var(--muted);font-size:12px;}
 .ai-settings .ai-add {color:var(--positive);}
 .ai-settings .ai-editor {margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
 .ai-settings .ai-scopes {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px;margin-top:12px;}
-.ai-settings .ai-scopes label {display:flex;align-items:center;gap:7px;min-width:0;font-size:12px;}
+.ai-settings .ai-scopes label {display:flex;align-items:center;gap:7px;min-width:0;font-size:12px;overflow-wrap:anywhere;}
 .ai-settings .ai-scopes input {flex:none;}
 .ai-settings .ai-key-label {display:block;color:var(--muted);font-size:12px;margin-bottom:6px;}
 .ai-settings .ai-status {margin-top:10px;font-size:12px;overflow-wrap:anywhere;}
