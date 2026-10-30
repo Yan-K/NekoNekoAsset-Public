@@ -173,7 +173,12 @@ jobs:
             windows-2022-rust-1.99.0-tests-v2-${{ hashFiles('app/src-tauri/Cargo.lock') }}-
             windows-2022-rust-1.99.0-tests-v2-
       - name: Run existing Rust tests
-        run: cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml
+        run: |
+          cargo test --locked --lib --manifest-path app/src-tauri/Cargo.toml | Tee-Object -Variable output
+          $code = $LASTEXITCODE
+          # Step logs need sign-in; name failed tests in public annotations.
+          $output | Select-String -Pattern '^test (\S+) \.\.\. FAILED' | ForEach-Object { Write-Output "::error title=Rust test failed::$($_.Matches[0].Groups[1].Value)" }
+          exit $code
 
   bridge:
     needs: prepare
