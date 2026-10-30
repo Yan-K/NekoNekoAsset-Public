@@ -1357,6 +1357,7 @@ pub struct Catalogue {
     document_cache: Arc<Mutex<Option<automerge::AutoCommit>>>,
     document_preparation: Arc<Mutex<()>>,
     exchange_cache: Arc<Mutex<Option<(PathBuf, u64, Vec<String>)>>>,
+    list_snapshot: Arc<Mutex<query::ListSnapshot>>,
     worker: Arc<worker::Worker>,
     is_sync_worker: bool,
 }
@@ -1709,6 +1710,7 @@ impl Catalogue {
             document_cache: Arc::new(Mutex::new(None)),
             document_preparation: Arc::new(Mutex::new(())),
             exchange_cache: Arc::new(Mutex::new(None)),
+            list_snapshot: Arc::new(Mutex::new(query::ListSnapshot::default())),
             worker: Arc::new(worker::Worker::default()),
             is_sync_worker: false,
         };
@@ -2939,6 +2941,14 @@ impl Catalogue {
                     .inner
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+                // The list snapshot refreshes outside transactions; this lock keeps it consistent.
+                let (total, counts) = query::counts(
+                    &conn,
+                    &mut *self
+                        .list_snapshot
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+                )?;
                 let tx = conn.transaction()?;
                 let products = if args["includeProducts"] == false {
                     vec![]
@@ -2952,7 +2962,6 @@ impl Catalogue {
                 let bases = projection::bases(&tx)?;
                 let owned = crate::taxonomy::owned_base_options(&bases);
                 let avatar_options = avatars::options(&tx, &bases, &owned)?;
-                let (total, counts) = query::counts(&tx)?;
                 let result = json!({"version":1,"total":total,"counts":counts,"products":products,"accounts":rows(&tx,"account")?,"roots":self.display_roots(&tx)?,"jobs":rows(&tx,"job")?,"preferences":raw(&tx,"preferences","app")?,"collections":rows(&tx,"collection")?,"savedSearches":rows(&tx,"saved_search")?,"sourceCoverage":rows(&tx,"source_coverage")?,"conflicts":self.current_conflicts(&tx)?,"tagOptions":dictionary["tags"],"avatars":dictionary,"avatarOptions":avatar_options,"ownedBaseOptions":owned});
                 tx.commit()?;
                 Ok(result)
@@ -2999,6 +3008,10 @@ impl Catalogue {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
                 &args,
+                &mut *self
+                    .list_snapshot
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             ),
             "overlay" => self.edit_overlay(args),
             "undo" => self.undo(

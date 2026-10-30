@@ -166,6 +166,54 @@ fn hidden_products_filter_before_paging_selection_counts_and_collections() {
 }
 
 #[test]
+fn list_snapshot_follows_product_changes_and_skips_known_summaries() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    product(&c, "a", "booth");
+    product(&c, "b", "booth");
+    product(&c, "c", "local");
+    let query = |extra: Value| {
+        let mut args = json!({"sort":"title","includeFiles":false,"presentation":"list","allSummaries":true});
+        for (key, value) in extra.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        c.command("query", args).unwrap()
+    };
+    let legacy = query(json!({}));
+    assert!(legacy.get("fingerprints").is_none());
+    assert_eq!(legacy["products"].as_array().unwrap().len(), 3);
+    let first = query(json!({"knownSummaries":{}}));
+    let known = first["fingerprints"].clone();
+    assert_eq!(first["matchedIds"], json!(["a", "b", "c"]));
+    assert_eq!(known.as_object().unwrap().len(), 3);
+    assert_eq!((&first["counts"]["all"], &first["counts"]["hidden"]), (&json!(3), &json!(0)));
+    let unchanged = query(json!({"knownSummaries":known}));
+    assert_eq!(unchanged["matchedIds"], json!(["a", "b", "c"]));
+    assert_eq!(unchanged["products"], json!([]));
+    assert_eq!(unchanged["fingerprints"], json!({}));
+
+    // Hiding changes the products revision, so filters and counts cannot reuse the old copy.
+    hide(&c, &["a"], true);
+    let visible = query(json!({"knownSummaries":known}));
+    assert_eq!(visible["matchedIds"], json!(["b", "c"]));
+    assert_eq!(visible["products"], json!([]));
+    assert_eq!((&visible["counts"]["all"], &visible["counts"]["hidden"]), (&json!(2), &json!(1)));
+    let hidden = query(json!({"hiddenOnly":true,"knownSummaries":known}));
+    assert_eq!(hidden["matchedIds"], json!(["a"]));
+    assert_eq!(hidden["products"][0]["hidden"], true);
+    assert_ne!(hidden["fingerprints"]["a"], known["a"]);
+    // A different account scope never reuses another scope's summary.
+    let local = query(json!({"accountIds":[],"includeOffline":true,"knownSummaries":known}));
+    assert_eq!(local["matchedIds"], json!(["c"]));
+    assert_eq!(local["products"][0]["id"], "c");
+
+    hide(&c, &["a"], false);
+    let restored = query(json!({"knownSummaries":known}));
+    assert_eq!(restored["matchedIds"], json!(["a", "b", "c"]));
+    assert_eq!(restored["counts"]["hidden"], 0);
+}
+
+#[test]
 fn hidden_choice_survives_three_store_refresh_ai_reopen_and_restore() {
     let fixture = Fixture::new();
     let c = fixture.open();

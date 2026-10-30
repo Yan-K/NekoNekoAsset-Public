@@ -122,7 +122,7 @@ export default function App(){
  const jobs=useMemo(()=>new Map(nativeState.jobs.filter(j=>['download','storage:import_local'].includes(j.type)&&['queued','running'].includes(j.state)).flatMap(j=>[...new Set([j.productId,...(j.productIds??[])].filter((id):id is string=>!!id))].map(id=>[id,j] as const))),[nativeState.jobs]);
  const [queryResult,setQueryResult]=useState<{products:Product[];matchedIds:string[];total:number;allDownloaded?:boolean;key:string}|null>(null),[queryBusy,setQueryBusy]=useState(false),[failedQueryKey,setFailedQueryKey]=useState('');
  const queryResultRef=useRef(queryResult);queryResultRef.current=queryResult;
- const queryTask=useRef<(()=>Promise<void>)|null>(null),queryMounted=useRef(false);
+ const queryTask=useRef<(()=>Promise<void>)|null>(null),queryMounted=useRef(false),summaryCache=useRef(new Map<string,{fingerprint:string;product:Product}>());
  useEffect(()=>{queryMounted.current=true;return()=>{queryMounted.current=false;};},[]);
  const q=(key:string)=>resetErrorText(locale,key)||((key.startsWith('UNITY_')||key.startsWith('unity_'))?unityError(locale,key):undefined)||uxText(locale,key)||(key.startsWith('ai_')||key==='AI_INPUT_STALE'?nativeWorkflowText(locale,key):nativeErrorText(locale,key)||shellText(locale,key)||t(locale,key)),notify=(message:string)=>setNotice(message);
  const eventText=useRef(q);eventText.current=q;
@@ -140,7 +140,7 @@ export default function App(){
   // Native selection has committed. Retain the setup draft and the new
   // candidate or library if its bootstrap fails, then retry that selection.
   activated=true;initialLoad.current=true;reloadSequence.current++;libraryEpoch.current++;libraryRefreshPending.current=true;
-  setLibraryReady(false);setNativeState(emptyState);setAccounts([]);setProducts([]);setQueryResult(null);setQueryBusy(false);setFailedQueryKey('');
+  setLibraryReady(false);setNativeState(emptyState);setAccounts([]);setProducts([]);summaryCache.current.clear();setQueryResult(null);setQueryBusy(false);setFailedQueryKey('');
   applyLibraryStatus({state:'unconfigured',path,defaultPath:path,locale});await reload();setLibraryOpening(false);
  }}catch(error){if(!activated){if(previous?.state==='ready'||previous?.state==='setup'||previous?.state==='unconfigured')applyLibraryStatus(previous);else{blockedLibraryRequest.current={path,newLibrary};applyLibraryStatus({state:'blocked',path,errorCode:errorCode(error),locale});}}setLibraryOpening(false);throw error;}};
  const chooseLibrary=async()=>{setLibraryOpening(true);try{const selected=await nativeDialog('folder',{defaultPath:libraryStateRef.current?.path});if(selected?.path)await openSelectedLibrary(selected.path,true);else setLibraryOpening(false);}catch(error){setLibraryOpening(false);if(libraryStateRef.current?.state!=='blocked')applyLibraryStatus({state:'blocked',path:libraryStateRef.current?.path,errorCode:errorCode(error),locale});}};
@@ -174,22 +174,27 @@ export default function App(){
  const clearFilters=()=>{setQuery({...fresh,sensitive:query.sensitive});setSort('acquired');setDirection('desc');setCollection('');setSavedScope(null);clearSelection();};
  const changeSort=(value:string)=>{setSort(value);setDirection(defaultSortDirection(value));setSavedScope(null);clearSelection();};
  const selectedCollectionKey=collectionQueryKey(committedCollections,collection);
- const queryKey=JSON.stringify({query,collection,sort,direction,locale}),accountScopeKey=JSON.stringify(query.accountIds===null?null:[...new Set(query.accountIds)].sort());const filtered=queryResult?.key===queryKey?queryResult.products:[];const matchedIds=queryResult?.key===queryKey?queryResult.matchedIds:[];
+ const queryKey=JSON.stringify({query,collection,sort,direction}),accountScopeKey=JSON.stringify(query.accountIds===null?null:[...new Set(query.accountIds)].sort());const filtered=queryResult?.key===queryKey?queryResult.products:[];const matchedIds=queryResult?.key===queryKey?queryResult.matchedIds:[];
  // A changed search, filter or sort has no rows until its query answers: show progress, never "no results".
  const resultsPending=!loaded||libraryState?.state==='ready'&&!loadingError&&queryResult?.key!==queryKey&&failedQueryKey!==queryKey;
  // Product events can share a result; changed filters or collection membership cannot.
  const queryIdentity=JSON.stringify([queryKey,selectedCollectionKey]);
- const queryRequest=useRef({identity:queryIdentity,epoch:0,key:queryKey,args:{...query,hiddenOnly:query.quick==='hidden',collectionId:committedCollections.find(c=>c.name===collection)?.id,sort,direction,locale,limit:10000,includeFiles:false,presentation:'list',allSummaries:true},onError:(error:unknown)=>notify(q(errorCode(error)))});
- queryRequest.current={identity:queryIdentity,epoch:queryRequest.current.epoch+(queryRequest.current.identity===queryIdentity?0:1),key:queryKey,args:{...query,hiddenOnly:query.quick==='hidden',collectionId:committedCollections.find(c=>c.name===collection)?.id,sort,direction,locale,limit:10000,includeFiles:false,presentation:'list',allSummaries:true},onError:(error:unknown)=>notify(q(errorCode(error)))};
+ const queryRequest=useRef({identity:queryIdentity,epoch:0,key:queryKey,args:{...query,hiddenOnly:query.quick==='hidden',collectionId:committedCollections.find(c=>c.name===collection)?.id,sort,direction,limit:10000,includeFiles:false,presentation:'list',allSummaries:true},onError:(error:unknown)=>notify(q(errorCode(error)))});
+ queryRequest.current={identity:queryIdentity,epoch:queryRequest.current.epoch+(queryRequest.current.identity===queryIdentity?0:1),key:queryKey,args:{...query,hiddenOnly:query.quick==='hidden',collectionId:committedCollections.find(c=>c.name===collection)?.id,sort,direction,limit:10000,includeFiles:false,presentation:'list',allSummaries:true},onError:(error:unknown)=>notify(q(errorCode(error)))};
  if(!queryTask.current)queryTask.current=coalescedRefresh(async()=>{
   if(!queryMounted.current||!initialLoad.current||libraryStateRef.current?.state!=='ready'||libraryRefreshPending.current)return;
   const request=queryRequest.current,epoch=libraryEpoch.current,hasCurrent=queryResultRef.current?.key===request.key;
   const current=()=>queryMounted.current&&request.epoch===queryRequest.current.epoch&&epoch===libraryEpoch.current&&!libraryRefreshPending.current;
   try{
-   const result=await invokeAction<{products:Product[];matchedIds:string[];total:number;allDownloaded:boolean;counts:{all:number;downloaded:number;attention:number;hidden?:number}}>('catalogue','query',request.args);
+   // Native returns only summaries whose fingerprint differs from this cache.
+   const knownSummaries=Object.fromEntries(Array.from(summaryCache.current,([id,entry])=>[id,entry.fingerprint]));
+   const result=await invokeAction<{products:Product[];fingerprints?:Record<string,string>;matchedIds:string[];total:number;allDownloaded:boolean;counts:{all:number;downloaded:number;attention:number;hidden?:number}}>('catalogue','query',{...request.args,knownSummaries});
+   if(epoch!==libraryEpoch.current)return;
+   for(const product of result.products)summaryCache.current.set(product.id,{fingerprint:result.fingerprints?.[product.id]??'',product});
    if(!current())return;
-   setQueryResult({...result,key:request.key});setFailedQueryKey('');setCatalogueTotal(result.total);setCatalogueCounts(result.counts);
-   setProducts(old=>{const cache=new Map(old.map(product=>[product.id,product]));for(const product of result.products)cache.set(product.id,product);return [...cache.values()];});
+   const products=result.matchedIds.flatMap(id=>{const product=summaryCache.current.get(id)?.product;return product?[product]:[];});
+   setQueryResult({...result,products,key:request.key});setFailedQueryKey('');setCatalogueTotal(result.total);setCatalogueCounts(result.counts);
+   if(result.products.length)setProducts(old=>{const cache=new Map(old.map(product=>[product.id,product]));for(const product of result.products)cache.set(product.id,product);return [...cache.values()];});
   }catch(error){if(current()){if(!hasCurrent)setQueryResult(null);setFailedQueryKey(request.key);request.onError(error);}}
   finally{if(current())setQueryBusy(false);}
  });
@@ -218,7 +223,7 @@ export default function App(){
  const deleteLocalProducts=async(ids:string[])=>{
   try{
    const result=await onNative('storage','delete_local_products',{productIds:ids}) as {deletedProductIds:string[]};
-   const removed=new Set(result.deletedProductIds);
+   const removed=new Set(result.deletedProductIds);for(const id of removed)summaryCache.current.delete(id);
    setQueryResult(result=>result?{...result,products:result.products.filter(product=>!removed.has(product.id)),matchedIds:result.matchedIds.filter(id=>!removed.has(id)),total:Math.max(0,result.total-removed.size)}:null);
    setProducts(rows=>rows.filter(product=>!removed.has(product.id)));setSelected(rows=>rows.filter(id=>!removed.has(id)));setFocusId(id=>removed.has(id)?'':id);setProductDetails(null);setUndo(null);
   }finally{await reload();}
@@ -259,7 +264,7 @@ export default function App(){
    if(categoryKeys.some(key=>key===product.category))updateQuery({category:product.category});
   }).catch(error=>notify(q(errorCode(error))));
  },[nativeState.jobs,locale,flow]);
- useEffect(()=>{if(!initialLoad.current)return;setQueryBusy(queryResultRef.current?.key!==queryKey);void queryTask.current!();},[snapshotVersion,selectedCollectionKey,query,sort,direction,locale,collection]);
+ useEffect(()=>{if(!initialLoad.current)return;setQueryBusy(queryResultRef.current?.key!==queryKey);void queryTask.current!();},[snapshotVersion,selectedCollectionKey,query,sort,direction,collection]);
  useEffect(()=>{if(!activeSummary){setProductDetails(null);return;}let current=true;void invokeAction<Product>('catalogue','product_details',{id:activeSummary.id,accountIds:JSON.parse(accountScopeKey)}).then(product=>{if(current)setProductDetails({key:detailsKey,product});}).catch(error=>{if(current)notify(q(errorCode(error)));});return()=>{current=false;};},[activeSummary?.id,accountScopeKey,snapshotVersion]); useEffect(()=>{if(!active||active.filesLoaded===false){setAvailability(null);return;}let current=true;void invokeAction<{folderAvailable:boolean;openableFileIds:string[]}>('storage','product_availability',{productId:active.id}).then(result=>{if(current)setAvailability({...result,key:availabilityKey});}).catch(()=>{if(current)setAvailability(null);});return()=>{current=false;};},[availabilityKey]); useEffect(()=>{document.documentElement.lang=locale;},[locale]);
  useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(''),5000);return()=>clearTimeout(timer);},[notice]);
  useEffect(()=>{if(flow||dialog)setNotice('');},[flow,dialog]);
