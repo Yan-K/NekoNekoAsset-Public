@@ -109,6 +109,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .product-card:hover .thumb > input, .product-card.selected .thumb > input, .product-card:focus-within .thumb > input { opacity: 1; }
 .product-card .thumb > .badge { position: absolute; right: 7px; bottom: 7px; background: #202020db; color: #f0f0f0; border: 0; backdrop-filter: blur(5px); }
 .asset-art { width: 100%; height: 100%; display: block; object-fit: cover; }
+/* A cover crop inside the image makes WebView2 sample the full-size original without mipmaps (jagged); the clipping thumbnail box crops instead. */
+img.asset-art { overflow: visible; }
 .asset-art.sensitive { filter: blur(12px); transform: scale(1.08); }
 .product-info { padding: 9px 9px 8px; min-width: 0; }
 .product-title { font-size: 12px; font-weight: 600; line-height: 1.45; min-height: 34px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }

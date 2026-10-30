@@ -75,7 +75,7 @@
 
 .editor-url-control{display:flex;gap:8px;min-width:0;}.editor-url-control>input{flex:1;min-width:0;width:0;}.editor-url-control>button{flex-shrink:0;}
 .editor-url-control>button[aria-busy="true"],.editor-thumbnail-actions>button[aria-busy="true"]{opacity:1;color:var(--text);cursor:wait;}
-.editor-thumbnail-preview>img{width:100%;height:100%;object-fit:cover;}
+.editor-thumbnail-preview>img{width:100%;height:100%;object-fit:cover;overflow:visible;}
 .editor-thumbnail-bottom{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-top:12px;}
 .editor-thumbnail-actions{display:flex;gap:8px;}
 .editor-sensitive-toggle{margin-left:auto;cursor:pointer;}
