@@ -126,9 +126,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Missing Tauri updater signing key secret.' }
-          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci -- --timings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Annotations stay public without sign-in, unlike step logs.
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { Write-Output '::error::Missing Tauri updater signing key secret.'; exit 1 }
+          # Call the CLI shim directly so `--` reaches Tauri; without it Tauri rejects --timings before building.
+          & ./node_modules/.bin/tauri.cmd build --target x86_64-pc-windows-msvc --bundles nsis --ci -- --timings
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::Tauri build exited with code $LASTEXITCODE."; exit $LASTEXITCODE }
       - name: Collect installer and signature only
         run: python scripts/release.py collect-app --bundle app/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis --output build/release-app
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
