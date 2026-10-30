@@ -95,6 +95,46 @@ impl SupportPages {
         true
     }
 }
+/// A product's public request that fails transiently gets one later attempt
+/// after the queue drains; a repeated failure ends that round.
+#[derive(Default)]
+struct PublicRetry {
+    deferred: std::collections::VecDeque<(PublicRequest, String)>,
+    retrying: bool,
+}
+impl PublicRetry {
+    /// Observations to settle now; a first transient failure is held back.
+    fn settle(
+        &mut self,
+        request: PublicRequest,
+        result: Result<Value, String>,
+    ) -> Vec<(String, Result<Value, String>)> {
+        let code = match result {
+            Err(code) if matches!(code.as_str(), "NETWORK_UNAVAILABLE" | "PUBLIC_METADATA_FAILED") => code,
+            result => return vec![(request.product, result)],
+        };
+        if !self.retrying {
+            self.deferred.push_back((request, code));
+            return vec![];
+        }
+        // Still failing after the pause: settle the rest without more requests.
+        std::iter::once((request.product, Err(code)))
+            .chain(self.deferred.drain(..).map(|(request, code)| (request.product, Err(code))))
+            .collect()
+    }
+    fn next(&mut self) -> Option<PublicRequest> {
+        self.retrying = true;
+        self.deferred.pop_front().map(|(request, _)| request)
+    }
+}
+/// Incremental syncs read public metadata only for products without a settled
+/// observation. A canonical 404/410 settles removal until a Full sync rereads it.
+fn public_refresh_needed(product: Option<&Value>) -> bool {
+    product.is_none_or(|p| {
+        p["publicMetadataObservedAt"].is_null() && p["publicPageAvailability"] != "unavailable"
+            || p["publicMetadataState"] == "incomplete"
+    })
+}
 impl PublicPrefetch {
     fn enqueue_once(&self, product: &str) -> Result<bool> {
         let mut enqueued = self
@@ -1422,10 +1462,9 @@ impl BoothService {
                     if let Some(id) = &row.product_id {
                         checkpoint.product_ids.insert(id.clone());
                         if mode != "incremental"
-                            || self.inner.catalogue.get("product", id)?.is_none_or(|p| {
-                                p["publicMetadataObservedAt"].is_null()
-                                    || p["publicMetadataState"] == "incomplete"
-                            })
+                            || public_refresh_needed(
+                                self.inner.catalogue.get("product", id)?.as_ref(),
+                            )
                         {
                             checkpoint.enrichment_pending.insert(id.clone());
                         }
@@ -2044,46 +2083,62 @@ impl BoothService {
         results: mpsc::UnboundedSender<(String, Result<Value, String>)>,
         support_pages: &Arc<Mutex<SupportPages>>,
     ) -> Result<()> {
+        let observe = move |request: PublicRequest| async move {
+            let id = request.product.clone();
+            let draft_id = request.draft_id();
+            let mut draft = request.draft.clone();
+            let saved = self.inner.catalogue.get("checkpoint", &draft_id)?
+                .and_then(|saved| request.saved_product(&saved));
+            let outcome = if let Some(saved) = saved {
+                draft = saved;
+                Ok(())
+            } else {
+                self.enrich_into(client, &id, &mut draft, Some(support_pages)).await
+            };
+            let result = outcome.map(|_| public_patch(&request.draft, &draft))
+                .map_err(|error| super::code(&error));
+            // Current-run parsed product draft only; never publish it here.
+            // Completed public requests survive cancellation/restart.
+            self.save_product_draft(&draft_id,
+                json!({"id":draft_id,"accountId":request.account,"source":request.source,
+                    "runId":request.run_id,"productId":id,"product":draft,
+                    "enriched":result.is_ok(),"errorCode":result.as_ref().err()}))?;
+            // Exhausted server throttling stops the whole pipeline;
+            // do not advance immediately to another product request.
+            if result.as_ref().err().is_some_and(|code| code == "RATE_LIMITED") {
+                bail!("RATE_LIMITED");
+            }
+            Ok::<_, anyhow::Error>((request, result))
+        };
         let mut seen = BTreeSet::new();
         let mut workers = FuturesUnordered::new();
+        let mut retry = PublicRetry::default();
         let mut closed = false;
         loop {
             if closed && workers.is_empty() {
-                return Ok(());
+                if retry.deferred.is_empty() || results.is_closed() {
+                    return Ok(());
+                }
+                if !retry.retrying {
+                    // Let a dropped connection or brief outage recover first.
+                    for _ in 0..30 {
+                        if self.cancelled(job)? {
+                            bail!("CANCELLED");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+                if let Some(request) = retry.next() {
+                    workers.push(observe(request));
+                }
+                continue;
             }
             tokio::select! {
                 request = requests.recv(), if !closed && workers.len() < 2 => {
                     match request {
                         Some(request) if seen.insert(request.product.clone()) => {
                             if seen.len() > 10000 { bail!("SOURCE_TRAVERSAL_LIMIT"); }
-                            workers.push(async move {
-                                let id = request.product.clone();
-                                let draft_id = request.draft_id();
-                                let before = request.draft.clone();
-                                let mut draft = request.draft.clone();
-                                let saved = self.inner.catalogue.get("checkpoint", &draft_id)?
-                                    .and_then(|saved| request.saved_product(&saved));
-                                let outcome = if let Some(saved) = saved {
-                                    draft = saved;
-                                    Ok(())
-                                } else {
-                                    self.enrich_into(client, &id, &mut draft, Some(support_pages)).await
-                                };
-                                let result = outcome.map(|_| public_patch(&before, &draft))
-                                    .map_err(|error| super::code(&error));
-                                // Current-run parsed product draft only; never publish it here.
-                                // Completed public requests survive cancellation/restart.
-                                self.save_product_draft(&draft_id,
-                                    json!({"id":draft_id,"accountId":request.account,"source":request.source,
-                                        "runId":request.run_id,"productId":id,"product":draft,
-                                        "enriched":result.is_ok(),"errorCode":result.as_ref().err()}))?;
-                                // Exhausted server throttling stops the whole pipeline;
-                                // do not advance immediately to another product request.
-                                if result.as_ref().err().is_some_and(|code| code == "RATE_LIMITED") {
-                                    bail!("RATE_LIMITED");
-                                }
-                                Ok::<_, anyhow::Error>((id, result))
-                            });
+                            workers.push(observe(request));
                         }
                         Some(_) => {},
                         None => closed = true,
@@ -2091,13 +2146,15 @@ impl BoothService {
                 }
                 result = workers.next(), if !workers.is_empty() => {
                     if let Some(result) = result {
-                        let result = result?;
-                        {
-                            let mut early = early.lock().map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-                            early.observations.insert(result.0.clone(),result.1.clone());
-                            self.publish_early(app,job,&mut early,Some(&BTreeSet::from([result.0.clone()])))?;
+                        let (request, result) = result?;
+                        for (product, result) in retry.settle(request, result) {
+                            {
+                                let mut early = early.lock().map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+                                early.observations.insert(product.clone(), result.clone());
+                                self.publish_early(app,job,&mut early,Some(&BTreeSet::from([product.clone()])))?;
+                            }
+                            if results.send((product, result)).is_err() { return Ok(()); }
                         }
-                        if results.send(result).is_err() { return Ok(()); }
                     }
                 }
             }
@@ -2349,7 +2406,7 @@ impl BoothService {
             .filter(|id| publication_entries(publications, id).any(|e| e.needs_enrichment))
             .cloned()
             .collect();
-        let mut error_code = None;
+        let mut public_failed = false;
         let mut completed = total - pending.len();
         let mut published = published_product_count(publications);
         // This must also run when every prefetched observation is already done.
@@ -2420,8 +2477,8 @@ impl BoothService {
                         }
                     }
                 }
-                Err(code) => {
-                    error_code.get_or_insert(code);
+                Err(_) => {
+                    public_failed = true;
                     let keys: Vec<_> = publication_entries(publications, &product)
                         .map(|entry| entry.checkpoint_key.clone())
                         .collect();
@@ -2442,8 +2499,11 @@ impl BoothService {
             self.progress(app, job)?;
         }
         self.publish_collected(app, job, publications).await?;
-        if let Some(error_code) = error_code {
-            bail!(error_code);
+        // That product's public fields stay pending for the next sync; one
+        // failed public page does not turn committed account work into a
+        // whole-sync network failure.
+        if public_failed {
+            bail!("PUBLIC_METADATA_FAILED");
         }
         Ok(())
     }
@@ -7269,6 +7329,58 @@ mod tests {
         c.unresolved = 0;
         c.enrichment_pending.insert("900001".into());
         assert!(!c.complete());
+    }
+    #[test]
+    fn transient_public_failure_waits_for_one_later_attempt() {
+        let request = |product: &str| PublicRequest {
+            product: product.into(),
+            draft: json!({"id":product}),
+            account: "authored-account".into(),
+            source: "library".into(),
+            run_id: "authored-run".into(),
+        };
+        let failed = |code: &str| Err::<Value, String>(code.into());
+        let mut retry = PublicRetry::default();
+        assert_eq!(retry.settle(request("900001"), Ok(json!({"title":"Authored"}))).len(), 1);
+        assert_eq!(
+            retry.settle(request("900002"), failed("PUBLIC_METADATA_INVALID")),
+            vec![("900002".into(), failed("PUBLIC_METADATA_INVALID"))]
+        );
+        for (product, code) in [
+            ("900003", "NETWORK_UNAVAILABLE"),
+            ("900004", "PUBLIC_METADATA_FAILED"),
+            ("900005", "NETWORK_UNAVAILABLE"),
+        ] {
+            assert!(retry.settle(request(product), failed(code)).is_empty());
+        }
+        let next = retry.next().unwrap();
+        assert_eq!(next.product, "900003");
+        assert_eq!(retry.settle(next, Ok(json!({"title":"Recovered"}))).len(), 1);
+        // A repeated failure settles the rest without another request.
+        let next = retry.next().unwrap();
+        assert_eq!(next.product, "900004");
+        assert_eq!(
+            retry.settle(next, failed("NETWORK_UNAVAILABLE")),
+            vec![
+                ("900004".into(), failed("NETWORK_UNAVAILABLE")),
+                ("900005".into(), failed("NETWORK_UNAVAILABLE")),
+            ]
+        );
+        assert!(retry.next().is_none());
+    }
+    #[test]
+    fn incremental_public_refresh_skips_settled_and_removed_pages() {
+        assert!(public_refresh_needed(None));
+        for (product, needed) in [
+            (json!({"id":"900001"}), true),
+            (json!({"publicPageAvailability":"unknown"}), true),
+            (json!({"publicMetadataObservedAt":"2026-10-30T00:00:00Z","publicMetadataState":"complete"}), false),
+            (json!({"publicMetadataObservedAt":"2026-10-30T00:00:00Z","publicMetadataState":"incomplete"}), true),
+            (json!({"publicPageAvailability":"unavailable","publicMetadataErrorCode":"PUBLIC_METADATA_UNAVAILABLE"}), false),
+            (json!({"publicPageAvailability":"unavailable","publicMetadataState":"incomplete"}), true),
+        ] {
+            assert_eq!(public_refresh_needed(Some(&product)), needed, "{product}");
+        }
     }
     #[test]
     fn source_queue_numeric_not_lexical() {

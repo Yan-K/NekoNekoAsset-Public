@@ -191,18 +191,31 @@ impl MetadataHttp {
             }
             let mut body = Vec::new();
             let mut response = response;
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|error| {
-                    crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { "NETWORK_UNAVAILABLE" });
-                    anyhow::anyhow!("NETWORK_UNAVAILABLE")
-                })?
-            {
-                if body.len() + chunk.len() > 8 * 1024 * 1024 {
-                    bail!("METADATA_TOO_LARGE");
+            let interrupted = loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        if body.len() + chunk.len() > 8 * 1024 * 1024 {
+                            bail!("METADATA_TOO_LARGE");
+                        }
+                        body.extend_from_slice(&chunk);
+                    }
+                    Ok(None) => break false,
+                    Err(error) => {
+                        crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { "NETWORK_UNAVAILABLE" });
+                        break true;
+                    }
                 }
-                body.extend_from_slice(&chunk);
+            };
+            // A body cut off after its headers is the same transient failure
+            // as a dropped request, with the same bounded retry.
+            if interrupted {
+                if attempt < 2 {
+                    let wait = Duration::from_secs(2u64.pow(attempt + 1));
+                    crate::support_trace::backoff(&url, wait);
+                    self.defer(wait).await;
+                    continue;
+                }
+                bail!("NETWORK_UNAVAILABLE");
             }
             return Ok((
                 status,
