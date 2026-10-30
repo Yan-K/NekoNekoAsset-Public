@@ -335,6 +335,7 @@ fn row() -> parser::Row {
             size_bytes: Some(8),
             source_url: "https://booth.pm/downloadables/700001?variation_id=800001".into(),
             revision: "unknown".into(),
+            format: None,
         }],
         manifest_complete: true,
         ..Default::default()
@@ -948,4 +949,14 @@ fn one_process_owns_a_dataset() {
     let path = f.path.clone();
     drop(f);
     std::fs::remove_dir_all(path).unwrap();
+}
+#[test]
+fn download_route_adds_only_the_bound_variant_and_track_mp3_rendition() {
+    let file = |variant: Value, format: Value| json!({"sourceFileId":"700001","sourceUrl":"https://booth.pm/downloadables/700001","variantId":variant,"downloadFormat":format});
+    let route = |variant, format| download_route(&file(variant, format));
+    assert_eq!(route(Value::Null, Value::Null).unwrap(), "https://booth.pm/downloadables/700001");
+    assert_eq!(route(json!("800001"), Value::Null).unwrap(), "https://booth.pm/downloadables/700001?variation_id=800001");
+    assert_eq!(route(json!("800001"), json!("mp3")).unwrap(), "https://booth.pm/downloadables/700001?variation_id=800001&type=mp3");
+    assert_eq!(route(Value::Null, json!("mp3")).unwrap(), "https://booth.pm/downloadables/700001?type=mp3");
+    assert!(route(json!("800001"), json!("flac")).is_err());
 }

@@ -186,11 +186,19 @@ fn prefetch_file(value: &str) -> Option<String> {
     let id = (path.next()? == "downloadables").then(|| path.next()).flatten()?;
     safety::numeric(id).then(|| id.to_owned())
 }
-/// Format choices name one track file only when they all carry the same name.
-fn track_filename(node: ElementRef<'_>) -> Option<String> {
-    let mut names = dropdown_items(node)?.iter().map(|item| item["data"]["filename"].as_str().map(str::to_owned)).collect::<Option<BTreeSet<_>>>()?;
-    let name = names.pop_first().filter(|name| names.is_empty() && looks_filename(name))?;
-    Some(name.chars().take(4096).collect())
+/// The track's one MP3 choice names its file; without it the name stays unknown.
+fn track_download(node: ElementRef<'_>) -> Option<String> {
+    let names: Vec<_> = dropdown_items(node)?.iter().filter_map(|item| {
+        let path = url::Url::parse(item["path"].as_str()?).ok()?;
+        let name = item["data"]["filename"].as_str()?;
+        let mp3 = path.query_pairs().any(|(key, value)| key == "type" && value == safety::TRACK_FORMAT)
+            && name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(safety::TRACK_FORMAT));
+        mp3.then(|| name.chars().take(4096).collect::<String>())
+    }).collect();
+    match names.as_slice() {
+        [name] => Some(name.clone()),
+        _ => None,
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -201,6 +209,9 @@ pub struct File {
     pub size_bytes: Option<u64>,
     pub source_url: String,
     pub revision: String,
+    /// The one rendition requested from a multi-format downloadable (`type=`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -289,7 +300,8 @@ fn files(card: ElementRef<'_>, receipt: bool) -> Vec<File> {
         }
         // A track row's text is a title; only its format menu can name the file.
         let track = controls.iter().find(|(node, i, v, _)| *i == id && *v == variant && is_track(*node)).map(|(node, ..)| *node);
-        let mut name = track.and_then(track_filename);
+        let mut name = track.and_then(track_download);
+        let format = name.is_some().then(|| safety::TRACK_FORMAT.to_owned());
         let mut size_bytes = None;
         for scope in button.ancestors().filter_map(ElementRef::wrap).filter(|_| track.is_none()) {
             if !card.descendants().any(|n| n.id() == scope.id()) && scope.id() != card.id() {
@@ -377,6 +389,7 @@ fn files(card: ElementRef<'_>, receipt: bool) -> Vec<File> {
                 size_bytes,
                 source_url: route,
                 revision,
+                format,
             },
         );
     }
@@ -2179,6 +2192,7 @@ pub(super) struct FileStructureDiagnostics {
     modern_name_controls: usize,
     test_name_controls: usize,
     legacy_name_controls: usize,
+    track_name_controls: usize,
     unrecognized_entry_controls: usize,
     recognized_entries: usize,
     rows_all_entries_recognized: usize,
@@ -2212,7 +2226,7 @@ impl FileStructureDiagnostics {
         let mut evidence = Self::default();
         evidence.record(card, files);
         evidence.valid_controls > 0
-            && evidence.modern_name_controls == evidence.valid_controls
+            && evidence.modern_name_controls + evidence.track_name_controls == evidence.valid_controls
             && evidence.test_name_controls == 0
             && evidence.legacy_name_controls == 0
             && evidence.unrecognized_entry_controls == 0
@@ -2234,6 +2248,7 @@ impl FileStructureDiagnostics {
         let mut recognized = 0;
         let mut accepted_modern_names = vec![];
         let mut conflicting_entries = false;
+        let mut album = false;
         for (button, id, variant, _) in &controls {
             let mut found = None;
             for scope in button.ancestors().filter_map(ElementRef::wrap).take(4) {
@@ -2246,6 +2261,18 @@ impl FileStructureDiagnostics {
                     .collect();
                 if keys.len() != 1 {
                     break;
+                }
+                // A bound track menu names its own file; its row holds the
+                // alternate-app menu that bound it.
+                if is_track(*button) {
+                    if variant.is_some()
+                        && track_download(*button).is_some()
+                        && scope.select(&sel("[data-test='other-downloads-button']")).next().is_some()
+                    {
+                        found = Some((scope, 3, button.id()));
+                        break;
+                    }
+                    continue;
                 }
                 let test: Vec<_> = scope.select(&sel("[data-test='filename']")).collect();
                 let modern: Vec<_> = scope
@@ -2289,6 +2316,10 @@ impl FileStructureDiagnostics {
                         self.modern_name_controls += 1;
                         accepted_modern_names.push(name_id);
                     }
+                    3 => {
+                        self.track_name_controls += 1;
+                        album = true;
+                    }
                     _ => self.legacy_name_controls += 1,
                 }
                 let key = (id.clone(), variant.clone());
@@ -2306,12 +2337,14 @@ impl FileStructureDiagnostics {
         self.recognized_entries += entries.len();
         let all = !files.is_empty() && recognized == controls.len() && entries.len() == files.len();
         self.rows_all_entries_recognized += usize::from(all);
+        // Album track rows nest deeper than plain file rows; their file-only
+        // container is searched up to the card.
         let container = if all {
             entries.values().next().and_then(|first| {
                 first
                     .ancestors()
                     .filter_map(ElementRef::wrap)
-                    .take(4)
+                    .take(if album { usize::MAX } else { 4 })
                     .take_while(|n| n.id() != card.id())
                     .filter(|n| {
                         matches!(n.value().name(), "div" | "ul" | "ol" | "section")
@@ -2326,8 +2359,19 @@ impl FileStructureDiagnostics {
         } else {
             None
         };
-        self.rows_file_only_container += usize::from(container.is_some());
-        self.rows_card_only += usize::from(all && container.is_none());
+        // Album and plain file sections can be separate children of the card;
+        // then each section holding entries must itself be file-only.
+        let sections = all && album && container.is_none() && {
+            let sections: Vec<_> = card
+                .children()
+                .filter_map(ElementRef::wrap)
+                .filter(|child| entries.values().any(|entry| child.descendants().any(|d| d.id() == entry.id())))
+                .collect();
+            sections.iter().all(|section| links(*section).into_iter().all(|a| identity(a).is_none()))
+                && sections.iter().map(|section| downloads(*section, false).len()).sum::<usize>() == controls.len()
+        };
+        self.rows_file_only_container += usize::from(container.is_some() || sections);
+        self.rows_card_only += usize::from(all && container.is_none() && !sections);
         self.rows_conflicting_entry_scopes += usize::from(conflicting_entries);
         // A same-product anchor can disqualify an outer wrapper while leaving a
         // smaller eligible container. Do not let it hide a sibling filename row.
@@ -2344,13 +2388,11 @@ impl FileStructureDiagnostics {
         );
         self.rows_expand_or_load_more+=usize::from(card.select(&sel("[data-test='load-more'],[data-test='show-more'],[data-test='more-downloadables'],button[aria-expanded='false']:not([data-test='other-downloads-button'])")).next().is_some());
         self.rows_variant_selector+=usize::from(card.select(&sel("[data-test='variation-select'],[data-test='variation-selector'],select[name='variation_id'],select[name='variation']")).next().is_some());
-        self.rows_unknown_dropdown += usize::from(
-            card.select(&sel(
-                "[data-dropdown-items]:not([data-test='other-downloads-button'])",
-            ))
-            .next()
-            .is_some(),
-        );
+        let tracks: BTreeSet<_> = controls.iter().filter(|(node, ..)| is_track(*node)).map(|(_, id, ..)| id.clone()).collect();
+        self.rows_unknown_dropdown += usize::from(card.select(&sel(dropdown_controls(false))).any(|node| {
+            !track_bundle(node, &tracks)
+                && !controls.iter().any(|(control, ..)| is_track(*control) && control.id() == node.id())
+        }));
         let mut advertised = vec![];
         for node in std::iter::once(card).chain(card.select(&sel(
             "[data-file-count],[data-downloadable-count],[data-total-count]",
@@ -4331,19 +4373,18 @@ mod tests {
         }
     }
     #[test]
-    fn multitrack_formats_resolve_one_bound_file_per_track() {
-        let formats = ["flac", "m4a", "mp3"];
+    fn multitrack_formats_resolve_one_bound_mp3_file_per_track() {
         let menu = |test: &str, items: Vec<serde_json::Value>| {
             format!("<div data-test='{test}' data-dropdown-items='{}'></div>", serde_json::to_string(&items).unwrap())
         };
-        let track = |file: &str, path: &str| {
+        let track = |formats: &[&str], file: &str, path: &str| {
             let download = menu("track-download-button", formats.iter().map(|kind| serde_json::json!(
                 {"text":kind,"path":format!("{path}?type={kind}"),"data":{"filename":format!("track-{file}.{kind}")}})).collect());
             let apps = menu("other-downloads-button", formats.iter().map(|kind| serde_json::json!(
                 {"text":"App","deeplinkDownloadableUrl":format!("https://booth.pm/downloadables/{file}/deeplink?variation_id=800001&client=booth-library-manager&type={kind}")})).collect());
             download + &apps
         };
-        let album = |zipped: &[&str]| {
+        let album = |formats: &[&str], zipped: &[&str]| {
             let zip = menu("zipped-download-button", formats.iter().map(|kind| serde_json::json!(
                 {"text":kind,"basename":"authored-album","zippedFiles":zipped.iter().map(|file| serde_json::json!(
                     {"filename":format!("track-{file}.{kind}"),"prefetchUrl":format!("https://booth.pm/downloadables/{file}/archive-part?type={kind}"),"url":""})).collect::<Vec<_>>()})).collect());
@@ -4351,10 +4392,10 @@ mod tests {
                 {"text":"App","deeplinkDownloadableUrl":format!("https://booth.pm/downloadables/700001/deeplink?variation_id=800001&client=booth-library-manager&type={kind}&download_scope=album")})).collect());
             zip + &apps
         };
-        let pages = |paths: [&str; 2], zipped: &[&str]| {
-            let (mut library, mut receipt) = (album(zipped), album(zipped));
+        let pages = |formats: &[&str], paths: [&str; 2], zipped: &[&str]| {
+            let (mut library, mut receipt) = (album(formats, zipped), album(formats, zipped));
             for (file, path) in ["700001", "700002"].into_iter().zip(paths) {
-                let controls = track(file, path);
+                let controls = track(formats, file, path);
                 library.push_str(&format!("<div class='mt-16'><div class='flex gap-4 items-center'><div class='break-all text-14 text-text-default'>Track title {file}</div></div><div class='flex'>{controls}</div></div>"));
                 receipt.push_str(&format!("<div class='legacy-list-item'><div class='min-w-0'><b>Track title {file}</b></div>{controls}</div>"));
             }
@@ -4363,18 +4404,29 @@ mod tests {
                 parse(&format!("<main><div class='sheet'><a href='https://invented.booth.pm/items/900001'>Authored album</a><div class='u-mb-300'>{receipt}</div></div></main>"), "purchase", "/orders/910001").unwrap(),
             ]
         };
+        let formats = ["flac", "m4a", "mp3"];
         let tracks = ["https://booth.pm/downloadables/700001", "https://booth.pm/downloadables/700002"];
-        for page in pages(tracks, &["700001", "700002"]) {
+        for page in pages(&formats, tracks, &["700001", "700002"]) {
             assert_eq!(page.unresolved, 0);
             assert_eq!(page.rows[0].error_code, None);
             let files: Vec<_> = page.rows[0].files.iter().map(|file| (file.id.as_str(), file.variant_id.as_deref())).collect();
             assert_eq!(files, [("700001", Some("800001")), ("700002", Some("800001"))]);
-            // Each format names its own file, so the track filename stays unknown.
-            assert!(page.rows[0].files.iter().all(|file| file.name.is_none() && file.source_url.ends_with("?variation_id=800001")));
+            for file in &page.rows[0].files {
+                assert_eq!(file.name, Some(format!("track-{}.mp3", file.id)));
+                assert_eq!(file.format.as_deref(), Some("mp3"));
+                assert!(file.source_url.ends_with("?variation_id=800001"));
+            }
+            assert!(page.rows[0].manifest_complete);
+        }
+        // Without an MP3 choice the same files stay unnamed and uncertified.
+        for page in pages(&["flac", "m4a"], tracks, &["700001", "700002"]) {
+            assert_eq!(page.rows[0].error_code, None);
+            assert_eq!(page.rows[0].files.len(), 2);
+            assert!(page.rows[0].files.iter().all(|file| file.name.is_none() && file.format.is_none()));
             assert!(!page.rows[0].manifest_complete);
         }
-        let outside_zip = pages(tracks, &["700001", "700009"]);
-        let unknown_format = pages([tracks[0], "https://example.invalid/downloadables/700002"], &["700001", "700002"]);
+        let outside_zip = pages(&formats, tracks, &["700001", "700009"]);
+        let unknown_format = pages(&formats, [tracks[0], "https://example.invalid/downloadables/700002"], &["700001", "700002"]);
         for page in outside_zip.into_iter().chain(unknown_format) {
             assert_eq!(page.rows[0].error_code.as_deref(), Some("DIGITAL_CONTROLS_UNRESOLVED"));
         }

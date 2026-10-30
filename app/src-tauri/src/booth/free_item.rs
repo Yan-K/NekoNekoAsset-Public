@@ -658,6 +658,7 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
                         size_bytes: None,
                         source_url,
                         revision: "unknown".into(),
+                        format: None,
                     },
                 );
             }

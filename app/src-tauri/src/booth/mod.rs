@@ -67,6 +67,31 @@ pub fn validate_download_response(response: &reqwest::Response) -> Result<()> {
     }
     Ok(())
 }
+/// Unsigned route for one catalogue file: its bound variant and, for an audio
+/// track, the MP3 rendition.
+fn download_route(file: &Value) -> Result<String> {
+    let id = field(file, "sourceFileId")?;
+    let (resolver_id, _, _) = safety::resolver(field(file, "sourceUrl")?)
+        .ok_or_else(|| anyhow::anyhow!("INVALID_RESOLVER"))?;
+    let variant = file["variantId"].as_str();
+    let format = file["downloadFormat"].as_str();
+    if !safety::numeric(id)
+        || resolver_id != id
+        || variant.is_some_and(|v| !safety::numeric(v))
+        || format.is_some_and(|f| f != safety::TRACK_FORMAT)
+    {
+        bail!("INVALID_RESOLVER");
+    }
+    let query: Vec<_> = variant
+        .map(|v| format!("variation_id={v}"))
+        .into_iter()
+        .chain(format.map(|f| format!("type={f}")))
+        .collect();
+    Ok(format!(
+        "https://booth.pm/downloadables/{id}{}",
+        if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) }
+    ))
+}
 #[derive(Clone)]
 pub struct BoothService {
     inner: Arc<Inner>,
@@ -1118,20 +1143,7 @@ impl BoothService {
             .get("remote_file", file_id)?
             .ok_or_else(|| anyhow::anyhow!("FILE_UNAVAILABLE"))?;
         let account = field(&file, "accountId")?;
-        let id = field(&file, "sourceFileId")?;
-        let (resolver_id, _, _) = safety::resolver(field(&file, "sourceUrl")?)
-            .ok_or_else(|| anyhow::anyhow!("INVALID_RESOLVER"))?;
-        let variant = file["variantId"].as_str();
-        if !safety::numeric(id) || resolver_id != id || variant.is_some_and(|v| !safety::numeric(v))
-        {
-            bail!("INVALID_RESOLVER");
-        }
-        let route = format!(
-            "https://booth.pm/downloadables/{id}{}",
-            variant
-                .map(|v| format!("?variation_id={v}"))
-                .unwrap_or_default()
-        );
+        let route = download_route(&file)?;
         let client = self.client(app, account, true).await?;
         // Resolve anew for each attempt; signed destinations are never catalogue fields.
         let response = self

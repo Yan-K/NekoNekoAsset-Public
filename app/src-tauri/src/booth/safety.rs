@@ -115,6 +115,9 @@ pub(super) fn free_item_route(id: &str) -> Result<String> {
     }
     Ok(format!("https://booth.pm/ja/items/{id}"))
 }
+/// Audio tracks are kept as MP3, which Unity imports directly; it is the only
+/// rendition a download route may request.
+pub const TRACK_FORMAT: &str = "mp3";
 pub fn resolver(value: &str) -> Option<(String, Option<String>, String)> {
     let url = Url::parse(value).ok()?;
     if !secure(&url) || url.host_str()? != "booth.pm" {
@@ -124,12 +127,13 @@ pub fn resolver(value: &str) -> Option<(String, Option<String>, String)> {
     if !numeric(id) {
         return None;
     }
-    let mut variant = None;
+    let (mut variant, mut format) = (None, false);
     for (key, value) in url.query_pairs() {
-        if key != "variation_id" || !numeric(&value) || variant.is_some() {
-            return None;
+        match key.as_ref() {
+            "variation_id" if numeric(&value) && variant.is_none() => variant = Some(value.into_owned()),
+            "type" if value == TRACK_FORMAT && !format => format = true,
+            _ => return None,
         }
-        variant = Some(value.into_owned());
     }
     let route = format!(
         "https://booth.pm/downloadables/{id}{}",
@@ -375,11 +379,15 @@ mod tests {
             "http://booth.pm/downloadables/1",
             "https://booth.pm.evil.test/downloadables/1",
             "https://booth.pm/downloadables/1?token=secret",
+            "https://booth.pm/downloadables/1?type=flac",
+            "https://booth.pm/downloadables/1?type=mp3&type=mp3",
             "https://user@booth.pm/downloadables/1",
             "https://booth.pm:444/downloadables/1",
         ] {
             assert!(resolver(value).is_none());
         }
+        let track = resolver("https://booth.pm/downloadables/32?variation_id=8&type=mp3").unwrap();
+        assert_eq!(track.2, "https://booth.pm/downloadables/32?variation_id=8");
         assert_eq!(
             resolver("https://booth.pm/downloadables/32?variation_id=8")
                 .unwrap()

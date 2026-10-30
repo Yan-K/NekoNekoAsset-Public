@@ -211,6 +211,7 @@ mod tests {
             size_bytes: Some(10),
             source_url: "https://booth.pm/downloadables/700001".into(),
             revision: "source:changed".into(),
+            format: None,
         });
         assert_eq!(t.observe(&page(vec![changed, row(3)])), None);
         assert_eq!(t.observe(&page(vec![row(4), row(5)])), Some(5));

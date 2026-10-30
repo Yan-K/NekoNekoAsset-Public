@@ -390,6 +390,7 @@ mod tests {
             "modernNameControls",
             "testNameControls",
             "legacyNameControls",
+            "trackNameControls",
             "unrecognizedEntryControls",
             "recognizedEntries",
             "rowsAllEntriesRecognized",

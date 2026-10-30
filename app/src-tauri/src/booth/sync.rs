@@ -3256,6 +3256,9 @@ impl BoothService {
             if let Some(token) = observation {
                 remote["sourceObservationToken"] = json!(token);
             }
+            if let Some(format) = &f.format {
+                remote["downloadFormat"] = json!(format);
+            }
             batch.stage("remote_file", &file_id, remote)?;
         }
         let existing = batch.get("entitlement", &entitlement_id)?;
@@ -4762,6 +4765,7 @@ mod tests {
                         "https://booth.pm/downloadables/7{product}?variation_id=800001"
                     ),
                     revision: "authored".into(),
+                    format: None,
                 }],
                 ..Default::default()
             };
@@ -4996,6 +5000,7 @@ mod tests {
                 size_bytes: Some(10),
                 source_url: "https://booth.pm/downloadables/700001?variation_id=800001".into(),
                 revision: "authored".into(),
+                format: None,
             }],
             ..Default::default()
         };
@@ -5398,6 +5403,7 @@ mod tests {
                     size_bytes: Some(10),
                     source_url: format!("https://booth.pm/downloadables/{file}"),
                     revision: "authored".into(),
+                    format: None,
                 }],
                 ..Default::default()
             };
@@ -5847,6 +5853,7 @@ mod tests {
                 size_bytes: None,
                 source_url: "https://booth.pm/downloadables/700001".into(),
                 revision: "authored-revision".into(),
+                format: None,
             }],
             ..Default::default()
         };
@@ -6534,6 +6541,7 @@ mod tests {
                 size_bytes: Some(20),
                 source_url: "https://booth.pm/downloadables/700001".into(),
                 revision: "obsolete-hint".into(),
+                format: None,
             });
             let mut draft = json!({"id":"900001","store":"BOOTH","title":"Authored history name","sourceTags":[],"sourceCategory":null});
             if !existing_grant {
@@ -6709,6 +6717,7 @@ mod tests {
             size_bytes: None,
             source_url: "https://booth.pm/downloadables/700001".into(),
             revision: "historical".into(),
+            format: None,
         });
         // Pending historical controls and confirmed absent offers cannot poison
         // the whole product before a different source's grant is published.
@@ -6766,6 +6775,7 @@ mod tests {
                 size_bytes: Some(10),
                 source_url: "https://booth.pm/downloadables/700002".into(),
                 revision: "purchased".into(),
+                format: None,
             }],
             ..Default::default()
         };
@@ -6896,6 +6906,7 @@ mod tests {
                 size_bytes: Some(10),
                 source_url: format!("https://booth.pm/downloadables/{id}?variation_id={variant}"),
                 revision: "authored".into(),
+                format: None,
             };
             let gift_row = parser::Row {
                 source_record_id: "gift:910002".into(),
@@ -7061,6 +7072,7 @@ mod tests {
                 size_bytes: None,
                 source_url: "https://booth.pm/downloadables/700001?variation_id=800001".into(),
                 revision: "unknown".into(),
+                format: None,
             }],
             manifest_complete: false,
             error_code: Some("DIGITAL_CONTROLS_UNRESOLVED".into()),
@@ -7080,6 +7092,7 @@ mod tests {
                 size_bytes: Some(10),
                 source_url: "https://booth.pm/downloadables/700002?variation_id=800002".into(),
                 revision: "authored".into(),
+                format: None,
             }],
             manifest_complete: true,
             ..Default::default()
@@ -7214,6 +7227,7 @@ mod tests {
                 size_bytes: None,
                 source_url: "https://booth.pm/downloadables/700001?variation_id=800001".into(),
                 revision: "unknown".into(),
+                format: None,
             }],
             manifest_complete: true,
             unavailable: false,
@@ -7433,6 +7447,7 @@ mod tests {
             size_bytes: Some(9),
             source_url: "https://booth.pm/downloadables/700001".into(),
             revision: "unknown".into(),
+            format: None,
         };
         let old = json!({"sourceFileId":"700001","variantId":null,"name":"authored.zip","sizeBytes":9,"revision":"sha256:positive-content","revisionBasis":"contentHash"});
         assert_eq!(
