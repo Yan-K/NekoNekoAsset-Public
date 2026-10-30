@@ -542,8 +542,8 @@
 .app .feature-settings{padding:16px 14px 24px;}
 .app .feature-settings h3{margin:0 0 10px;font-size:12px;font-weight:700;color:var(--faint);}
 .app .feature-settings .wf-section:first-child{margin-top:0;padding-top:0;border-top:0;}
-/* Four modes per row, two when the pane is too narrow for the longest label. */
-.app .sensitive-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(70px,(100% - 10px)/4),1fr));width:100%;}
+/* Four modes in a row while each keeps 70px for the longest label, otherwise two rows of two; never three. */
+.app .sensitive-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(max(25% - 2.5px,min(50% - 2px,(289px - 100%)*999)),1fr));width:100%;}
 .app .sensitive-modes>button{min-width:0;padding:0 6px;overflow:hidden;text-overflow:ellipsis;}
 .app .sensitive-modes>button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .app .sensitive-modes>button:disabled{opacity:1;cursor:progress;}
