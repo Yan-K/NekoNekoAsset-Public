@@ -419,6 +419,8 @@
 .app .asset-inspector-count{margin-left:0;color:var(--muted);font-size:12px;font-weight:600;}
 .app .asset-inspector .detail-actions{gap:6px;margin:14px 0 4px;}
 .app .asset-inspector .detail-actions>button{min-height:34px;padding:0 12px;font-size:13px;}
+.app .asset-inspector .detail-actions>button>svg{flex:none;}
+.app .asset-inspector .detail-actions>button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .app .asset-inspector .detail-actions>button.primary,.app .asset-inspector .detail-actions>button.unity-action{flex:1 1 auto;}
 .app .asset-inspector-section{padding:12px 0;border-top:1px solid var(--line);font-size:12.5px;}
 .app .asset-inspector-body>.detail-actions+.asset-inspector-section{border-top:0;}
@@ -513,6 +515,7 @@
 .app .feature-settings .wf-section:first-child{margin-top:0;padding-top:0;border-top:0;}
 .app .sensitive-modes{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);width:100%;}
 .app .sensitive-modes>button{min-width:0;padding:0 6px;overflow:hidden;text-overflow:ellipsis;}
+.app .sensitive-modes>button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .app .sensitive-modes>button:disabled{opacity:1;cursor:progress;}
 .app .feature-actions{gap:2px 12px;}
 .app .feature-actions label{min-height:30px;gap:9px;font-size:12.5px;}

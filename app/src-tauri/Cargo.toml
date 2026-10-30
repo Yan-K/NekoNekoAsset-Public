@@ -1,6 +1,6 @@
 [package]
 name = "nekonekoasset"
-version = "0.2.6"
+version = "0.3.0"
 description = "Local digital asset manager"
 authors = ["Yan-K"]
 edition = "2021"

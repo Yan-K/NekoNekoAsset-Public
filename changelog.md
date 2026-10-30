@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0 Beta - 2026-10-30
+
+### Changed
+
+- Refreshed the interface with floating panes, a compact selection dock, category and status icons, ambient detail previews and smoother motion.
+- Grouped the theme picker into Dark, Light and Custom, and made the R-18 modes a segmented control.
+
+### Added
+
+- Eleven built-in themes: Noir, Midnight, Ocean, Forest, Sakura, Neon, Ink, High contrast, Lemon, Peach and Lilac.
+- Appearance options for rounded corners and reduced motion. Reduced motion also stops spending fireworks.
+
+### Release notes
+
+- App and Unity Bridge share version 0.3.0 Beta. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Existing support captures retain their original execution version after upgrading.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.2.6 Beta - 2026-10-30
 
 ### Fixed
