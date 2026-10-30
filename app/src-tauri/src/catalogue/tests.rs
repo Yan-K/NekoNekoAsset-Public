@@ -5446,3 +5446,70 @@ fn query_all_downloaded_covers_all_matches_before_pagination() {
         false
     );
 }
+
+#[test]
+fn warm_list_actions_skip_stored_rows_and_edits_reread_only_their_row() {
+    // Every list column follows the file-heavy body, so reading a stored row is
+    // the network cost on a shared library. Warm searches, avatar and account
+    // filters read the TEMP copy; an edit rereads only the edited product.
+    let f = Fixture::new();
+    let c = f.open();
+    let mut records = vec![];
+    for n in 0..60 {
+        let id = format!("{}", 920000000 + n);
+        let account = if n % 2 == 0 { "b" } else { "a" };
+        let avatar = ["Manuka", "Kikyo", "Shinano"][n % 3];
+        records.push(("product".into(), id.clone(), json!({"id":id,"title":format!("Authored outfit {n:02}"),"sourceCategory":{"name":"Outfit"},"tags":[avatar,"Casual"],"description":"Authored description. ".repeat(80)})));
+        let file_ids: Vec<_> = (0..30).map(|file| format!("{id}:file:{file}")).collect();
+        for file in &file_ids {
+            records.push(("remote_file".into(), file.clone(), json!({"id":file,"productId":id,"accountId":account,"name":format!("{file}_authored.unitypackage"),"revision":"authored-v1","sizeBytes":123456})));
+        }
+        records.push(("entitlement".into(), format!("{account}:{id}"), json!({"id":format!("{account}:{id}"),"productId":id,"accountId":account,"fileIds":file_ids,"manifestComplete":true})));
+    }
+    c.put_many(records).unwrap();
+    // A tiny library cache turns each stored-row read into a miss; the TEMP copy stays cached.
+    let stored: i64 = {
+        let conn = c.inner.lock().unwrap();
+        conn.execute_batch("PRAGMA main.cache_size=8; PRAGMA temp.cache_size=-65536;")
+            .unwrap();
+        conn.query_row("SELECT COUNT(*) FROM dbstat WHERE name='products'", [], |r| r.get(0))
+            .unwrap()
+    };
+    let list = |patch: Value, known: &Value| {
+        let misses = || {
+            let conn = c.inner.lock().unwrap();
+            let (mut current, mut high) = (0, 0);
+            unsafe {
+                rusqlite::ffi::sqlite3_db_status(conn.handle(), rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS, &mut current, &mut high, 0)
+            };
+            i64::from(current)
+        };
+        let mut args = json!({"limit":10000,"includeFiles":false,"presentation":"list","allSummaries":true,"knownSummaries":known});
+        for (key, value) in patch.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        let before = misses();
+        let result = c.command("query", args).unwrap();
+        (result, misses() - before)
+    };
+    let (first, _) = list(json!({}), &json!({}));
+    let known = first["fingerprints"].clone();
+    assert_eq!(known.as_object().unwrap().len(), 60);
+    for patch in [
+        json!({"search":"outfit 1"}),
+        json!({"avatar":"Manuka"}),
+        json!({"accountIds":["a"],"includeOffline":true,"sort":"price"}),
+        json!({"accountIds":["b"],"includeOffline":true,"avatar":"Kikyo"}),
+    ] {
+        let (result, read) = list(patch.clone(), &known);
+        assert!(result["matched"].as_u64().unwrap() > 0, "{patch}");
+        assert!(read * 10 < stored, "{patch} read {read} of {stored} product pages");
+    }
+    c.command("overlay", json!({"changes":[{"id":"920000007","patch":{"title":"Edited authored outfit"}}]}))
+        .unwrap();
+    let (result, read) = list(json!({}), &known);
+    let sent: Vec<_> = result["products"].as_array().unwrap().iter().map(|p| text(p, "id")).collect();
+    assert_eq!(sent, ["920000007"]);
+    assert_eq!(result["products"][0]["title"], "Edited authored outfit");
+    assert!(read * 10 < stored, "an edit reread {read} of {stored} product pages");
+}

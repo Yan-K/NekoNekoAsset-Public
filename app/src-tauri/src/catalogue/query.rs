@@ -4,10 +4,11 @@ use std::collections::{hash_map::DefaultHasher, BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
 /// List facts reused until the trigger-maintained products revision changes.
-/// Every list column follows the file-heavy body, so filters, sorts, search and
-/// counts read a compact per-connection TEMP copy instead of each stored row;
-/// the library schema is unchanged. Summary fingerprints let a client skip
-/// summaries it already holds.
+/// Every list column follows the file-heavy body, so filters, sorts, search,
+/// counts and list summaries read a compact per-connection TEMP copy instead of
+/// each stored row; the library schema is unchanged. TEMP triggers record the
+/// rows this connection changes, so a refresh rereads only those rows. Summary
+/// fingerprints let a client skip summaries it already holds.
 #[derive(Default)]
 pub(super) struct ListSnapshot {
     revision: Option<i64>,
@@ -15,6 +16,18 @@ pub(super) struct ListSnapshot {
     counts: Value,
     summaries: HashMap<String, u64>,
 }
+
+// Keep the effective values of the former summary predicates and ordering.
+const LIST_COLUMNS: &str = "id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),summary";
+// The UPDATE condition matches products_changed_update, so each recorded event is one revision.
+// Trigger steps inherit an upsert's conflict policy, so the change log has no key and may repeat ids.
+const LIST_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL,accounts,evidence,provenance,prices,newly,summary TEXT NOT NULL);
+ CREATE TEMP TABLE IF NOT EXISTS list_changes(id);
+ CREATE TEMP TABLE IF NOT EXISTS list_events(n INTEGER NOT NULL);
+ INSERT INTO temp.list_events SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM temp.list_events);
+ CREATE TEMP TRIGGER IF NOT EXISTS list_insert AFTER INSERT ON main.products BEGIN INSERT INTO list_changes VALUES(NEW.id); UPDATE list_events SET n=n+1; END;
+ CREATE TEMP TRIGGER IF NOT EXISTS list_update AFTER UPDATE ON main.products WHEN NEW.summary<>OLD.summary OR NEW.search<>OLD.search BEGIN INSERT INTO list_changes VALUES(OLD.id),(NEW.id); UPDATE list_events SET n=n+1; END;
+ CREATE TEMP TRIGGER IF NOT EXISTS list_delete AFTER DELETE ON main.products BEGIN INSERT INTO list_changes VALUES(OLD.id); UPDATE list_events SET n=n+1; END;";
 
 fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a ListSnapshot> {
     let revision: i64 = conn.query_row(
@@ -27,26 +40,44 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
     }
     // An enclosing transaction could roll the copy back behind this cache.
     ensure!(conn.is_autocommit(), "catalogue.list_snapshot_transaction");
-    cache.revision = None;
-    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL); SAVEPOINT list_rows; DELETE FROM temp.list_rows;")?;
+    let previous = cache.revision.take();
+    conn.execute_batch(LIST_SCHEMA)?;
+    conn.execute_batch("SAVEPOINT list_rows;")?;
     let filled = (|| -> Result<ListSnapshot> {
+        // Reread only the recorded rows when they account for every revision since the copy.
+        let events: i64 = conn.query_row("SELECT n FROM temp.list_events", [], |row| row.get(0))?;
+        let partial = previous.is_some_and(|old| revision - old == events);
         let mut next = ListSnapshot {
             revision: Some(revision),
+            summaries: if partial {
+                std::mem::take(&mut cache.summaries)
+            } else {
+                HashMap::new()
+            },
             ..Default::default()
         };
-        let mut insert = conn.prepare("INSERT INTO temp.list_rows VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")?;
-        // Keep the effective values of the former summary predicates and ordering.
-        let mut stmt = conn.prepare("SELECT id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',summary FROM products")?;
+        let changed = if partial {
+            let mut stmt = conn.prepare("SELECT DISTINCT id FROM temp.list_changes")?;
+            for id in stmt.query_map([], |row| row.get::<_, String>(0))? {
+                next.summaries.remove(&id?);
+            }
+            "WHERE id IN(SELECT id FROM temp.list_changes)"
+        } else {
+            ""
+        };
+        conn.execute(&format!("DELETE FROM temp.list_rows {changed}"), [])?;
+        conn.execute(
+            &format!("INSERT INTO temp.list_rows SELECT {LIST_COLUMNS} FROM products {changed}"),
+            [],
+        )?;
+        let mut stmt = conn.prepare(&format!("SELECT id,summary FROM temp.list_rows {changed}"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let values = (0..13)
-                .map(|index| row.get::<_, Sql>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            insert.execute(rusqlite::params_from_iter(values.iter()))?;
             let mut hasher = DefaultHasher::new();
-            row.get_ref(13)?.as_str()?.hash(&mut hasher);
+            row.get_ref(1)?.as_str()?.hash(&mut hasher);
             next.summaries.insert(row.get(0)?, hasher.finish());
         }
+        conn.execute_batch("DELETE FROM temp.list_changes; UPDATE temp.list_events SET n=0;")?;
         let (mut categories, mut statuses) = (BTreeMap::<String, i64>::new(), BTreeMap::<String, i64>::new());
         let (mut all, mut downloaded, mut hidden) = (0i64, 0i64, 0i64);
         let mut stmt = conn.prepare("SELECT category,status,in_all=1,downloaded=1,hidden=0,hidden=1,COUNT(*) FROM temp.list_rows GROUP BY 1,2,3,4,5,6")?;
@@ -110,7 +141,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         conditions.push("p.status='attention'".to_owned());
     }
     if quick == "new" {
-        conditions.push("json_extract(s.summary,'$.newlyDiscovered')=1".to_owned());
+        conditions.push("p.newly=1".to_owned());
     }
     if !collection.is_empty() {
         // Read membership once instead of reparsing the collection for each product.
@@ -150,7 +181,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             "0=1".to_owned()
         } else {
             format!(
-                "EXISTS(SELECT 1 FROM json_each(s.summary,'$.accountIds') a WHERE a.value IN({}))",
+                "EXISTS(SELECT 1 FROM json_each(p.accounts) a WHERE a.value IN({}))",
                 account_placeholders.join(",")
             )
         };
@@ -164,12 +195,15 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     let mut pinned = vec![];
     if !avatar.is_empty() && avatar != "all" {
         let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
-        let registry = avatars::registry(conn, &preferences)?;
+        let registry = avatars::registry_from(
+            &projection::bases_in(conn, "temp.list_rows")?,
+            &preferences,
+        )?;
         let avatar_id = registry.resolve(avatar);
         // Base pins override ordinary filters, but never the user's explicit
         // hidden/visible or R-18 visibility boundaries.
         let mut visible_base = conn.prepare_cached(
-            "SELECT COALESCE(json_extract(summary,'$.hidden'),0)=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) FROM products WHERE id=?1",
+            "SELECT hidden=?2 AND (?3 NOT IN('hide','only') OR sensitive=CASE ?3 WHEN 'only' THEN 1 ELSE 0 END) FROM temp.list_rows WHERE id=?1",
         )?;
         for id in registry.bases(&avatar_id) {
             if visible_base.query_row(params![id, hidden_only, sensitive], |row| row.get::<_, bool>(0))? {
@@ -196,7 +230,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         } else {
             "1=1".into()
         };
-        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(s.summary,'$.ownedAvatarEvidence') e WHERE (json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds}))) AND {scope})"));
+        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE (json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds}))) AND {scope})"));
     }
     let search = normalized(
         args["search"]
@@ -222,7 +256,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         let account_order = if account_placeholders.is_empty() {
             "NULL".to_owned()
         } else {
-            format!("(SELECT MIN(json_extract(a.value,'$.acquiredSortKey')) FROM json_each(s.summary,'$.provenance') a WHERE json_extract(a.value,'$.accountId') IN({}))",account_placeholders.join(","))
+            format!("(SELECT MIN(json_extract(a.value,'$.acquiredSortKey')) FROM json_each(p.provenance) a WHERE json_extract(a.value,'$.accountId') IN({}))",account_placeholders.join(","))
         };
         format!("CASE WHEN {local_product} THEN p.acquired ELSE {account_order} END")
     };
@@ -234,7 +268,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         } else {
             format!("a.value IN({})", account_placeholders.join(","))
         };
-        format!("CASE WHEN {local_product} THEN p.price WHEN json_type(s.summary,'$.ownedCurrentPrices')='array' THEN (SELECT CASE WHEN COUNT(*)=1 THEN MAX(json_extract(v.value,'$.price')) END FROM json_each(s.summary,'$.ownedCurrentPrices') v WHERE EXISTS(SELECT 1 FROM json_each(v.value,'$.accountIds') a WHERE {scope})) ELSE p.price END")
+        format!("CASE WHEN {local_product} THEN p.price WHEN json_type(p.prices)='array' THEN (SELECT CASE WHEN COUNT(*)=1 THEN MAX(json_extract(v.value,'$.price')) END FROM json_each(p.prices) v WHERE EXISTS(SELECT 1 FROM json_each(v.value,'$.accountIds') a WHERE {scope})) ELSE p.price END")
     };
     let order = match sort {
         "title" => "p.title",
@@ -260,8 +294,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     } else {
         ""
     };
-    // SQLite omits this join unless an account or avatar predicate reads the summary.
-    let sql=format!("SELECT p.id,p.downloaded FROM temp.list_rows p LEFT JOIN products s ON s.id=p.id WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{currency_order}{order} {dir},p.id ASC");
+    let sql=format!("SELECT p.id,p.downloaded FROM temp.list_rows p WHERE {predicate} ORDER BY ({order} IS NULL OR {order}='') ASC,{currency_order}{order} {dir},p.id ASC");
     let mut stmt = conn.prepare(&sql)?;
     let normal_ids = stmt
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
@@ -274,7 +307,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     let mut all_downloaded = normal_ids.iter().all(|(_, downloaded)| *downloaded);
     for id in &pinned {
         all_downloaded &= conn.query_row(
-            "SELECT downloaded=1 FROM products WHERE id=?1",
+            "SELECT downloaded=1 FROM temp.list_rows WHERE id=?1",
             [id],
             |row| row.get::<_, bool>(0),
         )?;
@@ -311,7 +344,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     let mut fingerprints = Map::new();
     let mut products = vec![];
     let mut product_stmt = conn.prepare_cached(if args["includeFiles"] == false {
-        "SELECT summary FROM products WHERE id=?1"
+        "SELECT summary FROM temp.list_rows WHERE id=?1"
     } else {
         "SELECT body FROM products WHERE id=?1"
     })?;

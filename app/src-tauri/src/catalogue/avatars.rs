@@ -158,6 +158,9 @@ fn decorate(entry: &mut Value, settings: &Value) {
 pub(super) fn registry(conn: &Connection, preferences: &Value) -> Result<Registry> {
     registry_from_bases(&projection::bases(conn)?, preferences, None)
 }
+pub(super) fn registry_from(bases: &[Value], preferences: &Value) -> Result<Registry> {
+    registry_from_bases(bases, preferences, None)
+}
 pub(super) fn tag_resolver(conn: &Connection) -> Result<crate::taxonomy::AvatarTagResolver> {
     let bases = projection::bases(conn)?;
     let before = raw(conn, "preferences", "app")?.unwrap_or(json!({"id":"app"}));

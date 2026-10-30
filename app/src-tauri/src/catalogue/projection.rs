@@ -214,7 +214,11 @@ pub(super) fn all(conn: &Connection) -> Result<Vec<Value>> {
         .collect()
 }
 pub(super) fn bases(conn: &Connection) -> Result<Vec<Value>> {
-    let mut stmt=conn.prepare("SELECT json_object('id',id,'category',category,'title',json_extract(summary,'$.title'),'titleOverride',json_extract(summary,'$.titleOverride'),'sourceTitle',json_extract(summary,'$.sourceTitle'),'shop',json_extract(summary,'$.shop'),'sourceShop',json_extract(summary,'$.sourceShop'),'ownedAvatarEvidence',json_extract(summary,'$.ownedAvatarEvidence')) FROM products WHERE category='Base'")?;
+    bases_in(conn, "products")
+}
+/// Base facts from `products` or from the list snapshot, which holds the same summaries.
+pub(super) fn bases_in(conn: &Connection, table: &str) -> Result<Vec<Value>> {
+    let mut stmt=conn.prepare(&format!("SELECT json_object('id',id,'category',category,'title',json_extract(summary,'$.title'),'titleOverride',json_extract(summary,'$.titleOverride'),'sourceTitle',json_extract(summary,'$.sourceTitle'),'shop',json_extract(summary,'$.shop'),'sourceShop',json_extract(summary,'$.sourceShop'),'ownedAvatarEvidence',json_extract(summary,'$.ownedAvatarEvidence')) FROM {table} WHERE category='Base'"))?;
     let data = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
