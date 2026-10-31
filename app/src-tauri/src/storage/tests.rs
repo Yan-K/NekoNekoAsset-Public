@@ -66,6 +66,47 @@ fn cancellation_during_restore_and_after_completion_preserves_terminal_facts() {
 }
 
 #[tokio::test]
+async fn cancel_downloads_stops_only_the_requested_products_active_jobs() {
+    let f = Fixture::new();
+    for (id, product, state) in [
+        ("queued-a", "a", "queued"),
+        ("running-a", "a", "running"),
+        ("queued-b", "b", "queued"),
+        ("done-a", "a", "completed"),
+    ] {
+        f.service.catalogue.put("job", id, json!({"id":id,"type":"download","productId":product,"state":state,"fileIds":[]})).unwrap();
+    }
+    let running = f.service.cancellation("running-a");
+    let job = |id: &str| f.service.catalogue.get("job", id).unwrap().unwrap();
+    assert_eq!(f.service.cancel_downloads(&json!({"productIds":["a"]})).await.unwrap()["cancelled"], 2);
+    assert_eq!(job("queued-a")["state"], "cancelled");
+    assert_eq!(job("running-a")["state"], "running");
+    assert_eq!(job("running-a")["cancelRequested"], true);
+    assert!(running.load(Ordering::Acquire));
+    assert_eq!(job("queued-b")["state"], "queued");
+    assert_eq!(job("done-a")["state"], "completed");
+    // Without products every remaining active download stops; a repeat changes nothing.
+    assert_eq!(f.service.cancel_downloads(&json!({})).await.unwrap()["cancelled"], 1);
+    assert_eq!(job("queued-b")["state"], "cancelled");
+    assert_eq!(f.service.cancel_downloads(&json!({})).await.unwrap()["cancelled"], 0);
+}
+
+#[tokio::test]
+async fn bulk_download_skips_products_without_files_and_one_explicit_product_reports_it() {
+    let f = Fixture::new();
+    f.seed(1, true);
+    f.service.catalogue.put("product", "43", json!({"id":"43","provider":"booth","title":"Authored empty"})).unwrap();
+    f.service.catalogue.put("entitlement", "empty", json!({"id":"empty","productId":"43","accountId":"test-account","fileIds":[],"manifestComplete":true})).unwrap();
+    let bulk = f.service.enqueue(&json!({"productIds":["42","43"]})).await.unwrap();
+    assert_eq!(bulk["jobIds"].as_array().unwrap().len(), 1);
+    assert!(f.service.catalogue.related("job", "43").unwrap().is_empty());
+    assert!(f.service.catalogue.get("download_intent", "43").unwrap().is_none());
+    let single = f.service.enqueue(&json!({"productIds":["43"]})).await.unwrap();
+    let job = f.service.catalogue.get("job", single["jobIds"][0].as_str().unwrap()).unwrap().unwrap();
+    assert_eq!((job["state"].as_str(), job["errorCode"].as_str()), (Some("needsAction"), Some("manifest_incomplete")));
+}
+
+#[tokio::test]
 async fn a_cancelling_download_does_not_absorb_an_explicit_new_request() {
     let f = Fixture::new();
     f.seed(1, true);

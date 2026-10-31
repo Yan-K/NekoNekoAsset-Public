@@ -4,6 +4,7 @@ pub(crate) use ai_evidence::{
     ai_public_urls_in_text, redact_ai_evidence_text, safe_ai_evidence_name,
 };
 mod archive;
+mod download_delete;
 mod io;
 mod local;
 mod local_delete;
@@ -59,6 +60,8 @@ pub struct StorageService {
     operations: Arc<RwLock<()>>,
     extraction: Arc<Semaphore>,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// Products whose downloaded files are being removed.
+    deleting: Arc<Mutex<HashSet<String>>>,
     process_lock: Arc<Mutex<Option<File>>>,
     automatic_pending: Arc<Mutex<AutomaticPending>>,
 }
@@ -187,6 +190,7 @@ impl StorageService {
             operations: Arc::new(RwLock::new(())),
             extraction: Arc::new(Semaphore::new(1)),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
+            deleting: Arc::new(Mutex::new(HashSet::new())),
             process_lock: Arc::new(Mutex::new(None)),
             automatic_pending: Arc::new(Mutex::new(AutomaticPending::default())),
         })
@@ -299,6 +303,48 @@ impl StorageService {
             )? {
                 self.cancellation(id).store(true, Ordering::Release);
                 return Ok(json!({"cancelRequested":true}));
+            }
+        }
+    }
+    /// Cancels every active download of these products, or of all products.
+    async fn cancel_downloads(&self, args: &Value) -> Result<Value> {
+        let products = args.get("productIds").map(strings);
+        // Enqueue holds this gate until its jobs are written, so none is missed.
+        let _gate = self.queue_gate.lock().await;
+        loop {
+            let active: Vec<_> = self
+                .catalogue
+                .list("job")?
+                .into_iter()
+                .filter(|job| {
+                    job["type"] == "download"
+                        && job["cancelRequested"] != true
+                        && matches!(job["state"].as_str(), Some("queued" | "running"))
+                        && products.as_ref().is_none_or(|ids| {
+                            ids.iter().any(|id| job["productId"] == id.as_str())
+                        })
+                })
+                .collect();
+            let mut records = Vec::new();
+            let mut expected = Vec::new();
+            for before in &active {
+                let id = io::required_string(before, "id")?.to_owned();
+                let mut job = before.clone();
+                job["cancelRequested"] = json!(true);
+                job["updatedAt"] = json!(now());
+                if job["state"] == "queued" {
+                    job["state"] = json!("cancelled");
+                    job["errorCode"] = Value::Null;
+                }
+                records.push(("job".into(), id.clone(), job));
+                expected.push(("job".into(), id, Some(before.clone())));
+            }
+            if active.is_empty() || self.catalogue.put_many_if_unchanged(records, expected)? {
+                for job in active.iter().filter(|job| job["state"] == "running") {
+                    self.cancellation(job["id"].as_str().unwrap_or(""))
+                        .store(true, Ordering::Release);
+                }
+                return Ok(json!({"cancelled":active.len()}));
             }
         }
     }
@@ -607,12 +653,12 @@ impl StorageService {
         let accounts = self.available_download_accounts()?;
         let mut pending = Vec::new();
         for id in product_ids {
-            if !all
-                && !self
-                    .catalogue
-                    .get("download_intent", id)?
-                    .is_some_and(|intent| intent["wantDownload"] == true)
-            {
+            // Deleting downloaded files opts out of download-all until the next Download.
+            let wanted = self
+                .catalogue
+                .get("download_intent", id)?
+                .map(|intent| intent["wantDownload"].clone());
+            if wanted == Some(json!(false)) || (!all && wanted != Some(json!(true))) {
                 continue;
             }
             let files = self.catalogue.related("remote_file", id)?;
@@ -664,6 +710,9 @@ impl StorageService {
         self.root_path(&root)?;
         let ids = strings(&args["productIds"]);
         ensure!(!ids.is_empty(), "invalid_arguments");
+        // Several products at once skip any with nothing to download; one explicit
+        // product keeps its actionable incomplete-manifest result.
+        let bulk = ids.iter().collect::<HashSet<_>>().len() > 1;
         let selected = args.get("selectedFileIds").cloned().unwrap_or(Value::Null);
         ensure!(selected.is_null() || ids.len() == 1, "invalid_arguments");
         let mut result = Vec::new();
@@ -683,6 +732,12 @@ impl StorageService {
                 }
                 bail!("product_missing");
             };
+            if self.deleting.lock().unwrap().contains(&id) {
+                if automatic {
+                    continue;
+                }
+                bail!("storage_busy");
+            }
             if product["provider"] == "local" {
                 ensure!(selected.is_null(), "local_source_required");
                 if let Some(job_id) = self.retry_local_product_locked(&id, &jobs)? {
@@ -696,7 +751,7 @@ impl StorageService {
             } else {
                 files
             };
-            if automatic && files.is_empty() {
+            if (automatic || bulk) && files.is_empty() {
                 continue;
             }
             let files = selected_download_files(files, &selected)?;
@@ -779,6 +834,7 @@ impl StorageService {
                     | "open_file"
                     | "open_root_folder"
                     | "cancel_job"
+                    | "cancel_downloads"
             ) {
             None
         } else {
@@ -794,6 +850,8 @@ impl StorageService {
                 let id = io::required_string(&args, "jobId")?;
                 self.cancel_job(id)
             }
+            "cancel_downloads" => self.cancel_downloads(&args).await,
+            "delete_downloads" => self.delete_downloads(&args).await,
             "retry_job" | "retry_file" => {
                 let mut retry = args.clone();
                 if let Some(id) = args["jobId"].as_str() {

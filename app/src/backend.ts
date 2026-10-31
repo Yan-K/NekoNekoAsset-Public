@@ -5,7 +5,7 @@ import type {Product, Account, Locale} from './model';
 
 export type Service = 'catalogue'|'booth'|'storage'|'unity';
 export interface SourceProgress {stage?:string;source?:string;pages?:number;detailsCompleted?:number;requestsCompleted?:number;products?:number;published?:number;metadataCompleted?:number;metadataTotal?:number;availabilityWarnings?:number}
-export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
+export interface NativeJob extends UnityPreparation {id:string;type:string;productId?:string;productIds?:string[];completedProductIds?:string[];fileIds?:string[];selectedFileIds?:string[]|null;accountId?:string;accountName?:string;state:string;progress?:number|SourceProgress;errorCode?:string;cancelRequested?:boolean;createdAt?:string;updatedAt?:string;completedAt?:string;projectName?:string;unityVersion?:string;stage?:string;writesStarted?:boolean;resultCounts?:{applied:number;skipped:number;failed:number}}
 export function importOnlyUnityJob(job:NativeJob):NativeJob{
  if(job.type!=='unity:import')return job;
  const projected={...job};

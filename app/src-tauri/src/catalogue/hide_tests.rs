@@ -351,3 +351,83 @@ fn library_recommendations_exclude_hidden_even_as_explicit_context() {
         2
     );
 }
+
+#[test]
+fn unavailable_store_products_follow_the_list_preference_and_keep_their_records() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put("account", "account", json!({"id":"account","provider":"booth"}))
+        .unwrap();
+    for id in ["a-file", "b-empty", "c-kept", "e-hidden-empty"] {
+        product(&c, id, "booth");
+    }
+    product(&c, "d-local", "local");
+    c.put_many(vec![
+        ("remote_file".into(), "a-file-1".into(), json!({"id":"a-file-1","productId":"a-file","accountId":"account","name":"Authored.unitypackage","revision":"r1"})),
+        ("entitlement".into(), "a-file".into(), json!({"id":"a-file","productId":"a-file","accountId":"account","fileIds":["a-file-1"],"manifestComplete":true})),
+        // The store's complete file list is now empty.
+        ("entitlement".into(), "b-empty".into(), json!({"id":"b-empty","productId":"b-empty","accountId":"account","fileIds":[],"manifestComplete":true})),
+        // Bytes from a file the store no longer lists remain on disk.
+        ("entitlement".into(), "c-kept".into(), json!({"id":"c-kept","productId":"c-kept","accountId":"account","fileIds":[],"manifestComplete":true})),
+        ("artifact".into(), "c-kept-old".into(), json!({"id":"c-kept-old","productId":"c-kept","fileId":"c-kept-old-file","revision":"r1","status":"ready","originalAvailable":true,"relativePath":"assets/c/old.zip"})),
+    ])
+    .unwrap();
+    hide(&c, &["e-hidden-empty"], true);
+    let query = |hide: bool| {
+        c.command(
+            "query",
+            json!({"sort":"title","hideUnavailable":hide,"includeFiles":false,"presentation":"list"}),
+        )
+        .unwrap()
+    };
+    let shown = query(false);
+    assert_eq!(
+        shown["matchedIds"],
+        json!(["a-file", "b-empty", "c-kept", "d-local"])
+    );
+    let flags: Vec<_> = shown["products"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|product| product["unavailable"] == true)
+        .collect();
+    assert_eq!(flags, [false, true, false, false]);
+    assert_eq!(shown["counts"]["all"], 4);
+    let hidden = query(true);
+    assert_eq!(hidden["matchedIds"], json!(["a-file", "c-kept", "d-local"]));
+    assert_eq!(hidden["counts"]["all"], 3);
+    assert_eq!(hidden["counts"]["statuses"]["notDownloaded"], 3);
+    assert_eq!(hidden["total"], 5);
+    // The Hidden scope still lists every product the user hid.
+    assert_eq!(
+        c.command("query", json!({"hiddenOnly":true,"hideUnavailable":true}))
+            .unwrap()["matchedIds"],
+        json!(["e-hidden-empty"])
+    );
+    // Bootstrap and account totals follow the saved preference, on by default.
+    let totals = |c: &Catalogue| {
+        (
+            c.command("bootstrap", json!({"includeProducts":false}))
+                .unwrap()["counts"]["all"]
+                .clone(),
+            c.command("account_counts", json!({})).unwrap()["accounts"]["account"].clone(),
+        )
+    };
+    assert_eq!(totals(&c), (json!(3), json!(2)));
+    c.command("preferences", json!({"patch":{"hideUnavailable":false}}))
+        .unwrap();
+    assert_eq!(totals(&c), (json!(4), json!(3)));
+    assert!(c
+        .command("preferences", json!({"patch":{"hideUnavailable":"no"}}))
+        .is_err());
+    // Nothing is removed: when the store lists a file again the product returns.
+    c.put_many(vec![
+        ("remote_file".into(), "b-empty-1".into(), json!({"id":"b-empty-1","productId":"b-empty","accountId":"account","name":"Authored.zip","revision":"r1"})),
+        ("entitlement".into(), "b-empty".into(), json!({"id":"b-empty","productId":"b-empty","accountId":"account","fileIds":["b-empty-1"],"manifestComplete":true})),
+    ])
+    .unwrap();
+    assert_eq!(
+        query(true)["matchedIds"],
+        json!(["a-file", "b-empty", "c-kept", "d-local"])
+    );
+}

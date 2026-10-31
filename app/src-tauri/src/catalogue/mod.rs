@@ -1278,8 +1278,10 @@ fn validate_ui_preferences(patch: &Value) -> Result<()> {
             }
         }
     }
-    if let Some(value) = patch.get("aiFeaturesEnabled") {
-        ensure!(value.is_boolean(), "catalogue.invalid_preferences");
+    for key in ["aiFeaturesEnabled", "hideUnavailable"] {
+        if let Some(value) = patch.get(key) {
+            ensure!(value.is_boolean(), "catalogue.invalid_preferences");
+        }
     }
     if let Some(value) = patch.get("sensitiveMode") {
         ensure!(
@@ -2250,6 +2252,34 @@ impl Catalogue {
                 }
             }
             Self::write_many(tx, projections, records)?;
+            Ok(true)
+        })
+    }
+    /// As `put_many_if_unchanged`, where `None` deletes that record.
+    pub(crate) fn write_many_if_unchanged(
+        &self,
+        records: Vec<(String, String, Option<Value>)>,
+        expected: Vec<(String, String, Option<Value>)>,
+    ) -> Result<bool> {
+        for (kind, id, value) in &records {
+            match value {
+                Some(value) => validate(kind, id, value)?,
+                None => kind_valid(kind)?,
+            }
+        }
+        for (kind, id, _) in &expected {
+            kind_valid(kind)?;
+            ensure!(!id.is_empty(), "catalogue.invalid_id");
+        }
+        self.mutate(|tx, projections| {
+            for (kind, id, value) in expected {
+                if raw(tx, &kind, &id)? != value {
+                    return Ok(false);
+                }
+            }
+            for (kind, id, value) in records {
+                Self::write(tx, projections, &kind, &id, value)?;
+            }
             Ok(true)
         })
     }

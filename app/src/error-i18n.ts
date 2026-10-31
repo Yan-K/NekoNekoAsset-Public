@@ -42,6 +42,7 @@ const labels:Record<string,string[]>={
  local_delete_cleanup_failed:['Product entries deleted; folder cleanup failed. Retry in Activity.','商品は削除済みですが、フォルダーの削除に失敗しました。履歴で再試行してください。','상품 항목은 삭제됐지만 폴더 정리에 실패했습니다. 활동에서 다시 시도하세요.','商品记录已删除，但文件夹清理失败。请在活动页重试。','產品紀錄已刪除，但資料夾清理失敗。請到活動頁重試。'],
  local_delete_rollback_failed:['Deletion stopped; restoring product folders failed. Retry in Activity.','削除は停止しましたが、フォルダーの復元に失敗しました。履歴で再試行してください。','삭제를 중단했지만 상품 폴더 복원에 실패했습니다. 활동에서 다시 시도하세요.','删除已停止，但商品文件夹还原失败。请在活动页重试。','刪除已停止，但產品資料夾還原失敗。請到活動頁重試。'],
  local_delete_retry_required:['Deletion stopped; product folders restored. Retry in Activity.','削除は停止し、フォルダーを復元しました。履歴で再試行してください。','삭제를 중단하고 상품 폴더를 복원했습니다. 활동에서 다시 시도하세요.','删除已停止，商品文件夹已还原。请在活动页重试。','刪除已停止，產品資料夾已還原。請到活動頁重試。'],
+ download_delete_incomplete:['Some files could not be deleted. Close programs using them and try again.','一部のファイルを削除できませんでした。使用中のプログラムを閉じてから再試行してください。','일부 파일을 삭제하지 못했습니다. 파일을 사용 중인 프로그램을 닫고 다시 시도하세요.','部分文件无法删除。请关闭正在使用这些文件的程序后重试。','部分檔案無法刪除。請關閉正在使用這些檔案的程式後重試。'],
  link_expired:['Download link expired; retry to get a new link','ダウンロードリンクの期限が切れました。再試行で再取得します','다운로드 링크 만료 · 다시 시도하면 새 링크를 가져옵니다','下载链接已过期，重试以取得新链接','下載連結已過期，重試以取得新連結'],
  manifest_incomplete:['Product file list is incomplete; finish syncing and retry','商品のファイル一覧が未完了です。同期完了後に再試行してください','상품 파일 목록 미완료 · 동기화 완료 후 다시 시도하세요','商品文件列表尚未完整，请完成同步后重试','商品檔案清單尚未完整，請完成同步後重試'],
  network_failed:['Download connection failed; retry','ダウンロード接続に失敗しました。再試行してください','다운로드 연결 실패 · 다시 시도하세요','下载连接失败，请重试','下載連線失敗，請重試'],

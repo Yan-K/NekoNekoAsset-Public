@@ -16,6 +16,7 @@ import {contentLang} from './content-lang';
 export interface ActivityHistoryProps {
  locale:Locale;jobs:NativeJob[];accounts:Account[];products:Product[];aiEnabled:boolean;
  onClear:()=>Promise<void>;onCancel:(job:NativeJob)=>void;onRetry:(job:NativeJob)=>void;onSignIn:(job:NativeJob)=>void;onOpenStorage:()=>void;onUnityResults:(job:NativeJob)=>void;onUnityRetry:(job:NativeJob)=>void;
+ onCancelDownloads?:()=>void;
 }
 type ActivityJob=NativeJob&{store?:string;fileIds?:string[];selectedFileIds?:string[];failures?:Record<string,unknown>};
 type Detail={stamp:string;product?:Product};
@@ -29,7 +30,7 @@ const jobTime=(job:NativeJob)=>Date.parse(job.createdAt??job.updatedAt??'')||0;
 const basename=(value:string)=>value.replaceAll('\\','/').split('/').at(-1)?.slice(0,512)||'';
 const jobStamp=(job:NativeJob)=>[job.id,job.state,job.updatedAt,job.completedAt,job.errorCode].join('\0');
 
-export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled,onClear,onCancel,onRetry,onSignIn,onOpenStorage,onUnityResults,onUnityRetry}:ActivityHistoryProps){
+export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled,onClear,onCancel,onRetry,onSignIn,onOpenStorage,onUnityResults,onUnityRetry,onCancelDownloads}:ActivityHistoryProps){
  const [limit,setLimit]=useState(200),[details,setDetails]=useState<Record<string,Detail>>({});
  const [clearing,setClearing]=useState(false),[clearError,setClearError]=useState('');
  const [copyStates,setCopyStates]=useState<Record<string,CopyState>>({});
@@ -134,7 +135,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
   }
  }
  return <section className="activity-page activity-history">
-  <header className="toolbar"><h1>{t(locale,'activity')}</h1><button type="button" disabled={clearing||!jobs.some(terminal)} onClick={()=>void clear()}>{uxText(locale,'clearHistory')}</button></header>
+  <header className="toolbar"><h1>{t(locale,'activity')}</h1>{onCancelDownloads&&jobs.some(job=>job.type==='download'&&active(job)&&!job.cancelRequested)&&<button type="button" onClick={onCancelDownloads}>{shellText(locale,'cancelAllDownloads')}</button>}<button type="button" disabled={clearing||!jobs.some(terminal)} onClick={()=>void clear()}>{uxText(locale,'clearHistory')}</button></header>
   {clearError&&<p className="activity-history-error" role="alert">{clearError}</p>}
   {!jobs.length?<div className="empty-state">{uxText(locale,'emptyHistory')}</div>:<div className="activity-list">
    {rows.map(job=>{
@@ -159,7 +160,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
      </div>
      {/* Bottom-right of the card, under the actions, so every date lines up. */}
      {Number.isFinite(date)&&<time className="activity-history-time" dateTime={new Date(date).toISOString()}>{new Date(date).toLocaleString(locale)}</time>}
-     <div className={job.type==='unity:import'?'activity-history-actions unity-job-actions':'activity-history-actions'}>{job.type==='unity:import'?<><button type="button" onClick={()=>onUnityResults(job)}>{unityText(locale,'results')}</button>{active(job)&&!job.writesStarted&&<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>}{['failed','interrupted','cancelled'].includes(job.stage??'')&&<button type="button" onClick={()=>onUnityRetry(job)}>{unityText(locale,'retry')}</button>}</>:active(job)?job.type==='storage:delete_local_products'?null:<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>:job.state!=='completed'&&(canRetry?<button type="button" disabled={accountRemoved||accountBusy||job.type.startsWith('ai:')&&!aiEnabled} onClick={()=>signInRequired?onSignIn(job):onRetry(job)}>{t(locale,signInRequired?'signIn':'retry')}</button>:<button type="button" onClick={onOpenStorage}>{t(locale,'storage')}</button>)}{diagnosable(job)&&<><button type="button" disabled={copying.current.has(job.id)} aria-busy={copying.current.has(job.id)} onClick={event=>void copyDiagnostics(job,event.currentTarget)}>{supportText(locale,'copyDiagnostics')}</button><small className="activity-history-copy-state" role="status" aria-live="polite" aria-atomic="true">{copyStatus?supportText(locale,copyStatus):''}</small></>}</div>
+     <div className={job.type==='unity:import'?'activity-history-actions unity-job-actions':'activity-history-actions'}>{job.type==='unity:import'?<><button type="button" onClick={()=>onUnityResults(job)}>{unityText(locale,'results')}</button>{active(job)&&!job.writesStarted&&<button type="button" onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>}{['failed','interrupted','cancelled'].includes(job.stage??'')&&<button type="button" onClick={()=>onUnityRetry(job)}>{unityText(locale,'retry')}</button>}</>:active(job)?job.type==='storage:delete_local_products'?null:<button type="button" disabled={job.cancelRequested===true} onClick={()=>onCancel(job)}>{t(locale,'cancel')}</button>:job.state!=='completed'&&(canRetry?<button type="button" disabled={accountRemoved||accountBusy||job.type.startsWith('ai:')&&!aiEnabled} onClick={()=>signInRequired?onSignIn(job):onRetry(job)}>{t(locale,signInRequired?'signIn':'retry')}</button>:<button type="button" onClick={onOpenStorage}>{t(locale,'storage')}</button>)}{diagnosable(job)&&<><button type="button" disabled={copying.current.has(job.id)} aria-busy={copying.current.has(job.id)} onClick={event=>void copyDiagnostics(job,event.currentTarget)}>{supportText(locale,'copyDiagnostics')}</button><small className="activity-history-copy-state" role="status" aria-live="polite" aria-atomic="true">{copyStatus?supportText(locale,copyStatus):''}</small></>}</div>
     </article>;
    })}
    {jobs.length>limit&&<button className="activity-history-more" type="button" onClick={()=>setLimit(value=>value+200)}>{t(locale,'more')} · {(jobs.length-limit).toLocaleString(locale)}</button>}

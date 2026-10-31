@@ -10,7 +10,7 @@ export interface CategoryInference { category: string; basis: 'sourceCategory' |
 export interface Product {
   id: string; title: string; shop: string; category: string; tags: string[]; provider?:string; hidden?:boolean;
   avatar: string; listingAvatars: string[]; ownedAvatars: string[]; files: AssetFile[];
-  status: string; downloaded: number; total: number; price: number | null; filesLoaded?:boolean; fullyDownloaded?:boolean;
+  status: string; downloaded: number; total: number; price: number | null; filesLoaded?:boolean; fullyDownloaded?:boolean; unavailable?:boolean;
   priceCurrency?:string|null; currentPriceText?:string|null; listingStartingPrice?:number|null; paidPrice?:number|null; paidCurrency?:string|null;
   knownFileCount?:number;
   ownedCurrentPrices?:{variantId:string;name:string;price:number|null;currency:string|null;accountIds:string[]}[];

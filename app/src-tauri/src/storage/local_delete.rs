@@ -14,7 +14,7 @@ struct DeleteDirectory {
     staged_directory: String,
 }
 
-fn contains(parent: &Path, child: &Path) -> bool {
+pub(super) fn contains(parent: &Path, child: &Path) -> bool {
     #[cfg(windows)]
     {
         let components = |path: &Path| {
@@ -30,7 +30,7 @@ fn contains(parent: &Path, child: &Path) -> bool {
     }
 }
 
-fn product_directory(value: &str) -> Result<()> {
+pub(super) fn product_directory(value: &str) -> Result<()> {
     let path = archive::validate_relative_path(value)
         .map_err(|_| anyhow::anyhow!("local_delete_unsafe_path"))?;
     let parts: Vec<_> = path.components().collect();
@@ -49,7 +49,7 @@ fn product_directory(value: &str) -> Result<()> {
 }
 
 /// Inspect the complete tree before staging/removal; never traverse a reparse point.
-fn checked_tree(path: &Path) -> Result<()> {
+pub(super) fn checked_tree(path: &Path) -> Result<()> {
     let mut pending = vec![path.to_owned()];
     while let Some(path) = pending.pop() {
         io::reject_link(&path).map_err(|_| anyhow::anyhow!("local_delete_unsafe_path"))?;
@@ -66,7 +66,7 @@ fn checked_tree(path: &Path) -> Result<()> {
 }
 
 /// Explicit entry-by-entry removal preserves the no-link boundary at every step.
-fn remove_checked_tree(path: &Path) -> Result<()> {
+pub(super) fn remove_checked_tree(path: &Path) -> Result<()> {
     checked_tree(path)?;
     let mut pending = vec![(path.to_owned(), false)];
     while let Some((path, visited)) = pending.pop() {
@@ -88,7 +88,7 @@ fn remove_checked_tree(path: &Path) -> Result<()> {
 }
 
 impl StorageService {
-    fn delete_root(&self, id: Option<&str>) -> Result<PathBuf> {
+    pub(super) fn delete_root(&self, id: Option<&str>) -> Result<PathBuf> {
         let path = self.root_path(&self.root(id)?).map_err(|error| {
             if error.to_string().contains("unsafe_link") {
                 anyhow::anyhow!("local_delete_unsafe_path")

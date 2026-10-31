@@ -36,5 +36,11 @@ const labels:Record<string,string[]>={
  addedToCollection:['Added to collection','コレクションに追加','컬렉션에 추가됨','已加入收藏集','已加入收藏集'],resizeNavigation:['Resize navigation','ナビゲーション幅を変更','탐색 너비 조절','调整侧栏宽度','調整側欄寬度'],resizeDetails:['Resize details','詳細幅を変更','상세 너비 조절','调整详情宽度','調整詳細資訊寬度'],detailsWidth:['Details width','詳細幅','상세 너비','详情宽度','詳細資訊寬度'],
  noJobs:['No active jobs','実行中の処理なし','진행 중 작업 없음','没有进行中的任务','沒有進行中的工作'],sourceDetails:['Source details','取得元の詳細','출처 상세','来源详情','來源詳情'],chooseAvatar:['Show avatars','表示する素体','아바타 표시','显示素体','顯示素體'],newAcquisitions:['New acquisitions','新しく取得','새로 취득','新获取资产','新取得資產'],
  preview:['Preview','プレビュー','미리 보기','预览','預覽'],newFile:['New file','新しいファイル','새 파일','新文件','新檔案'],cancelledDownload:['Download cancelled','ダウンロード中止','다운로드 취소됨','已取消下载','已取消下載'],
+ cancelDownload:['Cancel download','ダウンロードを中止','다운로드 취소','取消下载','取消下載'],cancelAllDownloads:['Cancel all downloads','すべてのダウンロードを中止','모든 다운로드 취소','取消全部下载','取消全部下載'],
+ confirmDownloadAll:['Download all {count} products in these results?','この結果の {count} 件の商品をすべてダウンロードしますか？','이 결과의 상품 {count}개를 모두 다운로드할까요?','要下载这些结果中的全部 {count} 个商品吗？','要下載這些結果中的全部 {count} 個產品嗎？'],
+ deleteDownloads:['Delete downloaded files','ダウンロード済みファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],
+ confirmDeleteDownloads:['Delete the downloaded files of {count} product(s)? The products stay in your library.','{count} 件の商品のダウンロード済みファイルを削除しますか？商品はライブラリに残ります。','상품 {count}개의 다운로드한 파일을 삭제할까요? 상품은 라이브러리에 남습니다.','要删除 {count} 个商品的已下载文件吗？商品仍保留在资产库中。','要刪除 {count} 個產品的已下載檔案嗎？產品仍會保留在資產庫中。'],
+ hideUnavailable:['Hide unavailable products','ダウンロードできない商品を非表示','다운로드할 수 없는 상품 숨기기','隐藏无法下载的商品','隱藏無法下載的產品'],downloadUnavailable:['Unavailable','利用不可','사용 불가','不可用','不可用'],
+ deleteDownloadedFile:['Delete downloaded file','ダウンロード済みファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],confirmDeleteFile:['Confirm deletion','削除を確認','삭제 확인','确认删除','確認刪除'],
 };
 export function shellText(locale:Locale,key:string):string|undefined{return labels[key]?.[['en','ja','ko','zh-Hans','zh-Hant'].indexOf(locale)];}
