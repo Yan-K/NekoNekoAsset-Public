@@ -268,6 +268,52 @@ impl UiError {
         result
     }
 
+    /// A library move names the failed side and a recovery action, without raw
+    /// OS messages or paths. Typed I/O causes outrank the operation's code.
+    fn from_move_error(error: &anyhow::Error) -> Self {
+        let code = Self::from_error(anyhow::anyhow!(error.to_string())).code;
+        let destination = matches!(
+            code.as_str(),
+            "storage.destination_unavailable"
+                | "storage_link_forbidden"
+                | "storage_path_unavailable"
+                | "library_lock_unavailable"
+                | "storage.create_directory_failed"
+                | "storage.migration_create_failed"
+                | "storage.write_failed"
+                | "storage.migration_flush_failed"
+                | "storage.export_publish_failed"
+        );
+        let source = matches!(
+            code.as_str(),
+            "storage.read_failed"
+                | "storage.file_unavailable"
+                | "storage.file_missing"
+                | "storage.metadata_failed"
+                | "storage.not_regular_file"
+                | "storage.source_changed"
+                | "storage.source_hash_mismatch"
+        );
+        let cause = error
+            .downcast_ref::<std::io::Error>()
+            .map(|source| (source.kind(), source.raw_os_error()));
+        let mapped = match cause {
+            // Windows sharing and byte-range lock violations.
+            Some((_, Some(32 | 33))) if cfg!(windows) => "storage.move_file_in_use",
+            Some((std::io::ErrorKind::StorageFull, _)) => "library_disk_full",
+            Some((std::io::ErrorKind::PermissionDenied, _)) if destination => {
+                "library_permission_denied"
+            }
+            _ if code == "storage.low_space" => "library_disk_full",
+            _ if destination => "library_create_failed",
+            _ if source => "storage.move_source_unreadable",
+            _ => return Self { code },
+        };
+        Self {
+            code: mapped.into(),
+        }
+    }
+
     fn from_error(error: anyhow::Error) -> Self {
         let raw = error.to_string();
         let first = raw.split(':').next().unwrap_or("operation_failed").trim();
@@ -771,7 +817,7 @@ async fn storage_action(
         .map_err(|_| UiError {
             code: "worker_failed".into(),
         })?
-        .map_err(UiError::from_error)?;
+        .map_err(|error| UiError::from_move_error(&error))?;
         let handoff = (|| -> anyhow::Result<()> {
             let path = result["libraryPath"]
                 .as_str()

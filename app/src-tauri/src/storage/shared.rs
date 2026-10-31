@@ -1,6 +1,7 @@
 //! Explicit movement of a current shared library, without upgrading old data.
 use super::*;
 use crate::library_lock::LibraryLock;
+use anyhow::Context;
 
 impl StorageService {
     pub fn move_library(&self, args: &Value, cancel: &AtomicBool) -> Result<Value> {
@@ -14,7 +15,7 @@ impl StorageService {
         let requested = Path::new(io::required_string(args, "path")?);
         ensure!(requested.is_absolute(), "root_not_absolute");
         archive::validate_no_links(requested)?;
-        std::fs::create_dir_all(requested)?;
+        std::fs::create_dir_all(requested).context("storage.destination_unavailable")?;
         let destination = checked_library_root(requested)?;
         ensure!(
             !source.starts_with(&destination) && !destination.starts_with(&source),
@@ -22,9 +23,10 @@ impl StorageService {
         );
         // Reject unrelated contents before acquiring a lock can create its marker.
         // copy_into_locked_root rechecks under the destination lock.
-        for entry in std::fs::read_dir(&destination)? {
+        for entry in std::fs::read_dir(&destination).context("storage.destination_unavailable")? {
             ensure!(
-                entry?.file_name() == ".nna-library.lock",
+                entry.context("storage.destination_unavailable")?.file_name()
+                    == ".nna-library.lock",
                 "storage.destination_not_fresh"
             );
         }
@@ -40,7 +42,8 @@ impl StorageService {
         }
         // The selected library is user-owned. Preserve additional files and
         // empty folders too, retaining stronger hashes for managed artifacts.
-        self.complete_library_payload(&source, &mut payload, cancel)?;
+        self.complete_library_payload(&source, &mut payload, cancel)
+            .context("storage.read_failed")?;
         let snapshot = self
             .catalogue
             .data_dir()
@@ -127,6 +130,7 @@ fn move_transient(relative: &str) -> bool {
     matches!(
         relative,
         ".nna-library.lock"
+            | ".nna/data/storage.lock"
             | ".nna/data/catalogue.sqlite3"
             | ".nna/data/catalogue.sqlite3-journal"
             | ".nna/data/catalogue.sqlite3-wal"
@@ -253,6 +257,31 @@ mod tests {
             b"human-owned bytes"
         );
         drop(catalogue.begin_catalogue_work().unwrap());
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn shared_move_skips_the_running_storage_lock() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("shared-move-running-{}", uuid::Uuid::new_v4()));
+        let source = fixture.join("source");
+        let destination = fixture.join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        let catalogue = Catalogue::open_bound(&source, &fixture.join("profile")).unwrap();
+        let booth = Arc::new(crate::booth::BoothService::new(catalogue.clone()).unwrap());
+        let stores = Arc::new(StoreService::new(catalogue.clone(), booth).unwrap());
+        let service = StorageService::new(catalogue.clone(), stores).unwrap();
+        // The running App holds this lock while the user moves its library.
+        service.lock_process().unwrap();
+        service
+            .move_library(&json!({"path":destination}), &AtomicBool::new(false))
+            .unwrap();
+        assert!(destination.join(".nna/data/catalogue.sqlite3").is_file());
+        assert!(!destination.join(".nna/data/storage.lock").exists());
+        catalogue.release_move_hold().unwrap();
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(fixture).unwrap();

@@ -407,21 +407,27 @@ impl StorageService {
         }
         Ok((None, changed))
     }
+    /// Held for the App lifetime in the library data folder. Windows denies other
+    /// handles' reads of this byte-range lock, so a library move skips it.
+    fn lock_process(&self) -> Result<()> {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.catalogue.data_dir().join("storage.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&lock)
+            .map_err(|_| anyhow::anyhow!("storage_already_running"))?;
+        *self.process_lock.lock().unwrap() = Some(lock);
+        Ok(())
+    }
     pub async fn start(&self, app: tauri::AppHandle) -> Result<()> {
         let _startup = self.catalogue.begin_catalogue_work()?;
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
         let setup = (|| -> Result<()> {
-            let lock = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(self.catalogue.data_dir().join("storage.lock"))?;
-            fs2::FileExt::try_lock_exclusive(&lock)
-                .map_err(|_| anyhow::anyhow!("storage_already_running"))?;
-            *self.process_lock.lock().unwrap() = Some(lock);
+            self.lock_process()?;
             for mut job in self.catalogue.list("job")? {
                 if matches!(job["state"].as_str(), Some("running" | "queued")) {
                     if job["type"] == "storage:import_local"

@@ -179,6 +179,56 @@ fn library_errors_retain_typed_causes_and_expose_only_actionable_codes() {
 }
 
 #[test]
+fn move_errors_name_the_failed_side_without_raw_messages() {
+    let io = |kind: std::io::ErrorKind| {
+        anyhow::Error::new(std::io::Error::new(kind, "authored private path"))
+    };
+    for (error, expected) in [
+        (
+            io(std::io::ErrorKind::PermissionDenied).context("storage.destination_unavailable"),
+            "library_permission_denied",
+        ),
+        (
+            io(std::io::ErrorKind::NotFound).context("storage.destination_unavailable"),
+            "library_create_failed",
+        ),
+        (
+            io(std::io::ErrorKind::StorageFull).context("storage.write_failed"),
+            "library_disk_full",
+        ),
+        (
+            io(std::io::ErrorKind::PermissionDenied).context("storage.read_failed"),
+            "storage.move_source_unreadable",
+        ),
+        (anyhow::anyhow!("storage.low_space"), "library_disk_full"),
+        (
+            anyhow::anyhow!("storage.source_hash_mismatch"),
+            "storage.move_source_unreadable",
+        ),
+        (
+            anyhow::anyhow!("storage.migration_overlapping_roots"),
+            "storage.migration_overlapping_roots",
+        ),
+        (
+            anyhow::anyhow!("storage.destination_not_fresh"),
+            "storage.destination_not_fresh",
+        ),
+        (anyhow::anyhow!("storage_busy"), "storage_busy"),
+    ] {
+        assert_eq!(UiError::from_move_error(&error).code, expected);
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        UiError::from_move_error(
+            &anyhow::Error::new(std::io::Error::from_raw_os_error(33))
+                .context("storage.read_failed")
+        )
+        .code,
+        "storage.move_file_in_use"
+    );
+}
+
+#[test]
 fn setup_path_file_failure_preserves_the_draft_and_allows_another_location() {
     let fixture = Fixture::new();
     let setup = fixture.setup();
