@@ -74,7 +74,7 @@ NekoNekoAsset は Windows 向けのデスクトップアプリです。BOOTH・G
 
 ## Unity Bridge
 
-素材をワンクリックで Unity に送るには、Unity 2022.3 以降のプロジェクトに NekoNekoAsset Bridge を入れてください。3 つの形式は中身が同じなので、[Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) からどれかひとつを選びます：
+素材をワンクリックで Unity に送るには、Unity 2022.3 以降のプロジェクトに NekoNekoAsset Bridge を入れてください。3 つの形式は中身が同じなので、どれかひとつを選びます。Bridge は更新があったリリースにだけ付くため、[Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) で Bridge が付いている最新のリリースから選んでください：
 
 | 形式 | インストール方法 |
 | --- | --- |

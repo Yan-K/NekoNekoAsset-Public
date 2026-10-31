@@ -63,15 +63,36 @@ def read_json(path: str | Path) -> dict:
 
 def version() -> str:
     versions = [read_json("app/package.json")["version"],
-                read_json("app/src-tauri/tauri.conf.json")["version"],
-                read_json(f"unity/Packages/{PACKAGE}/package.json")["version"]]
+                read_json("app/src-tauri/tauri.conf.json")["version"]]
     # Only the first Cargo [package] section is relevant.
     cargo = (ROOT / "app/src-tauri/Cargo.toml").read_text(encoding="utf-8")
     match = re.search(r'^version\s*=\s*"([^"]+)"', cargo.split("[lib]", 1)[0], re.MULTILINE)
     versions.append(match.group(1) if match else "")
     if len(set(versions)) != 1 or not VERSION.fullmatch(versions[0]):
-        raise ValueError("App, Cargo, Tauri and Bridge versions must equal one numeric SemVer")
+        raise ValueError("App, Cargo and Tauri versions must equal one numeric SemVer")
     return versions[0]
+
+
+def numeric(value: str) -> tuple[int, ...]:
+    return tuple(map(int, value.split(".")))
+
+
+def bridge_version(current: str) -> str:
+    # The Bridge keeps the version of the release that last changed it; a changed Bridge takes the App's.
+    bridge = read_json(f"unity/Packages/{PACKAGE}/package.json")["version"]
+    if not VERSION.fullmatch(bridge) or numeric(bridge) > numeric(current):
+        raise ValueError("The Bridge version must be numeric SemVer and no newer than the App")
+    return bridge
+
+
+def check_bridge_unchanged(bridge: str) -> None:
+    # Unity caches packages by version, so changed Bridge sources must not reuse a published version.
+    result = subprocess.run(["git", "diff", "--quiet", f"refs/tags/v{bridge}", "--", f"unity/Packages/{PACKAGE}"],
+                            cwd=ROOT, capture_output=True)
+    if result.returncode == 1:
+        raise ValueError(f"Bridge sources changed since v{bridge}; give the Bridge this release's version")
+    if result.returncode:
+        raise ValueError(f"The v{bridge} tag that published this Bridge is unavailable")
 
 
 def release_config() -> dict:
@@ -92,7 +113,7 @@ def release_notes(current: str) -> str:
             raise ValueError("Changelog release headings must start with a numeric version: ## 0.2.1 Beta - YYYY-MM-DD")
         versions.append(match.group(1))
     if not versions or versions[0] != current:
-        raise ValueError("The newest changelog.md section must match the App and Bridge version")
+        raise ValueError("The newest changelog.md section must match the App version")
     if len(versions) != len(set(versions)):
         raise ValueError("Changelog release versions must not be duplicated")
     end = headings[1].start() if len(headings) > 1 else len(text)
@@ -140,8 +161,11 @@ def check_public_paths(paths: list[str]) -> None:
 
 def check(tag: str | None, verification: bool, allow_internal: bool = False) -> str:
     current = version()
+    bridge = bridge_version(current)
     if tag and tag != f"v{current}":
-        raise ValueError("Release tag must equal the shared App and Bridge version")
+        raise ValueError("Release tag must equal the App version")
+    if tag and bridge != current:
+        check_bridge_unchanged(bridge)
     config = read_json("app/src-tauri/tauri.conf.json")
     updater = config.get("plugins", {}).get("updater", {})
     if config["bundle"].get("targets") != ["nsis"] or config["bundle"].get("createUpdaterArtifacts") is not True:
@@ -166,11 +190,12 @@ def check(tag: str | None, verification: bool, allow_internal: bool = False) -> 
     return current
 
 
-def asset_names(current: str) -> set[str]:
+def asset_names(current: str, bridge: bool) -> set[str]:
     app = f"NekoNekoAsset_{current}_x64-setup.exe"
-    bridge = f"{PACKAGE}-{current}"
-    return {app, app + ".sig", bridge + ".unitypackage", bridge + ".tgz",
-            bridge + ".zip", bridge + ".inventory.json", "SHA256SUMS.txt"}
+    names = {app, app + ".sig", "SHA256SUMS.txt"}
+    if bridge:
+        names |= {f"{PACKAGE}-{current}{suffix}" for suffix in (".unitypackage", ".tgz", ".zip", ".inventory.json")}
+    return names
 
 
 def signature_value(value: str, expected_version: str, public_key: str | None = None) -> str:
@@ -208,15 +233,17 @@ def collect_app(bundle: Path, output: Path) -> None:
     shutil.copyfile(signature, output / (name + ".sig"))
 
 
-def check_artifacts(directory: Path, current: str, with_checksums: bool) -> list[Path]:
-    expected = asset_names(current) - (set() if with_checksums else {"SHA256SUMS.txt"})
+def check_artifacts(directory: Path, current: str, with_checksums: bool, bridge: bool) -> list[Path]:
+    expected = asset_names(current, bridge) - (set() if with_checksums else {"SHA256SUMS.txt"})
     files = sorted(directory.iterdir())
     if any(not path.is_file() or path.is_symlink() for path in files) or {p.name for p in files} != expected:
-        raise ValueError("Release assets differ from the installer/signature/three Bridge formats/inventory allowlist")
+        raise ValueError("Release assets differ from this release's installer/signature/Bridge formats/inventory allowlist")
     if any(path.stat().st_size == 0 for path in files):
         raise ValueError("A release asset is empty")
     signature_value((directory / f"NekoNekoAsset_{current}_x64-setup.exe.sig").read_text(encoding="ascii"), current,
                     read_json("app/src-tauri/tauri.conf.json")["plugins"]["updater"]["pubkey"])
+    if not bridge:
+        return files
     inventory = json.loads((directory / f"{PACKAGE}-{current}.inventory.json").read_text(encoding="utf-8"))
     if inventory["packageName"] != PACKAGE or inventory["version"] != current:
         raise ValueError("Bridge inventory version or identity does not match")
@@ -318,8 +345,9 @@ def prepare(tag: str) -> None:
         api.request(f"releases/{existing['id']}", "PATCH", details)
     else:
         api.request("releases", "POST", details)
-    set_output(published="false", version=current)
-    print("Draft release ready; nothing is public until both build jobs pass.")
+    # App-only releases skip the Bridge build; publish still requires exactly the matching assets.
+    set_output(published="false", version=current, bridge=str(bridge_version(current) == current).lower())
+    print("Draft release ready; nothing is public until every build job passes.")
 
 
 def publish(tag: str, directory: Path) -> None:
@@ -333,11 +361,12 @@ def publish(tag: str, directory: Path) -> None:
         print("Published release is immutable; no artifacts changed.")
         return
     notes = release_notes(current)
-    files = check_artifacts(directory, current, False)
+    bridge = bridge_version(current) == current
+    files = check_artifacts(directory, current, False, bridge)
     checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in files)
     (directory / "SHA256SUMS.txt").write_text(checksums, encoding="ascii", newline="\n")
-    files = check_artifacts(directory, current, True)
-    expected = asset_names(current)
+    files = check_artifacts(directory, current, True, bridge)
+    expected = asset_names(current, bridge)
     if any(asset["name"] not in expected for asset in release["assets"]):
         raise ValueError("Draft has an unexpected asset; refusing to publish internal or portable files")
     for asset in release["assets"]:
@@ -365,16 +394,23 @@ def published_releases(api: GitHub) -> list[dict]:
         page += 1
 
 
+def uploaded(release: dict) -> dict[str, dict]:
+    return {asset["name"]: asset for asset in release["assets"] if asset["state"] == "uploaded"}
+
+
 def pages(output: Path) -> None:
     api = GitHub()
     releases = published_releases(api)
-    if not releases:
-        raise ValueError("No published App/Bridge release exists")
-    release = max(releases, key=lambda value: tuple(map(int, value["tag_name"][1:].split("."))))
-    current = release["tag_name"][1:]
-    assets = {asset["name"]: asset for asset in release["assets"] if asset["state"] == "uploaded"}
-    if set(assets) != asset_names(current):
-        raise ValueError("Newest published release is incomplete; keep the existing update feed")
+    # App-only releases carry no Bridge files, so the Bridge feed follows the newest release that does.
+    carriers = [value for value in releases if any(asset["name"].startswith(PACKAGE + "-") for asset in value["assets"])]
+    if not releases or not carriers:
+        raise ValueError("No published App and Bridge releases exist")
+    newest = lambda values: max(values, key=lambda value: numeric(value["tag_name"][1:]))
+    release, bridge_release = newest(releases), newest(carriers)
+    current, bridge = release["tag_name"][1:], bridge_release["tag_name"][1:]
+    assets, bridge_assets = uploaded(release), uploaded(bridge_release)
+    if set(assets) != asset_names(current, bridge == current) or set(bridge_assets) != asset_names(bridge, True):
+        raise ValueError("Newest published release is incomplete; keep the existing update feeds")
     installer = f"NekoNekoAsset_{current}_x64-setup.exe"
     # Signature assets are public. Fetch without an authentication header across redirects.
     with urllib.request.urlopen(assets[installer + ".sig"]["browser_download_url"], timeout=60) as response:
@@ -385,9 +421,9 @@ def pages(output: Path) -> None:
     documents = {"app/latest.json": {"version": current, "notes": release["body"] or "",
                  "pub_date": release["published_at"], "platforms": {"windows-x86_64": {
                      "url": assets[installer]["browser_download_url"], "signature": signature}}},
-                 "bridge/latest.json": {"version": current,
-                     "unitypackageUrl": assets[f"{PACKAGE}-{current}.unitypackage"]["browser_download_url"],
-                     "releaseUrl": release["html_url"]}}
+                 "bridge/latest.json": {"version": bridge,
+                     "unitypackageUrl": bridge_assets[f"{PACKAGE}-{bridge}.unitypackage"]["browser_download_url"],
+                     "releaseUrl": bridge_release["html_url"]}}
     for relative, document in documents.items():
         path = output / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -397,7 +433,7 @@ def pages(output: Path) -> None:
                          "installer_url": html.escape(assets[installer]["browser_download_url"]),
                          "installer_size": f"{assets[installer]['size'] / 1048576:.1f} MB",
                          "release_url": html.escape(release["html_url"])})
-    print(f"Pages feed and site regenerated from highest published version {current} (including Beta releases).")
+    print(f"Pages feeds and site regenerated from highest published App {current} and Bridge {bridge} (including Beta releases).")
 
 
 def render_site(output: Path, facts: dict[str, str]) -> None:

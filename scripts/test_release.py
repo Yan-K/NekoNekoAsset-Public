@@ -63,15 +63,41 @@ class ReleaseChecks(unittest.TestCase):
                     "appUnityTransfer": {"passed": True, "receivedBytesMatch": True,
                                          "importSucceeded": True, "durableReceipt": True}}}
 
-    def test_versions_must_all_match(self):
-        self.write_json("app/package.json", {"version": "0.2.0"})
-        self.write_json("app/src-tauri/tauri.conf.json", {"version": "0.2.0"})
-        self.write_json(f"unity/Packages/{release.PACKAGE}/package.json", {"version": "0.2.0"})
-        (self.root / "app/src-tauri/Cargo.toml").write_text('[package]\nversion = "0.2.0"\n[lib]\n', encoding="utf-8")
-        self.assertEqual(release.version(), "0.2.0")
-        self.write_json("app/package.json", {"version": "0.2.1"})
+    def write_bridge_version(self, bridge):
+        self.write_json(f"unity/Packages/{release.PACKAGE}/package.json", {"version": bridge})
+
+    def test_app_versions_match_and_bridge_keeps_an_older_release_version(self):
+        self.write_json("app/package.json", {"version": "0.10.0"})
+        self.write_json("app/src-tauri/tauri.conf.json", {"version": "0.10.0"})
+        (self.root / "app/src-tauri/Cargo.toml").write_text('[package]\nversion = "0.10.0"\n[lib]\n', encoding="utf-8")
+        for bridge in ("0.10.0", "0.9.0"):
+            with self.subTest(bridge=bridge):
+                self.write_bridge_version(bridge)
+                self.assertEqual(release.bridge_version(release.version()), bridge)
+        for bridge in ("0.10.1", "0.10"):
+            with self.subTest(bridge=bridge):
+                self.write_bridge_version(bridge)
+                with self.assertRaises(ValueError):
+                    release.bridge_version("0.10.0")
+        self.write_json("app/package.json", {"version": "0.10.1"})
         with self.assertRaises(ValueError):
             release.version()
+
+    def test_unbumped_bridge_must_match_the_release_that_published_it(self):
+        source = self.root / f"unity/Packages/{release.PACKAGE}/Editor/Bridge.cs"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"authored bridge\n")
+        subprocess.run(["git", "init", "--quiet", self.root], check=True)
+        subprocess.run(["git", "-C", self.root, "config", "core.autocrlf", "false"], check=True)
+        subprocess.run(["git", "-C", self.root, "add", "."], check=True)
+        tree = subprocess.check_output(["git", "-C", self.root, "write-tree"], text=True).strip()
+        subprocess.run(["git", "-C", self.root, "update-ref", "refs/tags/v0.2.0", tree], check=True)
+        release.check_bridge_unchanged("0.2.0")
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            release.check_bridge_unchanged("0.1.0")
+        source.write_bytes(b"changed authored bridge\n")
+        with self.assertRaisesRegex(ValueError, "changed since v0.2.0"):
+            release.check_bridge_unchanged("0.2.0")
 
     def test_digest_detects_changes_and_normalizes_checkout_line_endings(self):
         subprocess.run(["git", "init", "--quiet", self.root], check=True)
@@ -153,16 +179,19 @@ class ReleaseChecks(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         release.check_verification("0.2.0")
 
-    def artifacts(self):
+    def artifacts(self, bridge=True):
         directory = self.root / "artifacts"
         directory.mkdir()
         current = "0.2.0"
         key_packet = base64.b64encode(b"ED" + b"authored" + b"x" * 32).decode("ascii")
         key = base64.b64encode(("untrusted comment: authored key\n" + key_packet + "\n").encode("ascii")).decode("ascii")
         self.write_json("app/src-tauri/tauri.conf.json", {"plugins": {"updater": {"pubkey": key}}})
-        for name in release.asset_names(current) - {"SHA256SUMS.txt"}:
+        self.write_bridge_version(current if bridge else "0.1.0")
+        for name in release.asset_names(current, bridge) - {"SHA256SUMS.txt"}:
             (directory / name).write_bytes(b"authored artifact")
         (directory / f"NekoNekoAsset_{current}_x64-setup.exe.sig").write_text(SIGNATURE, encoding="ascii")
+        if not bridge:
+            return directory
         inventory = {"packageName": release.PACKAGE, "version": current, "archives": {}}
         for kind, suffix in (("unitypackage", ".unitypackage"), ("upm", ".tgz"), ("vpm", ".zip")):
             name = f"{release.PACKAGE}-{current}{suffix}"
@@ -173,22 +202,31 @@ class ReleaseChecks(unittest.TestCase):
 
     def test_portable_or_internal_extra_asset_blocks(self):
         directory = self.artifacts()
-        self.assertEqual(len(release.check_artifacts(directory, "0.2.0", False)), 6)
+        self.assertEqual(len(release.check_artifacts(directory, "0.2.0", False, True)), 6)
         (directory / "NekoNekoAsset_0.2.0_x64-portable.zip").write_bytes(b"authored")
         with self.assertRaises(ValueError):
-            release.check_artifacts(directory, "0.2.0", False)
+            release.check_artifacts(directory, "0.2.0", False, True)
+
+    def test_app_only_release_has_exactly_the_installer_and_signature(self):
+        directory = self.artifacts(bridge=False)
+        self.assertEqual(len(release.check_artifacts(directory, "0.2.0", False, False)), 2)
+        with self.assertRaises(ValueError):
+            release.check_artifacts(directory, "0.2.0", False, True)
+        (directory / f"{release.PACKAGE}-0.2.0.unitypackage").write_bytes(b"authored archive")
+        with self.assertRaises(ValueError):
+            release.check_artifacts(directory, "0.2.0", False, False)
 
     def test_changed_bridge_archive_blocks(self):
         directory = self.artifacts()
         (directory / f"{release.PACKAGE}-0.2.0.tgz").write_bytes(b"different authored archive")
         with self.assertRaises(ValueError):
-            release.check_artifacts(directory, "0.2.0", False)
+            release.check_artifacts(directory, "0.2.0", False, True)
 
     def test_missing_signature_blocks(self):
         directory = self.artifacts()
         (directory / "NekoNekoAsset_0.2.0_x64-setup.exe.sig").unlink()
         with self.assertRaises(ValueError):
-            release.check_artifacts(directory, "0.2.0", False)
+            release.check_artifacts(directory, "0.2.0", False, True)
 
     def test_signature_bound_to_another_version_blocks(self):
         with self.assertRaises(ValueError):
@@ -200,11 +238,11 @@ class ReleaseChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.signature_value(SIGNATURE, "0.2.0", key)
 
-    def published(self, current, draft=False):
+    def published(self, current, draft=False, bridge=True):
         return {"tag_name": "v" + current, "draft": draft, "prerelease": True, "body": "Authored notes",
                 "published_at": "2026-01-01T00:00:00Z", "html_url": "https://github.com/example/releases/v" + current,
                 "assets": [{"name": name, "state": "uploaded", "size": 27746472, "browser_download_url": "https://example.test/" + name}
-                           for name in sorted(release.asset_names(current))]}
+                           for name in sorted(release.asset_names(current, bridge))]}
 
     def write_site(self):
         (self.root / "site/assets").mkdir(parents=True)
@@ -251,25 +289,42 @@ class ReleaseChecks(unittest.TestCase):
             self.assertNotIn("{{", page)
         self.assertEqual((output / "assets/icon.png").read_bytes(), b"authored icon")
 
+    def test_pages_keeps_the_bridge_feed_on_the_newest_release_carrying_it(self):
+        self.write_site()
+        fake_api = unittest.mock.Mock(spec=release.GitHub)
+        fake_api.request.return_value = [self.published("0.3.4"), self.published("0.3.10", bridge=False),
+                                         self.published("0.3.9", bridge=False), self.published("0.4.0", draft=True)]
+        output = self.root / "pages"
+        with patch.object(release, "GitHub", return_value=fake_api), \
+                patch.object(release.urllib.request, "urlopen", return_value=io.BytesIO(authored_signature("0.3.10").encode())):
+            release.pages(output)
+        self.assertEqual(json.loads((output / "app/latest.json").read_text(encoding="utf-8"))["version"], "0.3.10")
+        self.assertEqual(json.loads((output / "bridge/latest.json").read_text(encoding="utf-8")),
+                         {"version": "0.3.4", "unitypackageUrl": f"https://example.test/{release.PACKAGE}-0.3.4.unitypackage",
+                          "releaseUrl": "https://github.com/example/releases/v0.3.4"})
+        self.assertIn("v0.3.10 Beta", (output / "index.html").read_text(encoding="utf-8"))
+
     def test_site_language_missing_a_string_blocks_pages(self):
         self.write_site()
         self.write_json("site/strings/ja.json", {"html_lang": "ja"})
         with self.assertRaises(ValueError):
             release.render_site(self.root / "pages", {})
 
-    def test_incomplete_latest_release_retains_existing_feed(self):
-        latest = self.published("0.3.0")
-        latest["assets"].pop()
-        fake_api = unittest.mock.Mock(spec=release.GitHub)
-        fake_api.request.return_value = [self.published("0.2.0"), latest]
+    def test_incomplete_latest_app_or_bridge_release_retains_existing_feeds(self):
+        incomplete = self.published("0.3.0")
+        incomplete["assets"].pop()
         output = self.root / "pages"
         (output / "app").mkdir(parents=True)
         existing = output / "app/latest.json"
         existing.write_text("existing feed", encoding="utf-8")
-        with patch.object(release, "GitHub", return_value=fake_api):
-            with self.assertRaises(ValueError):
-                release.pages(output)
-        self.assertEqual(existing.read_text(encoding="utf-8"), "existing feed")
+        for records in ([self.published("0.2.0"), incomplete], [incomplete, self.published("0.3.1", bridge=False)]):
+            with self.subTest(newest=records[-1]["tag_name"]):
+                fake_api = unittest.mock.Mock(spec=release.GitHub)
+                fake_api.request.return_value = records
+                with patch.object(release, "GitHub", return_value=fake_api):
+                    with self.assertRaises(ValueError):
+                        release.pages(output)
+                self.assertEqual(existing.read_text(encoding="utf-8"), "existing feed")
 
     def test_published_release_rerun_never_touches_assets(self):
         fake_api = unittest.mock.Mock(spec=release.GitHub)
@@ -292,7 +347,7 @@ class ReleaseChecks(unittest.TestCase):
         expected = self.write_changelog("0.2.0")
         fake_api = unittest.mock.Mock(spec=release.GitHub)
         draft = {"id": 11, "draft": True, "body": "Manually changed draft notes", "assets": []}
-        uploaded = [{"name": name, "state": "uploaded"} for name in release.asset_names("0.2.0")]
+        uploaded = [{"name": name, "state": "uploaded"} for name in release.asset_names("0.2.0", True)]
         fake_api.release.side_effect = [draft, {"assets": uploaded}]
         with patch.object(release, "check", return_value="0.2.0"), patch.object(release, "GitHub", return_value=fake_api):
             release.publish("v0.2.0", directory)
@@ -340,6 +395,7 @@ class ReleaseChecks(unittest.TestCase):
 
     def test_prepare_retry_reuses_listed_draft_without_duplicate_creation(self):
         expected = self.write_changelog("0.2.0")
+        self.write_bridge_version("0.1.0")
         api = object.__new__(release.GitHub)
         draft = {"id": 73, "tag_name": "v0.2.0", "draft": True}
         api.request = unittest.mock.Mock(side_effect=[None, [draft], draft])
@@ -348,8 +404,10 @@ class ReleaseChecks(unittest.TestCase):
                 patch.object(api, "assert_tag_checkout"), \
                 patch.object(release, "git", return_value=b"authored-head"), \
                 patch.object(release, "release_config", return_value={"prerelease": True}), \
-                patch.object(release, "set_output"):
+                patch.object(release, "set_output") as output:
             release.prepare("v0.2.0")
+        # An unchanged Bridge leaves the release App-only, so the workflow skips the Bridge build.
+        output.assert_called_once_with(published="false", version="0.2.0", bridge="false")
         self.assertEqual(api.request.call_count, 3)
         self.assertEqual(api.request.call_args.args[:2], ("releases/73", "PATCH"))
         self.assertEqual(api.request.call_args.args[2]["body"], expected)

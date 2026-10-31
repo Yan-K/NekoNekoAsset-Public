@@ -74,7 +74,7 @@ Windows 64-bit only for now. New versions are offered inside the app and install
 
 ## Unity Bridge
 
-To send assets to Unity in one click, install the NekoNekoAsset Bridge in a Unity 2022.3 or later project. All three formats contain the same package, so pick one from [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases):
+To send assets to Unity in one click, install the NekoNekoAsset Bridge in a Unity 2022.3 or later project. All three formats contain the same package. Pick one from the newest release on [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) that lists the Bridge; releases that change only the app do not repeat it:
 
 | Format | How to install |
 | --- | --- |

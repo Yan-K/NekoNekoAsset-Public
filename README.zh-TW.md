@@ -74,7 +74,7 @@ NekoNekoAsset 是一款 Windows 桌面 App。它會同步你在 BOOTH、Gumroad�
 
 ## Unity Bridge
 
-想把素材一鍵送進 Unity，請在 Unity 2022.3 以上的專案安裝 NekoNekoAsset Bridge。三種格式內容相同，擇一即可，都在 [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) 頁面：
+想把素材一鍵送進 Unity，請在 Unity 2022.3 以上的專案安裝 NekoNekoAsset Bridge。三種格式內容相同，擇一即可。Bridge 只附在有更新它的版本，請到 [Releases](https://github.com/Yan-K/NekoNekoAsset-Public/releases) 頁面找最新一個附有 Bridge 的版本：
 
 | 格式 | 安裝方式 |
 | --- | --- |
