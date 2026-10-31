@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.3 Beta - 2026-10-31
+
+### Fixed
+
+- BOOTH: the sync that runs when the App starts, including the first start after an update, no longer downloads every order receipt again or rewrites products that did not change. Receipts already saved are reused, also when an update interrupted the previous sync.
+- Compatible-avatar filters respond immediately again, and the avatar list opens faster. Since 0.2.5, every click reread the Base avatar names that Windows cannot read aloud, taking about a third of a second per name.
+- Compatible avatars taken from a product's variant or from a name you entered now show the products they count, instead of an empty list.
+- Opening a library is faster. Ready badges are rechecked only for products with downloads, and the sync history is read only when needed and then stored in a compact form.
+
+### Release notes
+
+- App and Unity Bridge share version 0.3.3 Beta. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- The first list after opening a library still reads every product once.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.2 Beta - 2026-10-31
 
 ### Fixed
