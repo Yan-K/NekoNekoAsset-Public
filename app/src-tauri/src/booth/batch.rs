@@ -4,6 +4,23 @@ use anyhow::Result;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub(crate) fn same_except_observed_at(stored: &Value, value: &Value) -> bool {
+    match (stored.as_object(), value.as_object()) {
+        (Some(stored), Some(value)) => {
+            let fields = |map: &serde_json::Map<String, Value>| {
+                map.iter()
+                    .filter(|(field, _)| *field != "observedAt")
+                    .count()
+            };
+            fields(stored) == fields(value)
+                && value
+                    .iter()
+                    .all(|(field, v)| field == "observedAt" || stored.get(field) == Some(v))
+        }
+        _ => stored == value,
+    }
+}
+
 pub(crate) struct RecordBatch<'a> {
     catalogue: &'a Catalogue,
     initial: BTreeMap<(String, String), Option<Value>>,
@@ -32,7 +49,15 @@ impl<'a> RecordBatch<'a> {
     pub fn stage(&mut self, kind: &str, id: &str, value: Value) -> Result<()> {
         self.get(kind, id)?;
         let key = (kind.to_owned(), id.to_owned());
-        if self.initial.get(&key).and_then(Option::as_ref) == Some(&value) {
+        // Re-observing unchanged facts only moves observedAt. Keeping the stored
+        // record avoids a durable write, a product projection and a permanent
+        // history entry for every record on every sync.
+        if self
+            .initial
+            .get(&key)
+            .and_then(Option::as_ref)
+            .is_some_and(|stored| same_except_observed_at(stored, &value))
+        {
             self.staged.remove(&key);
         } else {
             self.staged.insert(key, value);
@@ -60,6 +85,12 @@ impl<'a> RecordBatch<'a> {
     }
     pub fn len(&self) -> usize {
         self.staged.len()
+    }
+    /// Whether committing changes catalogue facts rather than only run state.
+    pub fn changes_facts(&self) -> bool {
+        self.staged
+            .keys()
+            .any(|(kind, _)| !matches!(kind.as_str(), "checkpoint" | "job"))
     }
     /// Prepared catalogue facts only. Callers must not stage transient provider
     /// capabilities; this permits durable journals before visible publication.
@@ -93,5 +124,19 @@ impl<'a> RecordBatch<'a> {
             }
         }
         Ok(Some(count))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_except_observed_at;
+    use serde_json::json;
+    #[test]
+    fn a_new_observation_time_alone_is_not_a_change() {
+        let stored = json!({"id":"a","n":1,"observedAt":"earlier"});
+        assert!(same_except_observed_at(&stored, &json!({"id":"a","n":1,"observedAt":"later"})));
+        assert!(same_except_observed_at(&json!({"id":"a","n":1}), &json!({"id":"a","n":1,"observedAt":"later"})));
+        assert!(!same_except_observed_at(&stored, &json!({"id":"a","n":2,"observedAt":"earlier"})));
+        assert!(!same_except_observed_at(&stored, &json!({"id":"a","n":1,"m":null,"observedAt":"later"})));
     }
 }

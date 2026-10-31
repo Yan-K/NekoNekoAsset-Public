@@ -16,8 +16,40 @@ pub(super) struct Baseline {
     pub ordering: Ordering,
     pub rows: Vec<Row>,
     pub full_traversal_at: String,
+    /// Receipt routes this complete pass read, including receipts without digital rows.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub details: BTreeSet<String>,
 }
 impl Baseline {
+    /// An incremental purchase scan still lists every order, but a receipt this
+    /// complete pass already read supplies its rows instead of a new request.
+    /// Orders are immutable; Full rereads every receipt.
+    pub fn known_receipts(&self, account: &str, source: &str) -> BTreeMap<String, Vec<Row>> {
+        let mut known: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+        if source != "purchase"
+            || self.version != 1
+            || self.account_id != account
+            || self.source != source
+            || !self.complete
+            || !unique(&self.rows)
+            || !self.rows.iter().all(stable)
+        {
+            return known;
+        }
+        for row in &self.rows {
+            let Some(order) = row.order_id.as_deref().filter(|id| safety::numeric(id)) else {
+                // A row that cannot name its receipt cannot be reused safely.
+                return BTreeMap::new();
+            };
+            known.entry(format!("/orders/{order}")).or_default().push(row.clone());
+        }
+        for route in &self.details {
+            if route.strip_prefix("/orders/").is_some_and(safety::numeric) {
+                known.entry(route.clone()).or_default();
+            }
+        }
+        known
+    }
     pub fn usable(&self, account: &str, source: &str) -> bool {
         self.version == 1
             && self.account_id == account
@@ -160,6 +192,7 @@ mod tests {
             ordering: Ordering::AcquiredNewestFirst,
             rows: (0..10000).map(row).collect(),
             full_traversal_at: "previous-full-pass".into(),
+            details: BTreeSet::new(),
         }
     }
     fn page(rows: Vec<Row>) -> Page {
@@ -176,6 +209,43 @@ mod tests {
             ordering: Ordering::AcquiredNewestFirst,
             free_item: None,
         }
+    }
+    #[test]
+    fn known_receipts_come_only_from_a_complete_purchase_pass() {
+        let receipt = |id: usize, order: &str| Row {
+            order_id: Some(order.into()),
+            ..row(id)
+        };
+        let mut pass = Baseline {
+            version: 1,
+            account_id: "synthetic".into(),
+            source: "purchase".into(),
+            complete: true,
+            ordering: Ordering::Unknown,
+            rows: vec![receipt(1, "910001"), receipt(2, "910001"), receipt(3, "910002")],
+            full_traversal_at: "previous-full-pass".into(),
+            details: BTreeSet::from(["/orders/910003".into()]),
+        };
+        let known = pass.known_receipts("synthetic", "purchase");
+        assert_eq!(known.keys().collect::<Vec<_>>(), ["/orders/910001", "/orders/910002", "/orders/910003"]);
+        assert_eq!(known["/orders/910001"].len(), 2);
+        assert!(known["/orders/910003"].is_empty());
+        assert!(pass.known_receipts("other", "purchase").is_empty());
+        pass.complete = false;
+        assert!(pass.known_receipts("synthetic", "purchase").is_empty());
+        pass.complete = true;
+        pass.rows[0].error_code = Some("DIGITAL_CONTROLS_UNRESOLVED".into());
+        assert!(pass.known_receipts("synthetic", "purchase").is_empty());
+        pass.rows[0].error_code = None;
+        pass.rows[2].order_id = None;
+        assert!(pass.known_receipts("synthetic", "purchase").is_empty());
+        let mut library = base();
+        library.details = BTreeSet::from(["/orders/910003".into()]);
+        assert!(library.known_receipts("synthetic", "library").is_empty());
+        // Baselines saved before receipt routes were recorded still load.
+        let mut saved = serde_json::to_value(base()).unwrap();
+        saved.as_object_mut().unwrap().remove("details");
+        assert!(serde_json::from_value::<Baseline>(saved).unwrap().details.is_empty());
     }
     #[test]
     fn moved_page_boundary_stops_by_stable_records_and_preserves_tail() {

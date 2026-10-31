@@ -63,9 +63,13 @@ impl Catalogue {
                 if catalogue.worker.stopping.load(Ordering::Acquire) { return; }
                 // Preparation/replay errors preserve the durable intents. A later explicit
                 // barrier reports the error; SQLite reads and writes stay available.
-                let result = catalogue.flush_sync_outbox();
+                // An empty queue needs no history, so opening a library does not decode it.
+                let result = match catalogue.sync_outbox_empty() {
+                    Ok(true) => Ok(()),
+                    _ => catalogue.flush_sync_outbox(),
+                };
                 if let Ok(conn) = catalogue.inner.lock() {
-                    let _ = conn.execute("INSERT INTO meta(key,value) VALUES('sync_worker_error',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [if result.is_ok() { "" } else { "catalogue.sync_history_unavailable" }]);
+                    let _ = conn.execute("INSERT INTO meta(key,value) VALUES('sync_worker_error',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value", [if result.is_ok() { "" } else { "catalogue.sync_history_unavailable" }]);
                 }
                 loop {
                     match receive.recv_timeout(Duration::from_secs(1)) {
@@ -121,6 +125,14 @@ impl Catalogue {
         receive
             .recv()
             .map_err(|_| anyhow::anyhow!("catalogue.sync_worker_unavailable"))?
+    }
+
+    fn sync_outbox_empty(&self) -> Result<bool> {
+        let conn = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        Ok(conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sync_outbox)", [], |row| row.get(0))?)
     }
 
     /// Replay immutable before/after intent in order, outside the SQLite mutex.

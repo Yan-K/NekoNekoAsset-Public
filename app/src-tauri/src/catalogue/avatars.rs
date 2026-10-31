@@ -73,6 +73,36 @@ impl Registry {
             .map(|v| strings(&v["baseProductIds"]))
             .unwrap_or_default()
     }
+    /// The identity option counts and the list filter assign to one evidence
+    /// item. Outside `known` identities a unique single name derives its ID.
+    pub fn evidence_identity(
+        &self,
+        preferences: &Value,
+        avatar_id: &str,
+        name: &str,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<String> {
+        let id = self.resolve(if avatar_id.is_empty() { name } else { avatar_id });
+        if known(&id) {
+            return Some(id);
+        }
+        let parsed = crate::taxonomy::parsed_avatar_label(name);
+        if !crate::taxonomy::avatar_label_is_unambiguous(name) || parsed.name_kind != "single" {
+            // Retain ambiguous source/overlay text; it is not evidence of
+            // one named identity. Explicit saved identity names may resolve it.
+            let human_name = text(&preferences["avatarSettings"][&id], "originalName");
+            if !crate::taxonomy::avatar_label_is_unambiguous(human_name) {
+                return None;
+            }
+        }
+        if id.starts_with("avatar:") {
+            return Some(id);
+        }
+        // Presentation improvements must not rename an existing derived
+        // identity or abandon its saved user settings.
+        let (identity_name, _) = crate::taxonomy::avatar_label_parts(name);
+        Some(format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes())))
+    }
 }
 fn names(entry: &Value) -> Vec<String> {
     strings(&entry["aliases"])
@@ -496,6 +526,7 @@ fn build_options(
             .or_default()
             .extend(strings(&entry["baseProductIds"]));
     }
+    let mut linked = vec![];
     let mut stmt=conn.prepare("SELECT id,json_extract(summary,'$.ownedAvatarEvidence') FROM products WHERE json_array_length(summary,'$.ownedAvatarEvidence')>0")?;
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (product, evidence) = row?;
@@ -507,62 +538,47 @@ fn build_options(
             } else {
                 text(item, "avatarId")
             };
-            let mut id = registry.resolve(key);
-            let parsed = crate::taxonomy::parsed_avatar_label(name);
-            let (original, spelling) =
-                if !registry.entries.contains_key(&id) || id.starts_with("avatar:") {
-                    (parsed.original.clone(), parsed.source_latin.clone())
-                } else {
-                    (String::new(), None)
-                };
-            if !registry.entries.contains_key(&id)
-                && (!crate::taxonomy::avatar_label_is_unambiguous(name) || parsed.name_kind != "single")
-            {
-                // Retain ambiguous source/overlay text; it is not evidence of
-                // one named identity. Explicit saved identity names may resolve it.
-                let human_name = text(&prefs["avatarSettings"][&id], "originalName");
-                if !crate::taxonomy::avatar_label_is_unambiguous(human_name) {
-                    continue;
+            let known = |id: &str| registry.entries.contains_key(id);
+            let Some(id) = registry.evidence_identity(&prefs, text(item, "avatarId"), name, &known) else {
+                // A saved alias links this ambiguous label to a derived identity.
+                // It counts once that identity exists, whatever the product order.
+                let id = registry.resolve(key);
+                if id.starts_with("avatar:") {
+                    linked.push((id, product.clone()));
                 }
-            }
-            if !registry.entries.contains_key(&id) && !id.starts_with("avatar:") {
-                // Presentation improvements must not rename an existing derived
-                // identity or abandon its saved user settings.
-                let (identity_name, _) = crate::taxonomy::avatar_label_parts(name);
-                id = format!(
-                    "avatar:{:x}",
-                    Sha256::digest(normalized(&identity_name).as_bytes())
-                );
-            }
-            if !registry.entries.contains_key(&id) {
-                let corrected = crate::taxonomy::parsed_avatar_label(
-                    text(&prefs["avatarSettings"][&id], "originalName"));
-                let fallback_stem = if corrected.name_kind == "single" {
-                    corrected.original.as_str()
-                } else if parsed.name_kind == "single" {
-                    original.as_str()
-                } else {
-                    ""
-                };
-                let english = if parsed.name_kind == "single" {
-                    spelling.clone().unwrap_or_else(|| crate::taxonomy::romanized_name(fallback_stem))
-                } else {
-                    crate::taxonomy::romanized_name(fallback_stem)
-                };
-                let status = if english.is_empty() {
-                    "unresolvedReading"
-                } else if spelling.is_some() {
-                    "sourceTitleSpelling"
-                } else {
-                    "romanizationFallback"
-                };
-                let mut entry = json!({"id":id,"officialName":original,"englishName":english,"englishNameStatus":status,"nameKind":parsed.name_kind,"labelQualifiers":parsed.qualifiers,"sourceIdentityValue":name,"shopName":"","shopId":"","aliases":[name,key],"baseProductIds":[]});
-                decorate(&mut entry, &prefs["avatarSettings"][&id]);
-                let display = text(&entry, "sourceDisplayName").to_owned();
-                registry.entries.insert(id.clone(), entry);
-                add_alias(&mut registry, &display, &id, true);
-            }
+                continue;
+            };
             if id.starts_with("avatar:") {
+                let parsed = crate::taxonomy::parsed_avatar_label(name);
+                let spelling = parsed.source_latin.clone();
+                if !registry.entries.contains_key(&id) {
+                    let corrected = crate::taxonomy::parsed_avatar_label(
+                        text(&prefs["avatarSettings"][&id], "originalName"));
+                    let fallback_stem = if corrected.name_kind == "single" {
+                        corrected.original.as_str()
+                    } else if parsed.name_kind == "single" {
+                        parsed.original.as_str()
+                    } else {
+                        ""
+                    };
+                    let english = if parsed.name_kind == "single" {
+                        spelling.clone().unwrap_or_else(|| crate::taxonomy::romanized_name(fallback_stem))
+                    } else {
+                        crate::taxonomy::romanized_name(fallback_stem)
+                    };
+                    let status = if english.is_empty() {
+                        "unresolvedReading"
+                    } else if spelling.is_some() {
+                        "sourceTitleSpelling"
+                    } else {
+                        "romanizationFallback"
+                    };
+                    let mut entry = json!({"id":id,"officialName":parsed.original,"englishName":english,"englishNameStatus":status,"nameKind":parsed.name_kind,"labelQualifiers":parsed.qualifiers,"sourceIdentityValue":name,"shopName":"","shopId":"","aliases":[name,key],"baseProductIds":[]});
+                    decorate(&mut entry, &prefs["avatarSettings"][&id]);
+                    let display = text(&entry, "sourceDisplayName").to_owned();
+                    registry.entries.insert(id.clone(), entry);
+                    add_alias(&mut registry, &display, &id, true);
+                }
                 let entry = registry.entries.get_mut(&id).unwrap();
                 if matches!(
                     text(entry, "englishNameStatus"),
@@ -582,6 +598,11 @@ fn build_options(
             add_alias(&mut registry, name, &id, true);
             add_alias(&mut registry, key, &id, true);
             memberships.entry(id).or_default().insert(product.clone());
+        }
+    }
+    for (id, product) in linked {
+        if registry.entries.contains_key(&id) {
+            memberships.entry(id).or_default().insert(product);
         }
     }
     normalize_with_registry(&registry, &mut prefs);

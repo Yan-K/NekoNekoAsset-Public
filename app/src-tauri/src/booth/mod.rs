@@ -897,6 +897,18 @@ impl BoothService {
             .get("job", field(job, "id")?)?
             .is_some_and(|j| j["state"] == "cancelled"))
     }
+    /// Whether this job's last durable progress is at least one event interval old.
+    fn progress_due(&self, job: &Value) -> Result<bool> {
+        let id = field(job, "id")?;
+        let last = self
+            .inner
+            .last_progress
+            .lock()
+            .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
+        Ok(last.as_ref().is_none_or(|(previous, at)| {
+            previous != id || at.elapsed() >= std::time::Duration::from_millis(250)
+        }))
+    }
     fn progress(&self, app: &AppHandle, job: &mut Value) -> Result<()> {
         crate::support_trace::job_stage(job);
         if let Some(diagnostics) = crate::support_trace::snapshot() {

@@ -54,6 +54,81 @@ fn complete_chunk_with_retry(
 }
 
 #[cfg(target_os = "windows")]
+type ReadingRequest = (String, std::sync::mpsc::Sender<Option<String>>);
+
+/// One long-lived STA serves every native reading. The analyzer's first call in
+/// a new apartment takes about 300 ms and later calls about 1 ms, so a fresh
+/// apartment per name made every uncached or failing name pay that warm-up.
+#[cfg(target_os = "windows")]
+fn native_reading(input: &str) -> Option<String> {
+    use std::sync::{mpsc, Mutex, OnceLock};
+    static READER: OnceLock<Mutex<Option<mpsc::Sender<ReadingRequest>>>> = OnceLock::new();
+    let mut reader = READER.get_or_init(|| Mutex::new(None)).lock().ok()?;
+    // A reader that ended, for example after a failed apartment start, is replaced once.
+    for _ in 0..2 {
+        let sender = match reader.as_ref() {
+            Some(sender) => sender.clone(),
+            None => {
+                let (sender, requests) = mpsc::channel();
+                std::thread::Builder::new()
+                    .name("avatar-reading".into())
+                    .spawn(move || read_on_apartment(requests))
+                    .ok()?;
+                *reader = Some(sender.clone());
+                sender
+            }
+        };
+        let (reply, result) = mpsc::channel();
+        if sender.send((input.to_owned(), reply)).is_ok() {
+            if let Ok(value) = result.recv() {
+                return value;
+            }
+        }
+        *reader = None;
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn read_on_apartment(requests: std::sync::mpsc::Receiver<ReadingRequest>) {
+    use windows::{
+        core::HSTRING,
+        Globalization::JapanesePhoneticAnalyzer,
+        Win32::System::WinRT::{RoInitialize, RO_INIT_SINGLETHREADED},
+    };
+    // The apartment lives as long as this reader; process exit ends both.
+    if unsafe { RoInitialize(RO_INIT_SINGLETHREADED) }.is_err() {
+        return;
+    }
+    for (input, reply) in requests {
+        let mut output = Some(String::new());
+        for chunk in reading_chunks(&input) {
+            let native = HSTRING::from(chunk.as_str());
+            let reading = complete_chunk_with_retry(&chunk, || {
+                let words = JapanesePhoneticAnalyzer::GetWords(&native).ok()?;
+                let mut pieces = Vec::new();
+                for index in 0..words.Size().ok()? {
+                    let word = words.GetAt(index).ok()?;
+                    pieces.push((
+                        word.DisplayText().ok()?.to_string_lossy(),
+                        word.YomiText().ok()?.to_string_lossy(),
+                    ));
+                }
+                Some(pieces)
+            });
+            match (output.as_mut(), reading) {
+                (Some(output), Some(reading)) => output.push_str(&reading),
+                _ => {
+                    output = None;
+                    break;
+                }
+            }
+        }
+        let _ = reply.send(output.filter(|output| !output.is_empty()));
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn reading_cache() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, String>> {
     use std::{collections::BTreeMap, sync::{Mutex, OnceLock}};
     static CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
@@ -76,50 +151,7 @@ pub(super) fn reading(input: &str) -> Option<String> {
     if let Some(found) = values.get(input).cloned() {
         return Some(found);
     }
-    let owned = input.to_owned();
-    let result = std::thread::Builder::new()
-        .name("avatar-reading".into())
-        .spawn(move || {
-            use windows::{
-                core::HSTRING,
-                Globalization::JapanesePhoneticAnalyzer,
-                Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_SINGLETHREADED},
-            };
-            unsafe {
-                RoInitialize(RO_INIT_SINGLETHREADED).ok()?;
-            }
-            struct Apartment;
-            impl Drop for Apartment {
-                fn drop(&mut self) {
-                    unsafe {
-                        RoUninitialize();
-                    }
-                }
-            }
-            let _apartment = Apartment;
-            let mut output = String::new();
-            for chunk in reading_chunks(&owned) {
-                let input = HSTRING::from(chunk.as_str());
-                let reading = complete_chunk_with_retry(&chunk, || {
-                    let words = JapanesePhoneticAnalyzer::GetWords(&input).ok()?;
-                    let mut pieces = Vec::new();
-                    for index in 0..words.Size().ok()? {
-                        let word = words.GetAt(index).ok()?;
-                        pieces.push((
-                            word.DisplayText().ok()?.to_string_lossy(),
-                            word.YomiText().ok()?.to_string_lossy(),
-                        ));
-                    }
-                    Some(pieces)
-                })?;
-                output.push_str(&reading);
-            }
-            (!output.is_empty()).then_some(output)
-        })
-        .ok()?
-        .join()
-        .ok()
-        .flatten();
+    let result = native_reading(input);
     if let Some(result) = &result {
         if values.len() >= 2048 {
             values.clear();

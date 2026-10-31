@@ -54,6 +54,9 @@ struct Checkpoint {
     free_item_adapter_version: u32,
     publication_version: u32,
     published_products: BTreeSet<String>,
+    /// Listed receipts whose rows come from the previous complete pass.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    reused: BTreeSet<String>,
 }
 #[derive(Clone)]
 struct PublicPrefetch {
@@ -1328,6 +1331,11 @@ impl BoothService {
         let baseline = previous_baseline
             .as_ref()
             .filter(|b| b.usable(account, source));
+        let known_receipts = previous_baseline
+            .as_ref()
+            .filter(|_| mode == "incremental" && selected.is_none())
+            .map(|b| b.known_receipts(account, source))
+            .unwrap_or_default();
         let previous = resumable_checkpoint(
             self.inner.catalogue.get("checkpoint", &key)?, mode, selected.is_some(),
         )?;
@@ -1397,6 +1405,19 @@ impl BoothService {
         if checkpoint.overlap_end.is_some() && checkpoint.overlap_end != recovered_overlap {
             bail!("CHECKPOINT_INVALID");
         }
+        // A resumed run, including one interrupted by an App update, skips known
+        // receipts still queued. One the previous pass no longer supplies is read.
+        let unsupplied: Vec<_> = checkpoint
+            .reused
+            .iter()
+            .filter(|route| !known_receipts.contains_key(*route))
+            .cloned()
+            .collect();
+        for route in unsupplied {
+            checkpoint.reused.remove(&route);
+            checkpoint.pending.push(route);
+        }
+        reuse_known_receipts(&mut checkpoint, &known_receipts);
         self.save_checkpoint(&key, &checkpoint)?;
         self.inner.catalogue.prune_store_checkpoints("BOOTH", account)?;
         let coverage_id = format!("{account}:{source}");
@@ -1471,6 +1492,7 @@ impl BoothService {
                     }
                 }
                 record_source_page(&mut checkpoint, source, &route, &page, selected)?;
+                reuse_known_receipts(&mut checkpoint, &known_receipts);
                 if let Some(limit) = crate::verification::source_page_limit() {
                     limit_listing_pages(&mut checkpoint, limit);
                 }
@@ -1670,7 +1692,7 @@ impl BoothService {
             .iter()
             .filter_map(|r| r.product_id.clone())
             .collect();
-        let all_rows = if let Some(end) = checkpoint.overlap_end {
+        let mut all_rows = if let Some(end) = checkpoint.overlap_end {
             super::incremental::merged_rows(
                 baseline.ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?,
                 &current_rows,
@@ -1680,6 +1702,14 @@ impl BoothService {
         } else {
             current_rows
         };
+        // Known listed receipts keep their previous complete observation, like a verified tail.
+        for route in &checkpoint.reused {
+            let rows = known_receipts
+                .get(route)
+                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
+            all_rows.extend(rows.iter().cloned());
+        }
+        let retained_observations = checkpoint.overlap_end.is_some() || !checkpoint.reused.is_empty();
         // A verified incremental tail retains its original order identity; its
         // receipt route can be reconstructed without a page-number guess.
         for row in &all_rows {
@@ -1750,7 +1780,7 @@ impl BoothService {
                     bail!("CANCELLED");
                 }
             }
-            if checkpoint.overlap_end.is_some() && !refreshed_products.contains(&product) {
+            if retained_observations && !refreshed_products.contains(&product) {
                 continue; // The untouched tail retains its actual prior observation time.
             }
             let already_published = checkpoint.published_products.contains(&product);
@@ -1981,7 +2011,7 @@ impl BoothService {
         let collected_complete =
             collection_membership_complete(&checkpoint, &publications.incomplete_scopes);
         let full_traversal_at =
-            if checkpoint.overlap_end.is_some() || !collected_complete || selected.is_some() {
+            if retained_observations || !collected_complete || selected.is_some() {
                 previous_baseline
                     .as_ref()
                     .map(|b| b.full_traversal_at.clone())
@@ -1993,6 +2023,13 @@ impl BoothService {
             checkpoint
                 .product_ids
                 .extend(all_rows.iter().filter_map(|r| r.product_id.clone()));
+            let mut details: BTreeSet<String> = checkpoint
+                .committed
+                .keys()
+                .filter(|route| route.strip_prefix("/orders/").is_some_and(safety::numeric))
+                .cloned()
+                .collect();
+            details.extend(checkpoint.reused.iter().cloned());
             let base = Baseline {
                 version: 1,
                 account_id: account.into(),
@@ -2001,6 +2038,7 @@ impl BoothService {
                 ordering: checkpoint.ordering,
                 rows: all_rows,
                 full_traversal_at: full_traversal_at.clone(),
+                details,
             };
             let mut value = serde_json::to_value(base)?;
             value["id"] = json!(baseline_key);
@@ -2375,7 +2413,7 @@ impl BoothService {
                 if early.publications.additive_versions.get(&product) == Some(&version) {
                     continue;
                 }
-                self.commit_product_group_mode(
+                let changed = self.commit_product_group_mode(
                     job,
                     &product,
                     &ready,
@@ -2387,7 +2425,10 @@ impl BoothService {
                     .additive_versions
                     .insert(product.clone(), version);
                 early.published.insert(product.clone());
-                published.push(product);
+                // Unchanged products need no list refresh while the sync runs.
+                if changed {
+                    published.push(product);
+                }
             }
         }
         Ok(published)
@@ -2547,11 +2588,15 @@ impl BoothService {
             return Ok(false);
         }
         job["progress"]["stage"] = json!("publishing");
-        self.progress(app, job)?;
+        // Each product does not need its own durable job write; callers save
+        // the counters after the loop and check cancellation in batches.
+        if self.progress_due(job)? {
+            self.progress(app, job)?;
+        }
         if !additive.is_empty() {
             let version = additive_version(&additive)?;
             if publications.additive_versions.get(product) != Some(&version) {
-                self.commit_product_group_mode(
+                let changed = self.commit_product_group_mode(
                     job,
                     product,
                     &additive,
@@ -2561,11 +2606,14 @@ impl BoothService {
                 publications
                     .additive_versions
                     .insert(product.into(), version);
-                source_changed(app, std::iter::once(product.into()));
+                if changed {
+                    source_changed(app, std::iter::once(product.into()));
+                }
             }
         }
-        if !authoritative.is_empty() {
-            self.commit_product_group(job, product, &authoritative, &mut publications.checkpoints)?;
+        if !authoritative.is_empty()
+            && self.commit_product_group(job, product, &authoritative, &mut publications.checkpoints)?
+        {
             source_changed(app, std::iter::once(product.into()));
         }
         Ok(product_publication_done(publications, product))
@@ -2673,7 +2721,7 @@ impl BoothService {
         product: &str,
         entries: &[ProductPublication],
         checkpoints: &mut BTreeMap<String, Checkpoint>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.commit_product_group_mode(job, product, entries, checkpoints, true)
     }
     fn commit_availability_product(
@@ -2750,7 +2798,7 @@ impl BoothService {
         entries: &[ProductPublication],
         checkpoints: &mut BTreeMap<String, Checkpoint>,
         authoritative: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         for _ in 0..4 {
             let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
             let current = batch
@@ -2853,7 +2901,19 @@ impl BoothService {
                     && !entry.rows.is_empty()
                     && entry.rows.iter().all(|row| row.manifest_complete);
                 let complete = authoritative || unchanged || exact_free;
-                batch.stage("entitlement",&entitlement,json!({"id":entitlement,"productId":product,"accountId":entry.account,"source":entry.source,"fileIds":files,"variantIds":variant_ids,"manifestComplete":complete,"currentManifest":true,"manifestBasis":if authoritative{"verifiedAccountProductFileList"}else{"completeObservedGrants"},"observedAt":now()}))?;
+                // An unchanged certified membership keeps its basis until closure
+                // recertifies it, instead of flipping on every additive pass.
+                let basis = if authoritative {
+                    "verifiedAccountProductFileList"
+                } else if unchanged {
+                    previous
+                        .as_ref()
+                        .and_then(|previous| previous["manifestBasis"].as_str())
+                        .unwrap_or("completeObservedGrants")
+                } else {
+                    "completeObservedGrants"
+                };
+                batch.stage("entitlement",&entitlement,json!({"id":entitlement,"productId":product,"accountId":entry.account,"source":entry.source,"fileIds":files,"variantIds":variant_ids,"manifestComplete":complete,"currentManifest":true,"manifestBasis":basis,"observedAt":now()}))?;
                 if !authoritative {
                     continue;
                 }
@@ -2887,13 +2947,14 @@ impl BoothService {
                 )?;
                 updated.insert(entry.checkpoint_key.clone());
             }
+            let changed = batch.changes_facts();
             if batch.try_commit()?.is_some() {
                 for key in updated {
                     let checkpoint = checkpoints.get_mut(&key).unwrap();
                     checkpoint.published_products.insert(product.into());
                     checkpoint.enrichment_pending.remove(product);
                 }
-                return Ok(());
+                return Ok(changed);
             }
         }
         bail!("CONCURRENT_UPDATE")
@@ -3177,7 +3238,9 @@ impl BoothService {
                     acquisition["variantIds"] = previous["variantIds"].clone();
                     acquisition["variantPayments"] = previous["variantPayments"].clone();
                 } else if previous["variantIds"] == acquisition["variantIds"] {
-                    acquisition["variantPayments"] = previous["variantPayments"].clone();
+                    if let Some(payments) = previous.get("variantPayments") {
+                        acquisition["variantPayments"] = payments.clone();
+                    }
                 }
             }
             if let Some(amount) = native_product_line_total(row, source, route) {
@@ -3258,6 +3321,20 @@ impl BoothService {
             }
             if let Some(format) = &f.format {
                 remote["downloadFormat"] = json!(format);
+            }
+            // The Library and a receipt can list the same downloadable. Keep the
+            // page that last changed its facts; another listing is not a change.
+            if let Some(saved) = existing
+                .as_ref()
+                .filter(|saved| saved["resolverPage"].is_string() && saved["source"].is_string())
+            {
+                let mut moved = saved.clone();
+                moved["resolverPage"] = remote["resolverPage"].clone();
+                moved["source"] = remote["source"].clone();
+                if super::batch::same_except_observed_at(&moved, &remote) {
+                    remote["resolverPage"] = saved["resolverPage"].clone();
+                    remote["source"] = saved["source"].clone();
+                }
             }
             batch.stage("remote_file", &file_id, remote)?;
         }
@@ -3867,7 +3944,10 @@ fn record_source_page(
         {
             continue;
         }
-        if !checkpoint.committed.contains_key(next) && !checkpoint.pending.contains(next) {
+        if !checkpoint.committed.contains_key(next)
+            && !checkpoint.pending.contains(next)
+            && !checkpoint.reused.contains(next)
+        {
             checkpoint.pending.push(next.clone());
         }
     }
@@ -3879,6 +3959,24 @@ fn record_source_page(
         checkpoint.pages += 1;
     }
     Ok(())
+}
+/// Takes listed receipts the previous complete pass already read out of the
+/// request queue. Their rows join the source at assembly.
+fn reuse_known_receipts(checkpoint: &mut Checkpoint, known: &BTreeMap<String, Vec<parser::Row>>) {
+    let mut reused = vec![];
+    checkpoint.pending.retain(|route| {
+        let reuse = known.contains_key(route);
+        if reuse {
+            reused.push(route.clone());
+        }
+        !reuse
+    });
+    for route in reused {
+        checkpoint
+            .product_ids
+            .extend(known[&route].iter().filter_map(|row| row.product_id.clone()));
+        checkpoint.reused.insert(route);
+    }
 }
 fn limit_listing_pages(checkpoint: &mut Checkpoint, limit: usize) {
     if checkpoint.pages >= limit {
@@ -4058,6 +4156,132 @@ fn revision_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn incremental_purchase_lists_every_order_but_reuses_known_receipts() {
+        let known_row = parser::Row {
+            source_record_id: "purchase:known".into(),
+            product_id: Some("900001".into()),
+            order_id: Some("910001".into()),
+            manifest_complete: true,
+            ..Default::default()
+        };
+        let known = BTreeMap::from([
+            ("/orders/910001".to_owned(), vec![known_row]),
+            ("/orders/910002".to_owned(), vec![]),
+        ]);
+        let listing = |route: &str, details: &[&str], next: &[&str]| parser::Page {
+            source: "purchase".into(),
+            route: route.into(),
+            rows: vec![],
+            next: next.iter().map(|route| route.to_string()).collect(),
+            details: details.iter().map(|route| route.to_string()).collect(),
+            terminal: next.is_empty(),
+            unresolved: 0,
+            fingerprint: route.into(),
+            is_detail: false,
+            ordering: parser::Ordering::Unknown,
+            free_item: None,
+        };
+        let mut checkpoint = Checkpoint::fresh("synthetic", "purchase", "incremental").unwrap();
+        let first = listing("/orders?page=1", &["/orders/910001", "/orders/910002", "/orders/910009"], &["/orders?page=2"]);
+        record_source_page(&mut checkpoint, "purchase", "/orders?page=1", &first, None).unwrap();
+        reuse_known_receipts(&mut checkpoint, &known);
+        assert_eq!(checkpoint.pending, ["/orders?page=2", "/orders/910009"]);
+        assert_eq!(checkpoint.reused, BTreeSet::from(["/orders/910001".into(), "/orders/910002".into()]));
+        assert!(checkpoint.product_ids.contains("900001"));
+        // An order shifted onto the next page is neither queued nor reused twice.
+        let second = listing("/orders?page=2", &["/orders/910002"], &[]);
+        record_source_page(&mut checkpoint, "purchase", "/orders?page=2", &second, None).unwrap();
+        reuse_known_receipts(&mut checkpoint, &known);
+        assert_eq!(checkpoint.pending, ["/orders/910009"]);
+        assert_eq!(checkpoint.reused.len(), 2);
+        // Checkpoints saved before reuse existed still resume.
+        let mut saved = serde_json::to_value(Checkpoint::fresh("synthetic", "purchase", "incremental").unwrap()).unwrap();
+        saved.as_object_mut().unwrap().remove("reused");
+        assert!(resumable_checkpoint(Some(saved), "incremental", false).unwrap().unwrap().reused.is_empty());
+    }
+    #[test]
+    fn unchanged_reobservation_rewrites_no_catalogue_record() {
+        let path = std::env::temp_dir().join(format!("nna-booth-unchanged-{}", uuid::Uuid::new_v4()));
+        let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
+        let service = BoothService::new(catalogue.clone()).unwrap();
+        let account = "synthetic-account";
+        let job = json!({"id":"synthetic-job","type":"boothSync","accountId":account,"state":"running","progress":{}});
+        catalogue.put("job", "synthetic-job", job.clone()).unwrap();
+        let receipt = parser::Row {
+            source_record_id: "purchase:synthetic-variant".into(),
+            product_id: Some("900001".into()),
+            order_id: Some("910001".into()),
+            name: Some("Synthetic source title".into()),
+            manifest_complete: true,
+            product_line_total_jpy: Some(100),
+            acquired_date_text: Some("2026/10/11 09:30".into()),
+            files: vec![parser::File {
+                id: "700001".into(),
+                variant_id: Some("800001".into()),
+                name: Some("authored.zip".into()),
+                size_bytes: Some(10),
+                source_url: "https://booth.pm/downloadables/700001?variation_id=800001".into(),
+                revision: "authored".into(),
+                format: None,
+            }],
+            ..Default::default()
+        };
+        let mut library = receipt.clone();
+        library.source_record_id = "library:synthetic-variant".into();
+        library.order_id = None;
+        library.product_line_total_jpy = None;
+        let draft = json!({"id":"900001","store":"BOOTH","title":"Synthetic source title","publicMetadataState":"complete"});
+        let files = BTreeSet::from(["synthetic-account:700001:800001".to_owned()]);
+        let publish = |source: &str, route: &str, row: &parser::Row| {
+            let key = format!("booth:{account}:{source}");
+            let mut checkpoint = Checkpoint::fresh(account, source, "incremental").unwrap();
+            let routes = BTreeMap::from([(row.source_record_id.clone(), route.to_owned())]);
+            service
+                .publish_product(&job, account, source, "900001", &[row], &routes, &draft, &files, &key, &mut checkpoint, false)
+                .unwrap();
+        };
+        let facts = || -> Vec<Value> {
+            ["product", "acquisition", "entitlement", "remote_file"]
+                .into_iter()
+                .flat_map(|kind| catalogue.list(kind).unwrap())
+                .collect()
+        };
+        publish("purchase", "/orders/910001", &receipt);
+        publish("library", "/library?page=1", &library);
+        let first = facts();
+        let file = catalogue.get("remote_file", "synthetic-account:700001:800001").unwrap().unwrap();
+        assert_eq!(file["resolverPage"], "/orders/910001");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Later passes observe the same facts at a later time, from both listings.
+        publish("purchase", "/orders/910001", &receipt);
+        publish("library", "/library?page=1", &library);
+        assert_eq!(facts(), first);
+        let entry = |source: &str, row: &parser::Row, route: &str| ProductPublication {
+            account: account.into(),
+            source: source.into(),
+            product: "900001".into(),
+            rows: vec![row.clone()],
+            routes: BTreeMap::from([(row.source_record_id.clone(), route.to_owned())]),
+            draft: draft.clone(),
+            files: files.clone(),
+            checkpoint_key: format!("booth:{account}:{source}"),
+            force_verify: false,
+            needs_enrichment: false,
+        };
+        let mut checkpoints = BTreeMap::from([(
+            format!("booth:{account}:purchase"),
+            Checkpoint::fresh(account, "purchase", "incremental").unwrap(),
+        )]);
+        // An additive pass over a certified unchanged grant keeps its basis.
+        assert!(!service
+            .commit_product_group_mode(&job, "900001", &[entry("purchase", &receipt, "/orders/910001")], &mut checkpoints, false)
+            .unwrap());
+        assert_eq!(facts(), first);
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
+    }
     #[test]
     fn explicit_fresh_traversal_ignores_an_unusable_previous_checkpoint() {
         let malformed = json!({"mode":"incremental","pending":"unusable"});

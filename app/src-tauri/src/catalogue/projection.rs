@@ -237,7 +237,10 @@ pub(super) fn rebuild(conn: &Connection) -> Result<()> {
 /// Refresh only stale download badges from already materialized file facts.
 /// This does not alter source records, file membership, or the schema.
 pub(super) fn reconcile_ready_badges(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT id,body,summary FROM products WHERE downloaded=0 AND json_extract(body,'$.downloaded')>0 AND json_array_length(body,'$.files')>0")?;
+    // Ready files need verified artifacts. Reading only those products keeps opening a
+    // library from reading every file-heavy product body.
+    // `+downloaded` keeps the planner on the artifact list rather than every undownloaded row.
+    let mut stmt = conn.prepare("SELECT id,body,summary FROM products WHERE id IN(SELECT product_id FROM entities WHERE kind='artifact') AND +downloaded=0 AND json_extract(body,'$.downloaded')>0 AND json_array_length(body,'$.files')>0")?;
     let candidates = stmt
         .query_map([], |row| {
             Ok((

@@ -637,6 +637,8 @@ const KINDS: &[&str] = &[
     "device",
     "download_intent",
 ];
+/// Saved deltas loaded at once before the history is rewritten as one checkpoint.
+const COMPACT_HISTORY_AFTER: usize = 256;
 const SYNC_KINDS: &[&str] = &[
     "product",
     "overlay",
@@ -2481,6 +2483,9 @@ impl Catalogue {
             };
             copy_us += started.elapsed().as_micros();
             let started = std::time::Instant::now();
+            // Every launch otherwise decodes each saved delta again. Saving the loaded
+            // document once keeps the same history as one compact checkpoint.
+            let compact = parts.len() > COMPACT_HISTORY_AFTER;
             // Hashing and contiguous allocation never hold the foreground SQL mutex.
             let (bytes, trusted) = Self::assemble_document(parts);
             // Incremental loading can accept a truncated prefix. Strict complete
@@ -2491,7 +2496,7 @@ impl Catalogue {
                 load(&bytes, &version.0)?
             };
             decode_us += started.elapsed().as_micros();
-            if self.install_document(&version, doc, !trusted)? {
+            if self.install_document(&version, doc, !trusted || compact)? {
                 return Ok((copy_us, decode_us));
             }
         }

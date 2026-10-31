@@ -210,12 +210,33 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
                 pinned.push(id);
             }
         }
-        let avatar_binds = registry
-            .terms(&avatar_id)
-            .into_iter()
-            .map(|v| bind(Sql::Text(v)))
-            .collect::<Vec<_>>()
-            .join(",");
+        let matches = if avatar_id.starts_with("avatar:") {
+            // Derived identities have no stored ID. Match the raw evidence that
+            // option counts assign to this one, before or after its aliases persist.
+            let known = |id: &str| registry.entries.contains_key(id) || id.starts_with("avatar:");
+            let mut pairs = conn.prepare_cached("SELECT DISTINCT COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'') FROM temp.list_rows p,json_each(p.evidence) e")?;
+            let mut rows = pairs.query([])?;
+            let mut values = vec![];
+            while let Some(row) = rows.next()? {
+                let (evidence_id, name): (String, String) = (row.get(0)?, row.get(1)?);
+                if registry.evidence_identity(&preferences, &evidence_id, &name, &known).as_ref() == Some(&avatar_id) {
+                    values.push(format!("({},{})", bind(Sql::Text(evidence_id)), bind(Sql::Text(name))));
+                }
+            }
+            if values.is_empty() {
+                "0=1".to_owned()
+            } else {
+                format!("(COALESCE(json_extract(e.value,'$.avatarId'),''),COALESCE(json_extract(e.value,'$.avatar'),'')) IN(VALUES{})", values.join(","))
+            }
+        } else {
+            let avatar_binds = registry
+                .terms(&avatar_id)
+                .into_iter()
+                .map(|v| bind(Sql::Text(v)))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("(json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds})))")
+        };
         let scope = if account_ids.is_some() {
             let account_scope = if account_placeholders.is_empty() {
                 "0=1".to_owned()
@@ -230,7 +251,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         } else {
             "1=1".into()
         };
-        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE (json_extract(e.value,'$.avatarId') IN({avatar_binds}) OR (COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'booth:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'product:%' AND COALESCE(json_extract(e.value,'$.avatarId'),'') NOT LIKE 'avatar:%' AND json_extract(e.value,'$.avatar') IN({avatar_binds}))) AND {scope})"));
+        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(p.evidence) e WHERE {matches} AND {scope})"));
     }
     let search = normalized(
         args["search"]

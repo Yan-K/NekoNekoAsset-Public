@@ -696,6 +696,42 @@ fn outbox_restart_replays_order_and_ack_is_atomic_with_delta() {
 }
 
 #[test]
+fn long_history_is_compacted_once_without_changing_the_document() {
+    let f = Fixture::new();
+    let c = f.open();
+    product(&c, "1");
+    for n in 0..=COMPACT_HISTORY_AFTER {
+        c.command("overlay", json!({"ids":["1"],"patch":{"note":format!("note {n}")}}))
+            .unwrap();
+        c.flush_sync_outbox().unwrap();
+    }
+    let deltas = |c: &Catalogue| {
+        c.inner
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM am_changes", [], |row| row.get::<_, usize>(0))
+            .unwrap()
+    };
+    let document = |c: &Catalogue| sync::entities(c.document_cache.lock().unwrap().as_ref().unwrap()).unwrap();
+    assert!(deltas(&c) > COMPACT_HISTORY_AFTER);
+    let expected = document(&c);
+    drop(c);
+    let c = f.open();
+    c.flush_sync_outbox().unwrap();
+    assert_eq!(deltas(&c), 0);
+    assert_eq!(document(&c), expected);
+    c.command("overlay", json!({"ids":["1"],"patch":{"note":"after compaction"}}))
+        .unwrap();
+    c.flush_sync_outbox().unwrap();
+    let expected = document(&c);
+    drop(c);
+    let c = f.open();
+    c.flush_sync_outbox().unwrap();
+    assert_eq!(deltas(&c), 1);
+    assert_eq!(document(&c), expected);
+}
+
+#[test]
 fn remote_merge_drains_concurrent_local_intent_before_projecting() {
     let folder = Fixture::new();
     let fa = Fixture::new();
@@ -2164,6 +2200,69 @@ fn dynamic_bilingual_aliases_deduplicate_independent_of_order_and_restart() {
         );
     }
     assert_eq!(ids[0], ids[1]);
+}
+
+#[test]
+fn derived_avatar_options_filter_the_products_they_count() {
+    let f = Fixture::new();
+    let c = f.open();
+    let clothing = |id: &str| json!({"id":id,"store":"BOOTH","sourceTitle":"Authored VRChat clothing","sourceCategory":{"name":"3D衣装"},"sourceTags":["VRChat"]});
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    c.put("product", "early", clothing("early")).unwrap();
+    // Unlisted Base names arrive raw from bound variants and manual choices.
+    for (id, variant) in [
+        ("900101", "SyntheticNeko専用"),
+        ("900102", "ＳｙｎｔｈｅｔｉｃＮｅｋｏ専用"),
+        ("900103", "【無料】Ren♡Ai専用"),
+        ("900104", "シロネコ専用"),
+    ] {
+        let mut source = clothing(id);
+        source["publicVariants"] = json!([{"id":format!("{id}-v"),"type":"digital","name":variant}]);
+        c.put_many(vec![
+            ("product".into(), id.into(), source),
+            ("remote_file".into(), format!("{id}-f"), json!({"id":format!("{id}-f"),"productId":id,"accountId":"a","variantId":format!("{id}-v"),"name":"opaque.zip","revision":"r1"})),
+            ("entitlement".into(), format!("{id}-e"), json!({"id":format!("{id}-e"),"productId":id,"accountId":"a","fileIds":[format!("{id}-f")],"manifestComplete":true})),
+        ]).unwrap();
+    }
+    c.put("product", "manual", clothing("manual")).unwrap();
+    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":["SYNTHETICNEKO"]}})).unwrap();
+    let check = |c: &Catalogue, ren: u64| {
+        let options = c.command("avatar_options", json!({})).unwrap()["avatarOptions"].as_array().unwrap().clone();
+        let mut derived: Vec<_> = options.iter().filter(|o| text(o, "id").starts_with("avatar:")).map(|option| {
+            let matched = c.command("query", json!({"avatar":option["id"]})).unwrap()["matched"].clone();
+            (text(option, "officialName").to_owned(), option["matchingProductCount"].clone(), matched)
+        }).collect();
+        derived.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(derived, [
+            ("Ren♡Ai".to_owned(), json!(ren), json!(ren)),
+            ("SyntheticNeko".to_owned(), json!(3), json!(3)),
+            ("シロネコ".to_owned(), json!(1), json!(1)),
+        ]);
+        let synthetic = options.iter().find(|o| o["officialName"] == "SyntheticNeko").unwrap();
+        let mut scoped = strings(&c.command("query", json!({"avatar":synthetic["id"],"accountIds":["a"],"includeOffline":false})).unwrap()["matchedIds"]);
+        scoped.sort();
+        assert_eq!(scoped, ["900101", "900102"]);
+    };
+    // New names match before bootstrap persists their aliases.
+    check(&c, 1);
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    // A later cleaned spelling joins the existing derived identity.
+    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":["SYNTHETICNEKO", "Ren♡Ai"]}})).unwrap();
+    check(&c, 2);
+    // A saved alias links an ambiguous label on an earlier product; it counts
+    // regardless of whether that product precedes the identity's first name.
+    let label = "Ren♡Ai and SyntheticNeko and シロネコ";
+    assert!(!crate::taxonomy::avatar_label_is_unambiguous(label)
+        || crate::taxonomy::parsed_avatar_label(label).name_kind != "single");
+    let options = c.command("avatar_options", json!({})).unwrap()["avatarOptions"].clone();
+    let ren = options.as_array().unwrap().iter().find(|o| o["officialName"] == "Ren♡Ai").unwrap()["id"].clone();
+    let mut aliases = c.get("preferences", "app").unwrap().unwrap()["avatarAliases"].clone();
+    aliases[crate::taxonomy::canonical_tag(label)] = ren;
+    c.command("preferences", json!({"patch":{"avatarAliases":aliases}})).unwrap();
+    c.command("overlay", json!({"ids":["early"],"patch":{"ownedAvatars":[label]}})).unwrap();
+    check(&c, 3);
+    drop(c);
+    check(&f.open(), 3);
 }
 
 #[test]
