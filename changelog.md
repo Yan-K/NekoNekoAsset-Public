@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.4 Beta - 2026-10-31
+
+### Added
+
+- Downloads can be cancelled where they run: while a product downloads, its Download button becomes Cancel, a file queued on its own has its own cancel button in Files, the right-click and ⋯ menus cancel a selection, and Activity offers Cancel all downloads.
+- Download all now asks before starting and shows how many products it will download.
+- Downloaded files can be deleted from your computer, one file at a time in Files, or for a whole product or selection from Files, the right-click menu and the ⋯ menu. The products stay in your library and can be downloaded again; a file still open in another program is kept and can be deleted later.
+- Settings › Features › Hide unavailable products, on by default, hides store products that offer no file to download, such as an ended free offer or a product whose files the creator removed, while none of their files are on your computer. Turned off, these products show Unavailable instead of Download.
+
+### Fixed
+
+- Settings › Storage › Move works again in a running App; since 0.2.6 it stopped with only Action failed. Move errors now explain the cause and which location is affected, and Storage shows the move while it runs.
+
+### Release notes
+
+- App and Unity Bridge share version 0.3.4 Beta. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- A product that still lists files its store no longer serves stays visible; downloading it reports the store's error.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.3 Beta - 2026-10-31
 
 ### Fixed
