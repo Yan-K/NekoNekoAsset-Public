@@ -8,7 +8,7 @@ import './features.css';
 
 export const DEFAULT_BATCH_ACTIONS:Record<string,boolean>={edit:true,collection:true,unity:true,export:true,ai:true,spending:true,delete:true,hide:true,selectAll:true,update:true,download:true};
 export function batchActionPreferences(value:unknown):Record<string,boolean>{return {...DEFAULT_BATCH_ACTIONS,...(value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).filter(([key,item])=>key in DEFAULT_BATCH_ACTIONS&&typeof item==='boolean')):{})};}
-const actions=[['edit','edit'],['collection','addToCollection'],['unity','importUnity'],['export','exportZip'],['ai','aiTags'],['spending','spending'],['delete','delete'],['hide','hide'],['selectAll','selectAll'],['update','update'],['download','download']];
+const actions=[['selectAll','selectAll'],['edit','edit'],['collection','addToCollection'],['export','exportZip'],['ai','aiTags'],['spending','spending'],['delete','delete'],['hide','hide'],['update','update'],['download','download'],['unity','importUnity']];
 export default function FeaturesSettings({locale,preferences,onPreferences}:{locale:Locale;preferences:Record<string,unknown>;onPreferences:(patch:Record<string,unknown>)=>Promise<void>}){
  const q=(key:string)=>uxText(locale,key)||shellText(locale,key)||t(locale,key),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const batch=batchActionPreferences(preferences.batchActions);

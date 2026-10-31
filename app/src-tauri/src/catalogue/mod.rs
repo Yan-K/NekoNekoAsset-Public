@@ -1278,7 +1278,7 @@ fn validate_ui_preferences(patch: &Value) -> Result<()> {
             }
         }
     }
-    for key in ["aiFeaturesEnabled", "hideUnavailable"] {
+    for key in ["aiFeaturesEnabled", "hideUnavailable", "oneHandedDrag"] {
         if let Some(value) = patch.get(key) {
             ensure!(value.is_boolean(), "catalogue.invalid_preferences");
         }

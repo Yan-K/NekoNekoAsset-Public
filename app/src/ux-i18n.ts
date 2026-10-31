@@ -44,6 +44,7 @@ const labels:Record<string,string[]>={
  roundedCorners:['Rounded corners','角丸','둥근 모서리','圆角','圓角'],
  reduceMotion:['Reduce motion','アニメーションを減らす','모션 줄이기','减少动画','減少動畫'],
  bundledFonts:['Built-in fonts (Noto Sans)','内蔵フォント（Noto Sans）','내장 글꼴 (Noto Sans)','内置字体（Noto Sans）','內建字型（Noto Sans）'],
+ oneHandedDrag:['One-handed drag actions','片手ドラッグ操作','한 손 드래그 조작','单手拖移操作','單手拖移操作'],
 };
 const indexes:Record<Locale,number>={en:0,ja:1,ko:2,'zh-Hans':3,'zh-Hant':4};
 export function uxText(locale:Locale,key:string):string|undefined{return labels[key]?.[indexes[locale]];}

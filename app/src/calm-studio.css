@@ -366,21 +366,31 @@
 .app .selection-actions .button{background:transparent;color:var(--text);}
 .app .selection-actions .button:hover{background:var(--hover);}
 .app .selection-actions .button svg{color:var(--muted);}
-.app .selection-actions>.button:first-child{width:30px;min-width:30px;padding:0;}
+.app .selection-actions .selection-group{display:flex;align-items:center;gap:2px;flex:none;}
+.app .selection-actions .selection-group>.button:first-child{width:30px;min-width:30px;padding:0;}
+.app .selection-actions .selection-group::after{content:"";flex:none;width:1px;height:20px;margin:0 5px 0 4px;background:var(--line-2);}
 .app .selection-actions .selection-count{display:flex;align-items:center;gap:7px;padding:0 6px 0 4px;font-size:12.5px;font-weight:700;white-space:nowrap;}
 .app .selection-actions .selection-count>b{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:99px;background:var(--accent);color:var(--on-acc);font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;animation:calm-count .36s var(--spring);}
-.app .selection-actions .selection-count::after{content:"";width:1px;height:20px;margin-left:5px;background:var(--line-2);}
 .app .selection-actions .scope-actions{gap:2px;padding:0;}
 .app .selection-actions .scope-actions-left,.app .selection-actions .scope-actions-right{gap:2px;}
 .app .selection-actions .scope-actions .button.primary{background:var(--accent);color:var(--on-acc);}
 .app .selection-actions .scope-actions .button.primary svg{color:var(--on-acc);}
-.app .selection-actions .scope-actions .button.unity-action{background:transparent!important;color:var(--uni-ink)!important;box-shadow:none;}
-.app .selection-actions .scope-actions .button.unity-action:hover{background:var(--uni-1)!important;}
-.app .selection-actions .scope-actions .button.unity-action svg{color:var(--secondary-accent);}
+.app .selection-actions .scope-actions .button.unity-action:not(.primary){background:transparent!important;color:var(--uni-ink)!important;box-shadow:none;}
+.app .selection-actions .scope-actions .button.unity-action:not(.primary):hover{background:var(--uni-1)!important;}
+.app .selection-actions .scope-actions .button.unity-action:not(.primary) svg{color:var(--secondary-accent);}
+.app .selection-actions .scope-actions .button.unity-action.primary svg{color:inherit;}
 .app .selection-actions .scope-actions .button.danger{border-color:transparent;color:var(--negative);}
 .app .selection-actions .scope-actions .button.danger svg{color:var(--negative);}
 .app .selection-actions .scope-actions .button.danger:hover{background:var(--bad-1);}
-@container results (max-width:900px){.app .selection-actions .scope-actions .button:not(.primary){width:30px;min-width:30px;padding:0;}.app .selection-actions .scope-actions .button:not(.primary)>span{display:none;}.app .selection-actions .scope-actions .button.primary{width:auto;padding:0 11px;}.app .selection-actions .scope-actions .button.primary>span{display:inline;}}
+@container results (max-width:900px){.app .selection-actions :is(.scope-actions,.selection-group) .button:not(.primary){width:30px;min-width:30px;padding:0;}.app .selection-actions :is(.scope-actions,.selection-group) .button:not(.primary)>span{display:none;}.app .selection-actions .scope-actions .button.primary{width:auto;padding:0 11px;}.app .selection-actions .scope-actions .button.primary>span{display:inline;}}
+/* Appearance › One-handed drag: the selection box and the dragged count float above the panes and ignore the pointer. */
+.app .selection-box{position:fixed;left:0;top:0;z-index:30;border:1px solid var(--accent);border-radius:6px;background:color-mix(in oklab,var(--accent) 14%,transparent);pointer-events:none;}
+.app .drag-ghost{position:fixed;left:0;top:0;z-index:30;display:grid;place-items:center;min-width:26px;height:26px;padding:0 8px;border-radius:99px;background:var(--accent);color:var(--on-acc);font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;box-shadow:3px 3px 0 -1px color-mix(in oklab,var(--accent) 45%,var(--panel)),var(--sh-2);pointer-events:none;}
+.app .nav-item.category-item.drop-target{background:var(--acc-2);color:var(--text);box-shadow:inset 0 0 0 1.5px var(--accent);}
+.app .nav-item.category-item.drop-target>svg{color:var(--accent);}
+html.box-selecting,html.box-selecting *{user-select:none!important;}
+html.dragging-products,html.dragging-products *{cursor:grabbing!important;user-select:none!important;}
+html:is(.box-selecting,.dragging-products) .app .product-card{transform:none!important;}
 
 /* ---------- popups and menus ---------- */
 .app .popup-menu{padding:5px;border:1px solid var(--line-2);border-radius:12px;background:var(--raised);box-shadow:var(--sh-3);transform-origin:top right;animation:calm-pop-in .2s var(--ease) both;}

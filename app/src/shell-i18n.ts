@@ -42,5 +42,6 @@ const labels:Record<string,string[]>={
  confirmDeleteDownloads:['Delete the downloaded files of {count} product(s)? The products stay in your library.','{count} 件の商品のダウンロード済みファイルを削除しますか？商品はライブラリに残ります。','상품 {count}개의 다운로드한 파일을 삭제할까요? 상품은 라이브러리에 남습니다.','要删除 {count} 个商品的已下载文件吗？商品仍保留在资产库中。','要刪除 {count} 個產品的已下載檔案嗎？產品仍會保留在資產庫中。'],
  hideUnavailable:['Hide unavailable products','ダウンロードできない商品を非表示','다운로드할 수 없는 상품 숨기기','隐藏无法下载的商品','隱藏無法下載的產品'],downloadUnavailable:['Unavailable','利用不可','사용 불가','不可用','不可用'],
  deleteDownloadedFile:['Delete downloaded file','ダウンロード済みファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],confirmDeleteFile:['Confirm deletion','削除を確認','삭제 확인','确认删除','確認刪除'],
+ movedToCategory:['Moved {count} product(s) to {category}','{count} 件の商品を「{category}」に移動しました','상품 {count}개를 {category}(으)로 옮겼습니다','已将 {count} 个商品移到“{category}”','已將 {count} 個產品移到「{category}」'],
 };
 export function shellText(locale:Locale,key:string):string|undefined{return labels[key]?.[['en','ja','ko','zh-Hans','zh-Hant'].indexOf(locale)];}
