@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.5 Beta - 2026-11-01
+
+### Added
+
+- Files you downloaded stay in a product's Files after its store stops offering them, for example when a creator replaces Product_1.0.0.zip with 1.0.1. They are marked Removed from store, still open and import into Unity, and are never downloaded again. Files removed this way before 0.3.5 appear again the first time you open your library.
+- Store products accept your own files. Add files (+) in Files copies a file you already have, such as an older version, into that product without changing the original; archives are extracted as downloads are. These files are marked Added by you.
+- When a download fails because its store no longer offers the file, the App now says so and offers Update and download, which updates the product and then downloads its current files.
+- Custom categories: below Unclassified in the sidebar, + adds, renames and deletes your own categories. Only Edit, Batch Edit and dragging products onto them assign one; automatic classification never does, and deleting one returns its products to their automatic category.
+- Settings › Appearance › One-handed drag actions, off by default, adds mouse box selection and dragging a selection onto a sidebar category.
+
+### Fixed
+
+- A download whose file the store removed no longer fails with "Required files are missing", which pointed to your computer instead of the store.
+- Deleting a product's downloaded files keeps files the store no longer offers and files you added, because neither can be downloaded again. Delete those from their own row in Files.
+- BOOTH: a sync no longer stops needing action at a free item that offers a VRoid Studio project or custom item file.
+- The selection bar shows Import Unity only when a selected product has a downloaded file, at its right end, and keeps Clear, the count and Select all together.
+
+### Release notes
+
+- The Unity Bridge is unchanged and stays at [0.3.4 Beta](https://github.com/Yan-K/NekoNekoAsset-Public/releases/tag/v0.3.4); this release does not include Bridge files. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.4 Beta - 2026-10-31
 
 ### Added
