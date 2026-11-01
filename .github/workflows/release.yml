@@ -236,6 +236,9 @@ jobs:
 
   pages:
     needs: publish
+    # An App-only release skips the Bridge job; the default success() would then
+    # skip feeds even though publish succeeded.
+    if: always() && needs.publish.result == 'success'
     runs-on: ubuntu-24.04
     # Lock the entire feed generation and deployment, across every release tag.
     concurrency:
