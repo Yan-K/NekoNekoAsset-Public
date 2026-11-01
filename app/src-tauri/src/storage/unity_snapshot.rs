@@ -660,8 +660,9 @@ mod tests {
         c.put("product", "900001", json!({"id":"900001","store":"BOOTH","title":"Authored store product"})).unwrap();
         c.put("entitlement", "grant", json!({"id":"grant","productId":"900001","accountId":"authored-account","fileIds":["current"],"manifestComplete":true})).unwrap();
         // The store dropped `dropped` after its download; the user added the third.
-        for (id, origin) in [("current", None), ("dropped", None), ("local-file:added", Some("local"))] {
-            let mut remote = json!({"id":id,"productId":"900001","name":format!("{}.unitypackage", id.replace(':', "-")),"revision":"r1"});
+        // `alias` is an older descriptor of the downloadable `current` still offers.
+        for (id, source, origin) in [("current", "700001", None), ("dropped", "700000", None), ("alias", "700001", None), ("local-file:added", "", Some("local"))] {
+            let mut remote = json!({"id":id,"productId":"900001","accountId":"authored-account","sourceFileId":source,"name":format!("{}.unitypackage", id.replace(':', "-")),"revision":"r1"});
             if let Some(origin) = origin {
                 remote["originKind"] = json!(origin);
             }

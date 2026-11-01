@@ -3128,6 +3128,36 @@ fn observed_ready_files_export_before_source_scan_closes() {
     assert_eq!(f.service.catalogue.command("product_details", json!({"id":"42"})).unwrap()["manifestComplete"], false);
 }
 
+#[test]
+fn kept_file_whose_extraction_failed_still_exports_its_original() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let current = f.artifact(0);
+    let mut kept = f.artifact(1);
+    // The store dropped the second file after its download; its extraction had failed.
+    f.service.catalogue.put("entitlement","test-entitlement",json!({"id":"test-entitlement","productId":"42","accountId":"test-account","fileIds":["test-file-0"],"manifestComplete":true})).unwrap();
+    kept["status"] = json!("extractionFailed");
+    kept["errorCode"] = json!("archive_corrupt");
+    let id = kept["id"].as_str().unwrap().to_owned();
+    f.service.catalogue.put("artifact", &id, kept).unwrap();
+    let result = f.service.disk_operation(
+        "export_zip",
+        &json!({"productIds":["42"],"path":f.path.join("kept.zip")}),
+        &AtomicBool::new(false),
+    ).unwrap();
+    assert_eq!(result["fileCount"], 2);
+    // The store's own files must still be ready.
+    let mut failed = current;
+    failed["status"] = json!("extractionFailed");
+    let id = failed["id"].as_str().unwrap().to_owned();
+    f.service.catalogue.put("artifact", &id, failed).unwrap();
+    assert!(f.service.disk_operation(
+        "export_zip",
+        &json!({"productIds":["42"],"path":f.path.join("current.zip")}),
+        &AtomicBool::new(false),
+    ).is_err());
+}
+
 #[tokio::test]
 async fn network_wait_is_cancellable_without_waiting_for_timeout() {
     let cancel = Arc::new(AtomicBool::new(false));

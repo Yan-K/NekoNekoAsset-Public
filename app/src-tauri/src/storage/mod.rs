@@ -378,7 +378,8 @@ impl StorageService {
         ))
     }
     /// Attached files plus store files kept after the store stopped offering
-    /// them. Callers still require a usable artifact at the file's revision.
+    /// them. Callers still require a usable artifact at the file's revision. An
+    /// older descriptor of a downloadable still offered is that same file.
     fn kept_files(&self, product: &str) -> Result<Vec<Value>> {
         let (mut files, _) = self.remote_files(product)?;
         if self
@@ -390,11 +391,22 @@ impl StorageService {
                 .iter()
                 .filter_map(|f| f["id"].as_str().map(str::to_owned))
                 .collect();
+            let source = |f: &Value| {
+                (f["accountId"].as_str().map(str::to_owned), f["sourceFileId"].as_str().map(str::to_owned))
+            };
+            let offered: HashSet<_> = files
+                .iter()
+                .filter(|f| f["originKind"] != "local" && f["sourceFileId"].as_str().is_some_and(|id| !id.is_empty()))
+                .map(source)
+                .collect();
             files.extend(
                 self.catalogue
                     .related("remote_file", product)?
                     .into_iter()
-                    .filter(|f| f["id"].as_str().is_some_and(|id| !attached.contains(id))),
+                    .filter(|f| {
+                        f["id"].as_str().is_some_and(|id| !attached.contains(id))
+                            && !offered.contains(&source(f))
+                    }),
             );
         }
         Ok(files)
@@ -579,7 +591,7 @@ impl StorageService {
                                             | "auth_required"
                                             | "permission_denied"
                                             | "manifest_incomplete"
-                                            | "file_unavailable"
+                                            | "store_file_unavailable"
                                             | "archive_password_required"
                                             | "archive_missing_volume"
                                             | "source_tree_incomplete"

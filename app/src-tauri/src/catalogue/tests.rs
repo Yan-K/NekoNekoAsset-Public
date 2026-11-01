@@ -2954,33 +2954,51 @@ fn store_dropped_downloads_and_added_files_stay_listed_while_their_bytes_do() {
     let c = fixture.open();
     let source = json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"});
     c.put("product", "p", source.clone()).unwrap();
-    // The store replaced old.zip, already downloaded, with new.zip and dropped
-    // never.zip, which was never downloaded. A later Full sync had flagged
-    // old.zip for content verification before it disappeared.
-    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["new"],"manifestComplete":true})).unwrap();
-    for (id, name) in [("new", "new.zip"), ("old", "old.zip"), ("never", "never.zip")] {
-        c.put("remote_file", id, json!({"id":id,"productId":"p","name":name,"revision":"r1","requiresContentVerification":id == "old"})).unwrap();
+    // The store replaced old.zip, already downloaded but its extraction failed,
+    // with new.zip, and dropped never.zip, which was never downloaded. A later
+    // Full sync had flagged old.zip for content verification before it went.
+    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["acct:700001:800001"],"manifestComplete":true})).unwrap();
+    for (id, source_file, name) in [("acct:700001:800001", "700001", "new.zip"), ("acct:700000:800001", "700000", "old.zip"), ("acct:700002:800001", "700002", "never.zip")] {
+        c.put("remote_file", id, json!({"id":id,"productId":"p","accountId":"acct","sourceFileId":source_file,"name":name,"revision":"r1","requiresContentVerification":source_file == "700000"})).unwrap();
     }
-    c.put("artifact", "a-old", json!({"id":"a-old","productId":"p","fileId":"old","revision":"r1","status":"extractionFailed","originalAvailable":true})).unwrap();
+    c.put("artifact", "a-old", json!({"id":"a-old","productId":"p","fileId":"acct:700000:800001","revision":"r1","status":"extractionFailed","errorCode":"archive_password_required","originalAvailable":true})).unwrap();
+    // A downloaded variantless descriptor of the downloadable the grant still offers.
+    c.put("remote_file", "acct:700001:", json!({"id":"acct:700001:","productId":"p","accountId":"acct","sourceFileId":"700001","name":"new.zip","revision":"r1"})).unwrap();
+    c.put("artifact", "a-alias", json!({"id":"a-alias","productId":"p","fileId":"acct:700001:","revision":"r1","status":"ready","originalAvailable":true})).unwrap();
     c.put("remote_file", "local-file:added", json!({"id":"local-file:added","productId":"p","provider":"local","originKind":"local","name":"added.zip","revision":"sha256:a"})).unwrap();
     c.put("artifact", "a-added", json!({"id":"a-added","productId":"p","fileId":"local-file:added","revision":"sha256:a","status":"ready","originalAvailable":true})).unwrap();
     let product = projection(&c, "p");
     let files = product["files"].as_array().unwrap();
     let ids: Vec<_> = files.iter().map(|f| text(f, "id")).collect();
-    assert_eq!(ids, ["new", "local-file:added", "old"]);
+    assert_eq!(ids, ["acct:700001:800001", "acct:700000:800001", "local-file:added"]);
     assert_eq!(files[0]["status"], "notDownloaded");
     assert!(files[0].get("kept").is_none());
-    assert_eq!((files[1]["kept"].clone(), files[1]["userAdded"].clone(), files[1]["status"].clone()), (json!(true), json!(true), json!("ready")));
-    // No store revision remains to verify or retry, so the copy stays usable.
-    assert_eq!((files[2]["kept"].clone(), files[2]["status"].clone()), (json!(true), json!("downloaded")));
-    assert!(files[2].get("userAdded").is_none());
+    // No store revision remains to verify or retry: the copy stays usable, not Attention.
+    assert_eq!((files[1]["kept"].clone(), files[1]["status"].clone()), (json!(true), json!("downloaded")));
+    assert!(files[1].get("userAdded").is_none() && files[1].get("errorCode").is_none());
+    assert_eq!((files[2]["kept"].clone(), files[2]["userAdded"].clone(), files[2]["status"].clone()), (json!(true), json!(true), json!("ready")));
     assert_eq!((product["total"].clone(), product["downloaded"].clone(), product["keptFiles"].clone()), (json!(3), json!(2), json!(2)));
     assert_eq!((product["status"].clone(), product["manifestComplete"].clone()), (json!("partial"), json!(true)));
-    // Deleting a kept file's bytes removes its row through the local refresh.
+    // A partly deleted kept file stays listed so its own delete can finish; it
+    // is Attention and no longer counts as downloaded.
+    let mut partial = c.get("artifact", "a-old").unwrap().unwrap();
+    partial["status"] = json!("missing");
+    partial["errorCode"] = json!("download_delete_incomplete");
+    c.put("artifact", "a-old", partial).unwrap();
+    let product = projection(&c, "p");
+    assert_eq!(product["files"][1]["status"], "missing");
+    assert_eq!((product["downloaded"].clone(), product["keptFiles"].clone(), product["status"].clone()), (json!(1), json!(1), json!("attention")));
+    // Deleting a kept file's record removes its row and its search terms.
+    let search = |term: &str| {
+        let category = text(&projection(&c, "p"), "category").to_owned();
+        c.command("query", json!({"search":term,"category":category,"includeFiles":false})).unwrap()["matched"].clone()
+    };
+    assert_eq!(search("old.zip"), 1);
     c.delete("artifact", "a-old").unwrap();
     let product = projection(&c, "p");
-    assert_eq!(product["files"].as_array().unwrap().iter().map(|f| text(f, "id")).collect::<Vec<_>>(), ["new", "local-file:added"]);
+    assert_eq!(product["files"].as_array().unwrap().iter().map(|f| text(f, "id")).collect::<Vec<_>>(), ["acct:700001:800001", "local-file:added"]);
     assert_eq!((product["total"].clone(), product["knownFileCount"].clone(), product["keptFiles"].clone()), (json!(2), json!(2), json!(1)));
+    assert_eq!(search("old.zip"), 0);
     c.put("product", "p", source).unwrap();
     let rebuilt = projection(&c, "p");
     assert_eq!((rebuilt["total"].clone(), rebuilt["keptFiles"].clone()), (json!(2), json!(1)));

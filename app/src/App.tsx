@@ -251,7 +251,7 @@ export default function App(){
   for(const job of nativeState.jobs as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})[]){
    if(!watchedDownloads.current.has(job.id)||['queued','running'].includes(job.state))continue;
    watchedDownloads.current.delete(job.id);
-   if(job.productId&&(job.errorCode==='file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='file_unavailable')))stale.add(job.productId);
+   if(job.productId&&(job.errorCode==='store_file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='store_file_unavailable')))stale.add(job.productId);
   }
   if(stale.size)setStaleDownloads(old=>[...new Set([...old,...stale])]);
  },[nativeState.jobs]);

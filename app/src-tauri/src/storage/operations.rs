@@ -105,6 +105,8 @@ impl StorageService {
     ) -> Result<Vec<PayloadSource>> {
         let mut result = Vec::new();
         let mut seen = HashSet::new();
+        // Store products' current download lists; local products have none.
+        let mut offered: HashMap<String, Option<HashSet<String>>> = HashMap::new();
         for a in artifacts {
             let root_id = io::required_string(&a, "rootId")?;
             if root_filter.is_some_and(|id| id != root_id) {
@@ -129,7 +131,36 @@ impl StorageService {
                 if artifact_id(&remote) != a["id"].as_str().unwrap_or("") {
                     continue;
                 }
-                ensure!(a["status"] == "ready", "file_not_usable");
+                // A kept store file exports its downloaded original even where
+                // extraction failed; the store's own files must be ready.
+                let product = io::required_string(&a, "productId")?;
+                if a["status"] != "ready" && !offered.contains_key(product) {
+                    let ids = if self
+                        .catalogue
+                        .get("product", product)?
+                        .is_some_and(|p| p["provider"] != "local")
+                    {
+                        Some(
+                            self.remote_files(product)?
+                                .0
+                                .iter()
+                                .filter_map(|f| f["id"].as_str().map(str::to_owned))
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    offered.insert(product.to_owned(), ids);
+                }
+                let kept = offered.get(product).is_some_and(|ids| {
+                    ids.as_ref()
+                        .is_some_and(|ids| !ids.contains(a["fileId"].as_str().unwrap_or("")))
+                });
+                ensure!(
+                    a["status"] == "ready"
+                        || kept && matches!(a["status"].as_str(), Some("downloaded" | "extractionFailed")),
+                    "file_not_usable"
+                );
             }
             if a["originalAvailable"] == true && (!usable_only || a["extractedPath"].is_null()) {
                 let rel = io::required_string(&a, "relativePath")?;

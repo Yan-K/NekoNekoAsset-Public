@@ -299,7 +299,14 @@ pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
            AND COALESCE(json_extract(p.summary,'$.provider'),'')<>'local'
            AND EXISTS(SELECT 1 FROM entities e WHERE e.kind='entitlement' AND e.product_id=a.product_id)
            AND NOT EXISTS(SELECT 1 FROM entities e, json_each(e.body,'$.fileIds') f
-             WHERE e.kind='entitlement' AND e.product_id=a.product_id AND f.value=r.id)",
+             WHERE e.kind='entitlement' AND e.product_id=a.product_id AND f.value=r.id)
+           AND NOT EXISTS(SELECT 1 FROM entities e, json_each(e.body,'$.fileIds') f
+             JOIN entities o ON o.kind='remote_file' AND o.id=f.value
+             WHERE e.kind='entitlement' AND e.product_id=a.product_id
+               AND COALESCE(json_extract(o.body,'$.originKind'),'')<>'local'
+               AND COALESCE(json_extract(r.body,'$.sourceFileId'),'')<>''
+               AND json_extract(o.body,'$.accountId') IS json_extract(r.body,'$.accountId')
+               AND json_extract(o.body,'$.sourceFileId')=json_extract(r.body,'$.sourceFileId'))",
     )?;
     let ids = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -315,14 +322,32 @@ fn byte_complete(v: &Value) -> bool {
         "ready" | "downloaded" | "extracting" | "extractionFailed"
     )
 }
-/// A file the store stopped offering has no revision to verify or retry
-/// against; its downloaded original stays usable even if extraction failed.
-fn retained_status(retained: bool, status: &str) -> &str {
-    if retained && status == "extractionFailed" {
-        "downloaded"
-    } else {
-        status
+/// A kept file's row status, or None once nothing of it remains to show. A
+/// download the store stopped offering has no revision to verify or retry
+/// against, so its original stays usable even if extraction failed; a
+/// user-added file keeps the failure its import job can retry. A partly
+/// deleted file stays listed so its own delete can finish.
+fn kept_status(user_added: bool, status: &str) -> Option<&str> {
+    match status {
+        "extractionFailed" if !user_added => Some("downloaded"),
+        "ready" | "downloaded" | "extracting" | "extractionFailed" | "missing" => Some(status),
+        _ => None,
     }
+}
+/// The account and source downloadable a store descriptor names.
+fn source_key(file: &Value) -> (String, String) {
+    (text(file, "accountId").to_owned(), text(file, "sourceFileId").to_owned())
+}
+/// Source downloadables the given descriptors offer; local files offer none.
+fn offered_sources(
+    ids: &BTreeSet<String>,
+    remote: &BTreeMap<String, Value>,
+) -> BTreeSet<(String, String)> {
+    ids.iter()
+        .filter_map(|id| remote.get(id))
+        .filter(|file| file["originKind"] != "local" && !text(file, "sourceFileId").is_empty())
+        .map(source_key)
+        .collect()
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
     let status = text(artifact, "status");
@@ -480,19 +505,22 @@ fn refresh_local(
                 remote.push(file);
             }
         }
-        // A store file outside the current list that gains bytes has no row yet.
-        let unlisted = product["provider"] != "local" && {
-            let listed: BTreeSet<&str> = product["files"]
-                .as_array()
+        // A store file outside the current list, listed or not, changes rows,
+        // search and evidence; the full refresh rebuilds them consistently.
+        let kept_or_unlisted = product["provider"] != "local" && {
+            let rows = product["files"].as_array();
+            let listed: BTreeSet<&str> = rows
                 .into_iter()
                 .flatten()
                 .map(|file| text(file, "id"))
                 .collect();
-            artifacts
+            rows.into_iter().flatten().any(|file| {
+                file["kept"] == true && changed_files.contains(text(file, "id"))
+            }) || artifacts
                 .iter()
                 .any(|artifact| !listed.contains(text(artifact, "fileId")))
         };
-        if unlisted {
+        if kept_or_unlisted {
             return Ok(false);
         }
         let mut by_revision = BTreeMap::new();
@@ -534,10 +562,8 @@ fn refresh_local(
                     } else {
                         "unknown"
                     });
-            let retained = file["kept"] == true;
             let status = if source
                 .is_some_and(|source| source["requiresContentVerification"] == true)
-                && !retained
                 && !failed
                 && !matches!(
                     state,
@@ -553,7 +579,7 @@ fn refresh_local(
             } else {
                 state
             };
-            file["status"] = json!(retained_status(retained, status));
+            file["status"] = json!(status);
             for field in [
                 "rootId",
                 "relativePath",
@@ -583,18 +609,6 @@ fn refresh_local(
                 file["verifiedHash"] = artifact["hash"].clone();
                 if let Some(root) = artifact["rootId"].as_str().and_then(|root| roots.get(root)) {
                     file["rootStatus"] = root["status"].clone();
-                }
-            }
-        }
-        // A kept row lasts only while its bytes do.
-        if let Some(files) = product["files"].as_array_mut() {
-            let rows = files.len();
-            files.retain(|file| file["kept"] != true || byte_complete(file));
-            let dropped = (rows - files.len()) as u64;
-            if dropped > 0 {
-                for field in ["total", "knownFileCount", "keptFiles"] {
-                    product[field] =
-                        json!(product[field].as_u64().unwrap_or(0).saturating_sub(dropped));
                 }
             }
         }
@@ -978,14 +992,16 @@ fn effective_with_jobs(
     };
     // Store products keep files outside the store's current list: downloads the
     // store stopped offering and files the user added. They stay listed while
-    // their bytes do and are never fetched from the store.
+    // their bytes do and are never fetched from the store. An older descriptor
+    // of a downloadable the list still offers is the same file, not a kept one.
+    let offered = offered_sources(&file_ids, &remote_map);
     let kept: Vec<String> = if provider == "local" {
         vec![]
     } else {
         remote_map
-            .keys()
-            .filter(|fid| !file_ids.contains(*fid))
-            .cloned()
+            .iter()
+            .filter(|(fid, file)| !file_ids.contains(*fid) && !offered.contains(&source_key(file)))
+            .map(|(fid, _)| fid.clone())
             .collect()
     };
     let mut files = vec![];
@@ -1031,10 +1047,15 @@ fn effective_with_jobs(
         } else {
             artifact_status
         };
-        let status = retained_status(retained, status);
-        if retained && !matches!(status, "ready" | "downloaded" | "extracting") {
-            continue;
-        }
+        let user_added = retained && f["originKind"] == "local";
+        let status = if retained {
+            match kept_status(user_added, status) {
+                Some(status) => status,
+                None => continue,
+            }
+        } else {
+            status
+        };
         known_file_count += usize::from(known);
         let mut file = json!({"id":fid,"name":text(&f,"name"),"type":text(&f,"name").rsplit('.').next().unwrap_or("").to_uppercase(),"size":f["sizeBytes"].as_u64().map(|n|n.to_string()).unwrap_or_default(),"status":status,"revision":f["revision"],"provenance":[{"accountId":f["accountId"],"sourceFileId":f["sourceFileId"],"variantId":f["variantId"],"variantName":f["variantName"]}],"originalAvailable":false});
         if let Some(size) = f.get("sizeBytes") {
@@ -1042,10 +1063,11 @@ fn effective_with_jobs(
         }
         if retained {
             file["kept"] = json!(true);
-            if f["originKind"] == "local" {
+            if user_added {
                 file["userAdded"] = json!(true);
             }
-            kept_count += 1;
+            // Counted like `downloaded`, so the rest are downloads the store offers again.
+            kept_count += usize::from(byte_complete(&file));
         }
         if let Some(a) = artifact {
             for key in [
@@ -1063,6 +1085,10 @@ fn effective_with_jobs(
             file["verifiedHash"] = a["hash"].clone();
             if let Some(root) = a["rootId"].as_str().and_then(|id| roots.get(id)) {
                 file["rootStatus"] = root["status"].clone();
+            }
+            // A dropped download has nothing left to retry; only its bytes matter.
+            if retained && !user_added && status != "missing" {
+                file.as_object_mut().unwrap().remove("errorCode");
             }
         }
         if known && !text(&f, "accountId").is_empty() {

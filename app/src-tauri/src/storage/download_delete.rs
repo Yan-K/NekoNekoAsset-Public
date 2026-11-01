@@ -107,22 +107,24 @@ impl StorageService {
     }
 
     fn remove_downloads(&self, products: &[String], file: Option<&str>) -> Result<Value> {
-        // Removing a product's downloads leaves the kept files Files lists, which
-        // the store cannot provide again: ones it stopped offering and ones the
-        // user added. Each file's own delete still removes them.
+        // Removing a product's downloads leaves every file outside the store's
+        // current download list, shown or not: the store cannot provide it again.
+        // Each kept file's own delete still removes it.
         let mut irreplaceable = HashSet::new();
         if file.is_none() {
             for product in products {
-                let details = self
-                    .catalogue
-                    .command("product_details", json!({"id":product}))?;
+                let attached: HashSet<String> = self
+                    .remote_files(product)?
+                    .0
+                    .iter()
+                    .filter_map(|f| f["id"].as_str().map(str::to_owned))
+                    .collect();
                 irreplaceable.extend(
-                    details["files"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter(|f| f["kept"] == true)
-                        .filter_map(|f| f["id"].as_str().map(str::to_owned)),
+                    self.catalogue
+                        .related("remote_file", product)?
+                        .iter()
+                        .filter_map(|f| f["id"].as_str().map(str::to_owned))
+                        .filter(|id| !attached.contains(id)),
                 );
             }
         }
@@ -367,10 +369,15 @@ mod tests {
     #[tokio::test]
     async fn product_delete_keeps_files_the_store_cannot_provide_again() {
         let f = Fixture::new();
-        let directory = f.product("alpha", &["New.zip", "Old.zip"]);
+        let directory = f.product("alpha", &["New.zip", "Old.zip", "Gone.zip"]);
         let c = &f.service.catalogue;
-        // The store dropped Old.zip after its download; the user added Mine.zip.
+        // The store dropped Old.zip after its download and Gone.zip after its
+        // listing changed, which hides Gone.zip's row; the user added Mine.zip.
         c.put("entitlement","entitlement-alpha",json!({"id":"entitlement-alpha","productId":"alpha","accountId":"account","fileIds":["alpha-New.zip"],"manifestComplete":true})).unwrap();
+        let mut gone = c.get("remote_file", "alpha-Gone.zip").unwrap().unwrap();
+        gone["revision"] = json!("r2");
+        c.put("remote_file", "alpha-Gone.zip", gone).unwrap();
+        let hidden = f.library.join(&directory).join("Gone.zip--dir/Gone.zip");
         let relative = format!("{directory}/Mine.zip");
         let mine = f.library.join(&relative);
         fs::write(&mine, b"authored user copy").unwrap();
@@ -382,7 +389,7 @@ mod tests {
 
         let result = f.service.delete_downloads(&json!({"productIds":["alpha"]})).await.unwrap();
         assert_eq!(result["deletedFileIds"], json!(["alpha-New.zip"]));
-        assert!(old.exists() && mine.exists());
+        assert!(old.exists() && mine.exists() && hidden.exists());
         assert_eq!(f.file_status("alpha", "alpha-Old.zip"), "ready");
         assert_eq!(f.file_status("alpha", "local-file:mine"), "ready");
 
