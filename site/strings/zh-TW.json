@@ -63,7 +63,7 @@
   "find_desc": "服裝、髮型、配飾自動分好類；還能加標籤、標記對應角色、建立收藏集。中文、日文都搜得到。",
   "find_count": "12 件",
   "find_avatar": "對應 Mochi",
-  "unity_desc": "勾選要匯入的檔案，Unity 會先跳出匯入預覽，你確認後才會寫進專案。需要在專案裡安裝免費的 NekoNekoAsset Bridge。",
+  "unity_desc": "Unity 一次只能匯入一個 unitypackage，這裡可以一次勾選很多個，連 PSD 這類單檔也能一起送進去。Unity 會先跳出匯入預覽，你確認後才會寫進專案。需要在專案裡安裝免費的 NekoNekoAsset Bridge。",
   "unity_preview": "UNITY ・ 匯入預覽",
   "unity_import": "匯入",
   "import_title": "匯入自己的檔案",

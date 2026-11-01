@@ -63,7 +63,7 @@
   "find_desc": "衣装・髪型・アクセサリーを自動で分類。タグ付け、対応アバターの登録、コレクション作りもできます。日本語でも中国語でも検索できます。",
   "find_count": "12 件",
   "find_avatar": "対応：Mochi",
-  "unity_desc": "取り込むファイルにチェックを入れると、Unity がまずインポートのプレビューを表示し、確認してからプロジェクトに書き込みます。プロジェクトに無料の NekoNekoAsset Bridge が必要です。",
+  "unity_desc": "Unity 標準では unitypackage を 1 つずつしかインポートできませんが、ここでは複数の unitypackage も、PSD などの単体ファイルも、まとめてチェックして一度に送れます。Unity がまずインポートのプレビューを表示し、確認してからプロジェクトに書き込みます。プロジェクトに無料の NekoNekoAsset Bridge が必要です。",
   "unity_preview": "UNITY ・ インポートのプレビュー",
   "unity_import": "インポート",
   "import_title": "手持ちのファイルも取り込み",

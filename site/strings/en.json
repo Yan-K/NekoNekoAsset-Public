@@ -63,7 +63,7 @@
   "find_desc": "Clothes, hair and accessories are sorted for you. Add tags, mark which avatars an item fits and build collections. Search works for Japanese titles too.",
   "find_count": "12 items",
   "find_avatar": "Fits Mochi",
-  "unity_desc": "Tick the files you want. Unity shows its import preview first and writes nothing until you confirm. Needs the free NekoNekoAsset Bridge in your project.",
+  "unity_desc": "Unity only imports one unitypackage at a time. Here you can tick as many as you like, plus single files such as PSDs, and send them all in one go. Unity shows its import preview first and writes nothing until you confirm. Needs the free NekoNekoAsset Bridge in your project.",
   "unity_preview": "UNITY · Import preview",
   "unity_import": "Import",
   "import_title": "Bring your own files",
