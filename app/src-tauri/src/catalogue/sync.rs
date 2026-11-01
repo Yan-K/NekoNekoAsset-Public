@@ -23,6 +23,7 @@ const KINDS: &[&str] = &[
     "remote_file",
     "collection",
     "saved_search",
+    "custom_category",
     "source_coverage",
 ];
 

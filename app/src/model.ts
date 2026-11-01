@@ -110,6 +110,11 @@ export function isLightTheme(tokens: Record<string,string>): boolean {
   return channels[0]*0.2126+channels[1]*0.7152+channels[2]*0.0722>0.45;
 }
 export const categoryKeys = ['Base', 'Clothes', 'Hair', 'Accessory', 'Texture', 'Motion', 'Tool', 'Shader', 'Gimmick', 'World', 'Udon', 'NonVRChat'] as const;
+/** User-defined categories; only explicit edits assign their `custom:` IDs. */
+export interface CustomCategory { id: string; name: string }
+export function categoryName(category: string, custom: readonly CustomCategory[], label: (key: string) => string): string {
+  return category.startsWith('custom:') ? custom.find(entry => entry.id === category)?.name ?? label('unknown') : label(category);
+}
 /** Opaque source keys never assert a normalized asset type or avatar compatibility. */
 export function sourceCategoryKey(category: SourceCategory | undefined): string | null {
   return category?.name?.trim() ? `booth-category:${JSON.stringify([category.id, category.parentId, category.parentName, category.name])}` : null;

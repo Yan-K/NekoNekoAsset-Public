@@ -5612,3 +5612,49 @@ fn warm_list_actions_skip_stored_rows_and_edits_reread_only_their_row() {
     assert_eq!(result["products"][0]["title"], "Edited authored outfit");
     assert!(read * 10 < stored, "an edit reread {read} of {stored} product pages");
 }
+
+#[test]
+fn custom_categories_stay_manual_and_deleting_one_restores_automatic_classification() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    // Backups made before custom categories have no record list for them.
+    let mut old = c.manifest().unwrap();
+    old["records"].as_object_mut().unwrap().remove("custom_category");
+    let restored = Fixture::new();
+    restored.open().restore_manifest(old).unwrap();
+    product(&c, "hair");
+    c.put("product", "plain", json!({"id":"plain","title":"Authored unrelated print"})).unwrap();
+    let create = |name: &str| c.command("custom_category", json!({"op":"create","name":name}));
+    let props = text(&create("Props").unwrap()["customCategories"][0], "id").to_owned();
+    assert!(props.starts_with("custom:"));
+    assert!(create(" ｐｒｏｐｓ ").is_err());
+    for missing in [format!("custom:{}", Uuid::new_v4()), "custom:authored".into()] {
+        assert!(c.command("overlay", json!({"ids":["hair"],"patch":{"category":missing}})).is_err());
+    }
+    let category = |id| projection(&c, id)["category"].clone();
+    let in_all = |id| c.command("query", json!({})).unwrap()["matchedIds"].as_array().unwrap().contains(&json!(id));
+    assert!(!in_all("plain"));
+    c.command("overlay", json!({"ids":["hair","plain"],"patch":{"category":props}})).unwrap();
+    assert_eq!(c.command("query", json!({"category":props})).unwrap()["matchedIds"].as_array().unwrap().len(), 2);
+    assert!(in_all("plain"));
+    // A new source observation cannot reclassify a manually chosen custom category.
+    c.put("product", "hair", json!({"id":"hair","title":"Authored shader","sourceCategory":{"name":"Shader"}})).unwrap();
+    assert_eq!(category("hair"), props);
+    c.command("custom_category", json!({"op":"update","id":props,"name":"Small props"})).unwrap();
+    create("Kept").unwrap();
+    let away = c.command("overlay", json!({"ids":["hair"],"patch":{"category":"Tool"}})).unwrap();
+    let copy = Fixture::new();
+    let peer = copy.open();
+    peer.restore_manifest(c.manifest().unwrap()).unwrap();
+    assert_eq!(projection(&peer, "plain")["category"], props);
+    assert_eq!(peer.command("bootstrap", json!({})).unwrap()["customCategories"].as_array().unwrap().len(), 2);
+    let remaining = c.command("custom_category", json!({"op":"delete","id":props})).unwrap();
+    assert_eq!(remaining["customCategories"].as_array().unwrap().iter().map(|row| text(row, "name")).collect::<Vec<_>>(), ["Kept"]);
+    assert!(c.get("overlay", "plain").unwrap().unwrap().get("category").is_none());
+    assert_eq!(category("plain"), "NonVRChat");
+    assert!(!in_all("plain"));
+    // Tool is still current, yet undoing the move must not bring back the deleted category.
+    let undone = c.command("undo", json!({"token":away["undoToken"]})).unwrap();
+    assert_eq!(undone["conflicts"], json!(["hair"]));
+    assert_eq!(category("hair"), "Tool");
+}

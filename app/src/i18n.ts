@@ -111,6 +111,7 @@ const labels: Record<string, [string, string, string, string, string]> = {
   rejectTag: ['Reject suggestion', '候補を拒否', '제안 거부', '拒绝建议', '拒絕建議'],
   category: ['Category', '分類', '분류', '分类', '分類'],
   categories: ['Categories', '分類', '분류', '分类', '分類'],
+  customCategories: ['Custom categories', 'カスタム分類', '사용자 분류', '自定义分类', '自訂分類'],
   note: ['Note', 'メモ', '메모', '备注', '備註'],
   name: ['Name', '名前', '이름', '名称', '名稱'],
   title: ['Title', '名前', '이름', '名称', '名稱'],

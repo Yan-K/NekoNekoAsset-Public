@@ -1,7 +1,7 @@
 import {invoke, convertFileSrc, isTauri} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {getCurrentWebview} from '@tauri-apps/api/webview';
-import type {Product, Account, Locale} from './model';
+import type {Product, Account, Locale, CustomCategory} from './model';
 
 export type Service = 'catalogue'|'booth'|'storage'|'unity';
 export interface SourceProgress {stage?:string;source?:string;pages?:number;detailsCompleted?:number;requestsCompleted?:number;products?:number;published?:number;metadataCompleted?:number;metadataTotal?:number;availabilityWarnings?:number}
@@ -43,7 +43,7 @@ export interface LibraryCredential {id:string;name:string;store:string}
 export interface LibraryStatus {state:'ready'|'setup'|'unconfigured'|'blocked';path?:string;defaultPath?:string;errorCode?:string;locale?:string;missingCredentials?:LibraryCredential[]}
 export async function libraryStatus():Promise<LibraryStatus>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('library_status');}
 export async function openLibrary(path:string,locale?:Locale,newLibrary=false):Promise<{restarting:boolean}>{if(!isTauri())throw new Error('nativeUnavailable');return invoke('library_open',{path,locale,newLibrary});}
-export interface NativeState {version:number;products:Product[];accounts:Account[];roots:NativeRoot[];jobs:NativeJob[];preferences:Record<string,unknown>;collections:Record<string,unknown>[];savedSearches:Record<string,unknown>[];sourceCoverage:Record<string,unknown>[];conflicts:Record<string,unknown>[];avatarOptions?:AvatarOption[];ownedBaseOptions?:AvatarOption[];tagOptions?:TagOption[];total?:number;counts?:{all:number;downloaded:number;attention:number;hidden?:number}}
+export interface NativeState {version:number;products:Product[];accounts:Account[];roots:NativeRoot[];jobs:NativeJob[];preferences:Record<string,unknown>;collections:Record<string,unknown>[];savedSearches:Record<string,unknown>[];customCategories?:CustomCategory[];sourceCoverage:Record<string,unknown>[];conflicts:Record<string,unknown>[];avatarOptions?:AvatarOption[];ownedBaseOptions?:AvatarOption[];tagOptions?:TagOption[];total?:number;counts?:{all:number;downloaded:number;attention:number;hidden?:number}}
 export const emptyState:NativeState={version:1,products:[],accounts:[],roots:[],jobs:[],preferences:{},collections:[],savedSearches:[],sourceCoverage:[],conflicts:[]};
 export interface DialogResult {path:string;content?:string;paths?:string[]}
 export async function invokeAction<T=any>(service:Service,action:string,args:Record<string,unknown>={}):Promise<T>{

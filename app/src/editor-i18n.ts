@@ -20,6 +20,7 @@ const extra:Record<string,[string,string,string,string,string]>={
   rename:['Rename','名前を変更','이름 변경','重命名','重新命名'],
   delete:['Delete','削除','삭제','删除','刪除'],
   confirmDeleteCollection:['Delete collection “{name}”?','コレクション「{name}」を削除しますか？','컬렉션 “{name}”을 삭제할까요?','删除收藏集“{name}”？','刪除收藏集「{name}」？'],
+  confirmDeleteCategory:['Delete custom category “{name}”? Its products return to their automatic category.','カスタム分類「{name}」を削除しますか？商品は自動の分類に戻ります。','사용자 분류 “{name}”을 삭제할까요? 상품은 자동 분류로 돌아갑니다.','删除自定义分类“{name}”？其中的商品将恢复为自动分类。','刪除自訂分類「{name}」？其中的產品會恢復為自動分類。'],
   confirmDeleteSearch:['Delete saved search “{name}”?','保存した検索「{name}」を削除しますか？','저장된 검색 “{name}”을 삭제할까요?','删除已保存的搜索“{name}”？','刪除已儲存的搜尋「{name}」？'],
   confirmDeleteTheme:['Delete theme “{name}”?','テーマ「{name}」を削除しますか？','테마 “{name}”을 삭제할까요?','删除主题“{name}”？','刪除主題「{name}」？'],
   entryUnavailable:['This item is no longer available. Close and reopen the list.','この項目は利用できなくなりました。一覧を開き直してください。','이 항목은 더 이상 사용할 수 없습니다. 목록을 닫았다 다시 여세요.','此项目已不可用，请关闭并重新打开列表。','此項目已無法使用，請關閉並重新開啟清單。'],

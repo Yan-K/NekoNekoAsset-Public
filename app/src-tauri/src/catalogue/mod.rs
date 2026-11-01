@@ -2,6 +2,7 @@
 mod accounts;
 mod acquisition;
 mod avatars;
+mod custom_categories;
 #[cfg(test)]
 mod dynamic_tag_tests;
 #[cfg(test)]
@@ -632,6 +633,7 @@ const KINDS: &[&str] = &[
     "checkpoint",
     "collection",
     "saved_search",
+    "custom_category",
     "preferences",
     "source_coverage",
     "device",
@@ -647,6 +649,7 @@ const SYNC_KINDS: &[&str] = &[
     "remote_file",
     "collection",
     "saved_search",
+    "custom_category",
     "source_coverage",
 ];
 const EDITABLE: &[&str] = &[
@@ -1580,7 +1583,8 @@ fn validate_patch(patch: &Value) -> Result<()> {
                     "Udon",
                     "NonVRChat"
                 ]
-                .contains(&value.as_str().unwrap_or("")),
+                .contains(&value.as_str().unwrap_or(""))
+                    || custom_categories::is_custom(value.as_str().unwrap_or("")),
                 "catalogue.invalid_category"
             );
         }
@@ -2997,7 +3001,7 @@ impl Catalogue {
                 let bases = projection::bases(&tx)?;
                 let owned = crate::taxonomy::owned_base_options(&bases);
                 let avatar_options = avatars::options(&tx, &bases, &owned)?;
-                let result = json!({"version":1,"total":total,"counts":counts,"products":products,"accounts":rows(&tx,"account")?,"roots":self.display_roots(&tx)?,"jobs":rows(&tx,"job")?,"preferences":raw(&tx,"preferences","app")?,"collections":rows(&tx,"collection")?,"savedSearches":rows(&tx,"saved_search")?,"sourceCoverage":rows(&tx,"source_coverage")?,"conflicts":self.current_conflicts(&tx)?,"tagOptions":dictionary["tags"],"avatars":dictionary,"avatarOptions":avatar_options,"ownedBaseOptions":owned});
+                let result = json!({"version":1,"total":total,"counts":counts,"products":products,"accounts":rows(&tx,"account")?,"roots":self.display_roots(&tx)?,"jobs":rows(&tx,"job")?,"preferences":raw(&tx,"preferences","app")?,"collections":rows(&tx,"collection")?,"savedSearches":rows(&tx,"saved_search")?,"customCategories":rows(&tx,"custom_category")?,"sourceCoverage":rows(&tx,"source_coverage")?,"conflicts":self.current_conflicts(&tx)?,"tagOptions":dictionary["tags"],"avatars":dictionary,"avatarOptions":avatar_options,"ownedBaseOptions":owned});
                 tx.commit()?;
                 Ok(result)
             }
@@ -3056,6 +3060,7 @@ impl Catalogue {
                     .unwrap_or(""),
             ),
             "collection" | "save_search" | "saved_search" => self.manage(action, args),
+            "custom_category" => self.custom_category(args),
             "preferences" => self.preferences(args),
             "conflicts" => {
                 let conn = self
@@ -3143,6 +3148,10 @@ impl Catalogue {
                 let id = text(&change, "id").to_owned();
                 let patch = change.get("patch").cloned().unwrap_or(json!({}));
                 let clear = strings(&change["clearFields"]);
+                ensure!(
+                    !custom_categories::missing(tx, patch["category"].as_str().unwrap_or(""))?,
+                    "catalogue.entity_missing"
+                );
                 let source = raw(tx, "product", &id)?.context("catalogue.product_missing")?;
                 if patch.get("hidden").is_some() || clear.iter().any(|field| field == "hidden") {
                     let provider = if text(&source, "provider").is_empty() {
@@ -3257,6 +3266,9 @@ impl Catalogue {
                 }) || fields
                     .iter()
                     .any(|f| current.get(f) != entry["after"].get(f))
+                    // A deleted custom category cannot come back through undo.
+                    || fields.iter().any(|f| f == "category")
+                        && custom_categories::missing(tx, entry["before"]["category"].as_str().unwrap_or(""))?
                 {
                     conflicts.push(id.to_owned());
                     continue;

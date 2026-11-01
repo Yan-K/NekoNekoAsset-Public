@@ -12,6 +12,7 @@ const PORTABLE: &[&str] = &[
     "root",
     "collection",
     "saved_search",
+    "custom_category",
     "preferences",
     "source_coverage",
 ];
@@ -173,9 +174,13 @@ fn validate_manifest(manifest: &Value) -> Result<Vec<(String, String, Value)>> {
     let mut seen = BTreeSet::new();
     let mut records = vec![];
     for kind in PORTABLE {
-        let values = manifest["records"][*kind]
-            .as_array()
-            .context("catalogue.incomplete_manifest")?;
+        let values = match manifest["records"].get(*kind) {
+            // Backups made before custom categories existed have none.
+            None if *kind == "custom_category" => continue,
+            values => values
+                .and_then(Value::as_array)
+                .context("catalogue.incomplete_manifest")?,
+        };
         for value in values {
             let portable_preferences;
             let value = if *kind == "preferences" {
@@ -430,6 +435,10 @@ pub(super) fn csv(catalogue: &Catalogue, args: Value) -> Result<Value> {
         .lock()
         .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
     let selected: Option<BTreeSet<_>> = args.get("ids").map(|v| strings(v).into_iter().collect());
+    let custom: std::collections::BTreeMap<_, _> = rows(&conn, "custom_category")?
+        .iter()
+        .map(|row| (text(row, "id").to_owned(), text(row, "name").to_owned()))
+        .collect();
     let mut output =
         String::from("id,title,sourceTitle,shop,category,status,price,acquired,note,tags,priceCurrency,paidPrice,paidCurrency\r\n");
     let mut count = 0;
@@ -442,7 +451,13 @@ pub(super) fn csv(catalogue: &Catalogue, args: Value) -> Result<Value> {
         }
         let mut fields = vec![];
         for key in ["id", "title", "sourceTitle", "shop", "category", "status"] {
-            fields.push(text(&p, key).to_owned());
+            let value = text(&p, key);
+            let value = if key == "category" {
+                custom.get(value).map_or(value, String::as_str)
+            } else {
+                value
+            };
+            fields.push(value.to_owned());
         }
         fields.push(
             p["price"]

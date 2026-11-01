@@ -1,4 +1,4 @@
-import {AlertCircle,ChartPie,CheckCircle2,Clock,Cloud,Code,Gem,Globe,Inbox,Layers,LoaderCircle,Palette,PersonStanding,Scissors,Shirt,User,WandSparkles,Wrench} from 'lucide-react';
+import {AlertCircle,ChartPie,CheckCircle2,Clock,Cloud,Code,Gem,Globe,Inbox,Layers,LoaderCircle,Palette,PersonStanding,Scissors,Shapes,Shirt,User,WandSparkles,Wrench} from 'lucide-react';
 import type {LucideIcon} from 'lucide-react';
 import type {ProductDisplayStatus} from './model';
 
@@ -7,4 +7,4 @@ const categoryIcons:Record<string,LucideIcon>={Base:User,Clothes:Shirt,Hair:Scis
 
 /** One glyph per display status, shared by cards, rows and the inspector. Processing spins. */
 export function StatusIcon({status,size=12}:{status:ProductDisplayStatus;size?:number}){const Icon=statusIcons[status]??Clock;return <Icon size={size} aria-hidden="true" className={status==='processing'?'progress-spin':undefined}/>;}
-export function CategoryIcon({category,size=15}:{category:string;size?:number}){const Icon=categoryIcons[category]??Inbox;return <Icon size={size} aria-hidden="true"/>;}
+export function CategoryIcon({category,size=15}:{category:string;size?:number}){const Icon=categoryIcons[category]??(category.startsWith('custom:')?Shapes:Inbox);return <Icon size={size} aria-hidden="true"/>;}

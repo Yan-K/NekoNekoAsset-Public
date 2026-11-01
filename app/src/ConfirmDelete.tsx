@@ -6,13 +6,14 @@ import {nativeErrorText} from './error-i18n';
 import {editorText} from './editor-i18n';
 import './editor-styles.css';
 
-export default function ConfirmDelete({locale,kind,name,onDelete,onClose}:{locale:Locale;kind:'collection'|'search'|'theme';name:string;onDelete:()=>Promise<void>;onClose:()=>void}) {
+export default function ConfirmDelete({locale,kind,name,onDelete,onClose}:{locale:Locale;kind:'collection'|'category'|'search'|'theme';name:string;onDelete:()=>Promise<void>;onClose:()=>void}) {
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
  const box=useRef<HTMLDivElement>(null),cancel=useRef<HTMLButtonElement>(null),inFlight=useRef(false),close=useRef(onClose);close.current=onClose;
  const [previous]=useState(()=>document.activeElement instanceof HTMLElement?document.activeElement:null);
  const [fallback]=useState(()=>previous?.closest('.modal,.appearance-content')??null);
  const L=(key:string)=>editorText(locale,key);
- useLayoutEffect(()=>()=>{const target=previous?.isConnected&&!previous.matches(':disabled')?previous:fallback?.querySelector<HTMLElement>('input:not(:disabled),button:not(:disabled),select:not(:disabled)');if(target?.isConnected)requestAnimationFrame(()=>target.focus({preventScroll:true}));},[previous,fallback]);
+ // Choose after the deletion renders: the trigger's row may be gone or disabled by then.
+ useLayoutEffect(()=>()=>{requestAnimationFrame(()=>{const target=previous?.isConnected&&!previous.matches(':disabled')?previous:fallback?.querySelector<HTMLElement>('input:not(:disabled),button:not(:disabled),select:not(:disabled)');if(target?.isConnected)target.focus({preventScroll:true});});},[previous,fallback]);
  useEffect(()=>{
   const key=(event:KeyboardEvent)=>{
    if(event.isComposing||event.keyCode===229)return;
