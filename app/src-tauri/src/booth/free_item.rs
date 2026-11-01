@@ -92,7 +92,9 @@ fn control(node: ElementRef<'_>) -> Option<(String, String, String)> {
     }
     Some((id, variant?, canonical))
 }
-fn alternate(node: ElementRef<'_>, file: &str, variant: &str) -> bool {
+/// An alternate app menu for one bound file. Its optional `type` names that
+/// file's own extension (`zip`, `vroid`, `vroidcustomitem`), never another file.
+fn alternate(node: ElementRef<'_>, file: &str, variant: &str, name: &str) -> bool {
     if node.value().attr("data-test") != Some("other-downloads-button")
         || !node
             .value()
@@ -135,7 +137,9 @@ fn alternate(node: ElementRef<'_>, file: &str, variant: &str) -> bool {
                 && match k.as_ref() {
                     "variation_id" => v.as_ref() == variant,
                     "client" => matches!(v.as_ref(), "booth-library-manager" | "vroid"),
-                    "type" => v.as_ref() == "zip",
+                    "type" => name
+                        .rsplit_once('.')
+                        .is_some_and(|(_, ext)| !ext.is_empty() && ext.eq_ignore_ascii_case(v.as_ref())),
                     _ => false,
                 }
         }) && keys.contains("variation_id")
@@ -488,7 +492,9 @@ pub(super) fn diagnose_entry(html: &str, id: &str) -> Result<EntryDiagnostics> {
             let controls: Vec<_> = scope.select(&sel(CONTROLS)).collect();
             if controls.len() == 1 {
                 if let Some((file, variant, _)) = control(controls[0]) {
-                    if pair_name(scope, controls[0]).is_some() && alternate(node, &file, &variant) {
+                    if pair_name(scope, controls[0])
+                        .is_some_and(|name| alternate(node, &file, &variant, &text(name)))
+                    {
                         known = true;
                         break;
                     }
@@ -648,7 +654,7 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
                 // Exact product/variant/resolver and filename binding prove this
                 // offered file. Button wording and optional labels are display UI.
                 accepted_labels.extend(button.select(&sel(".cmd-label")).map(|label| label.id()));
-                wrap_keys.push(key.clone());
+                wrap_keys.push((key.clone(), name));
                 files.insert(
                     key,
                     File {
@@ -671,7 +677,7 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
                 if cart_wrap(other, *row).map(|wrap| wrap.id()) != Some(scope.id())
                     || wrap_keys
                         .iter()
-                        .filter(|(file, variant)| alternate(other, file, variant))
+                        .filter(|((file, variant), name)| alternate(other, file, variant, name))
                         .count()
                         != 1
                 {
@@ -1488,5 +1494,42 @@ mod tests {
             .unwrap()
             .manifest_complete
         );
+    }
+    #[test]
+    fn vroid_methods_type_only_their_own_file() {
+        let menu = |file: &str, kind: &str| format!(r#"<div class='js-download-free-button' data-test='other-downloads-button' data-dropdown-items='[{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/{file}/deeplink?client=booth-library-manager&variation_id=800001"}},{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/{file}/deeplink?client=vroid&type={kind}&variation_id=800001"}}]'></div>"#);
+        let with = |name: &str, kind: &str| {
+            HTML.replace("authored.zip", name)
+                .replace(&format!("{name}</div>"), &format!("{name}</div>{}", menu("700001", kind)))
+        };
+        for (name, kind) in [
+            ("authored.vroidcustomitem", "vroidcustomitem"),
+            ("authored.vroid", "vroid"),
+            ("Authored.VROID", "vroid"),
+        ] {
+            let evidence = parse(&with(name, kind), "900001").unwrap();
+            assert!(evidence.manifest_complete && evidence.error_code.is_none());
+            assert_eq!(evidence.files.len(), 1);
+            assert_eq!(evidence.files[0].name.as_deref(), Some(name));
+            let counts = serde_json::to_value(diagnose_entry(&with(name, kind), "900001").unwrap()).unwrap();
+            assert_eq!(counts["knownAlternateMethods"], 1);
+            assert_eq!(counts["unknownDropdowns"], 0);
+        }
+        for (name, kind) in [
+            ("authored.vroidcustomitem", "zip"),
+            ("authored.vroidcustomitem", "vroid"),
+            ("authored.vroid", ""),
+            ("authored", "authored"),
+            ("authored.", ""),
+        ] {
+            let evidence = parse(&with(name, kind), "900001").unwrap();
+            assert_eq!(evidence.error_code.as_deref(), Some("FREE_ITEM_UNKNOWN_DROPDOWN"), "{name} {kind}");
+            assert!(evidence.files.is_empty());
+        }
+        // In a shared wrap the type follows the menu's own file, not a neighbour.
+        let shared = shared_wrap_html_with_files(2).replace("authored-2.zip", "authored-2.vroidcustomitem");
+        let typed = |kind: &str| shared.replace("variation_id=800002\"}]", &format!(r#"variation_id=800002"}},{{"deeplinkDownloadableUrl":"https://booth.pm/downloadables/700002/deeplink?client=vroid&type={kind}&variation_id=800002"}}]"#));
+        assert_eq!(parse(&typed("vroidcustomitem"), "900001").unwrap().files.len(), 2);
+        assert_eq!(parse(&typed("zip"), "900001").unwrap().error_code.as_deref(), Some("FREE_ITEM_UNKNOWN_DROPDOWN"));
     }
 }
