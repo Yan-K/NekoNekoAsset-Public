@@ -269,7 +269,9 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
     let message = err.to_string().to_ascii_lowercase();
     match message.as_str() {
         "account_identity_mismatch" | "store_identity_changed" => return "auth_required",
-        "file_unavailable" => return "file_missing",
+        // The store no longer offers this file to the account; an update
+        // replaces the saved list. Local bytes stay `file_missing`.
+        "file_unavailable" => return "file_unavailable",
         "source_tree_incomplete" => return "source_tree_incomplete",
         "network_unavailable" => return "network_failed",
         "download_failed" => return "download_http_failed",
@@ -477,7 +479,8 @@ mod launch_path_tests {
         for (error, expected) in [
             ("ACCOUNT_IDENTITY_MISMATCH", "auth_required"),
             ("STORE_IDENTITY_CHANGED", "auth_required"),
-            ("FILE_UNAVAILABLE", "file_missing"),
+            ("FILE_UNAVAILABLE", "file_unavailable"),
+            ("file_missing", "file_missing"),
             ("SIGNED_LINK_EXPIRED", "link_expired"),
             ("PERMISSION_DENIED", "permission_denied"),
             ("archive_corrupt", "archive_corrupt"),

@@ -377,6 +377,28 @@ impl StorageService {
             &entitlements,
         ))
     }
+    /// Attached files plus store files kept after the store stopped offering
+    /// them. Callers still require a usable artifact at the file's revision.
+    fn kept_files(&self, product: &str) -> Result<Vec<Value>> {
+        let (mut files, _) = self.remote_files(product)?;
+        if self
+            .catalogue
+            .get("product", product)?
+            .is_some_and(|p| p["provider"] != "local")
+        {
+            let attached: HashSet<String> = files
+                .iter()
+                .filter_map(|f| f["id"].as_str().map(str::to_owned))
+                .collect();
+            files.extend(
+                self.catalogue
+                    .related("remote_file", product)?
+                    .into_iter()
+                    .filter(|f| f["id"].as_str().is_some_and(|id| !attached.contains(id))),
+            );
+        }
+        Ok(files)
+    }
     fn enabled_files(&self, files: Vec<Value>) -> Result<Vec<Value>> {
         let enabled = self.available_download_accounts()?;
         Ok(files
@@ -557,6 +579,7 @@ impl StorageService {
                                             | "auth_required"
                                             | "permission_denied"
                                             | "manifest_incomplete"
+                                            | "file_unavailable"
                                             | "archive_password_required"
                                             | "archive_missing_volume"
                                             | "source_tree_incomplete"
@@ -804,6 +827,27 @@ impl StorageService {
             .ok_or_else(|| anyhow::anyhow!("file_missing"))?;
         self.enqueue(&json!({"productIds":[file["productId"]],"selectedFileIds":[id],"rootId":args["rootId"],"redownload":args["redownload"]==true})).await
     }
+    /// Download these store products once an update changes their file list;
+    /// the existing automatic evaluation queues the new manifest.
+    fn want_download(&self, args: &Value) -> Result<Value> {
+        let ids = strings(&args["productIds"]);
+        ensure!(!ids.is_empty(), "invalid_arguments");
+        let mut writes = Vec::new();
+        for id in ids {
+            let product = self
+                .catalogue
+                .get("product", &id)?
+                .ok_or_else(|| anyhow::anyhow!("product_missing"))?;
+            ensure!(product["provider"] != "local", "invalid_arguments");
+            writes.push((
+                "download_intent".into(),
+                id.clone(),
+                json!({"id":id,"wantDownload":true}),
+            ));
+        }
+        self.catalogue.put_many(writes)?;
+        Ok(json!({}))
+    }
     pub async fn command(
         &self,
         app: &tauri::AppHandle,
@@ -846,6 +890,7 @@ impl StorageService {
             "delete_local_products" => self.delete_local_products(&args, None).await,
             "enqueue_products" => self.enqueue(&args).await,
             "enqueue_file" => self.enqueue_file(&args).await,
+            "want_download" => self.want_download(&args),
             "cancel_job" => {
                 let id = io::required_string(&args, "jobId")?;
                 self.cancel_job(id)

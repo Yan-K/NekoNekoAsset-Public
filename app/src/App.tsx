@@ -101,7 +101,8 @@ export default function App(){
  const [snapshotVersion,setSnapshotVersion]=useState(0),[collectionBusy,setCollectionBusy]=useState(false),[committedCollections,setCommittedCollections]=useState<NativeCollection[]>([]);
  const [libraryReady,setLibraryReady]=useState(false),[context,setContext]=useState<{x:number;y:number;ids:string[]}|null>(null);
  const [deleteLocalSelection,setDeleteLocalSelection]=useState<{ids:string[];names:string[]}|null>(null);
- const [productConfirm,setProductConfirm]=useState<{kind:'downloadAll'|'deleteDownloads';ids:string[];names:string[]}|null>(null),[deletingDownloads,setDeletingDownloads]=useState<ReadonlySet<string>>(new Set());
+ const [productConfirm,setProductConfirm]=useState<{kind:'downloadAll'|'deleteDownloads'|'staleDownload';ids:string[];names:string[]}|null>(null),[deletingDownloads,setDeletingDownloads]=useState<ReadonlySet<string>>(new Set());
+ const watchedDownloads=useRef(new Set<string>()),[staleDownloads,setStaleDownloads]=useState<string[]>([]);
  const [notice,setNotice]=useState(''),[undo,setUndo]=useState<string|null>(null),[autoAll,setAutoAll]=useState(false),[setupDone,setSetupDone]=useState(false);
  const [accounts,setAccounts]=useState<Account[]>([]),[revealed,setRevealed]=useState<Set<string>>(new Set()),[avatarSettings,setAvatarSettings]=useState<Record<string,AvatarSetting>>({}),[importSeed,setImportSeed]=useState<ImportSeed|undefined>();
  const avatarSettingsRef=useRef(avatarSettings);avatarSettingsRef.current=avatarSettings;
@@ -240,11 +241,23 @@ export default function App(){
  const cancelDownloads=(ids?:string[])=>run(onNative('storage','cancel_downloads',ids?{productIds:ids}:{}));
  /** The store lists no file for these products and none is on disk. */
  const allUnavailable=(ids:string[])=>ids.length>0&&ids.every(id=>productMap.get(id)?.unavailable===true);
- const hasDownloadedFiles=(ids:string[])=>ids.some(id=>{const product=productMap.get(id);return !product||product.downloaded>0||product.status==='attention';});
+ const hasDownloadedFiles=(ids:string[])=>ids.some(id=>{const product=productMap.get(id);return !product||product.downloaded>(product.keptFiles??0)||product.status==='attention';});
  const requestDeleteDownloads=(ids:string[])=>{const unique=[...new Set(ids)];if(onlineSelection(unique))setProductConfirm({kind:'deleteDownloads',ids:unique,names:unique.map(id=>productMap.get(id)?.title??'').filter(Boolean)});};
  const deleteDownloads=async(args:Record<string,unknown>,ids:string[])=>{setDeletingDownloads(old=>new Set([...old,...ids]));try{await invokeAction('storage','delete_downloads',args);}finally{setDeletingDownloads(old=>new Set([...old].filter(id=>!ids.includes(id))));}};
- const download=(ids:string[])=>{if(ids.length)run(onNative('storage','enqueue_products',{productIds:ids}));};
- const downloadFile=(fileId:string,redownload:boolean)=>run(onNative('storage','enqueue_file',{fileId,redownload}));
+ /** Downloads started here offer an update when the store no longer offers a file. */
+ const watchDownloads=(result:unknown)=>{for(const id of (result as {jobIds?:unknown[]}|undefined)?.jobIds??[])if(typeof id==='string')watchedDownloads.current.add(id);};
+ useEffect(()=>{
+  const stale=new Set<string>();
+  for(const job of nativeState.jobs as (NativeJob&{failures?:Record<string,{errorCode?:string}|undefined>})[]){
+   if(!watchedDownloads.current.has(job.id)||['queued','running'].includes(job.state))continue;
+   watchedDownloads.current.delete(job.id);
+   if(job.productId&&(job.errorCode==='file_unavailable'||Object.values(job.failures??{}).some(item=>item?.errorCode==='file_unavailable')))stale.add(job.productId);
+  }
+  if(stale.size)setStaleDownloads(old=>[...new Set([...old,...stale])]);
+ },[nativeState.jobs]);
+ useEffect(()=>{if(staleDownloads.length&&!productConfirm){setProductConfirm({kind:'staleDownload',ids:staleDownloads,names:staleDownloads.map(id=>productMap.get(id)?.title??'').filter(Boolean)});setStaleDownloads([]);}},[staleDownloads,productConfirm,productMap]);
+ const download=(ids:string[])=>{if(ids.length)run(onNative('storage','enqueue_products',{productIds:ids}).then(watchDownloads));};
+ const downloadFile=(fileId:string,redownload:boolean)=>run(onNative('storage','enqueue_file',{fileId,redownload}).then(watchDownloads));
  const update=(ids:string[])=>{if(ids.length)run(onNative('booth','update_products',{productIds:ids}));};
  const exportZip=async(ids:string[])=>{if(!ids.length)return;try{const destination=await nativeDialog('save_file',{defaultName:'NekoNekoAsset.zip',filters:[{name:'ZIP',extensions:['zip']}]});if(destination)await onNative('storage','export_zip',{productIds:ids,path:destination.path});}catch(error){notify(q(errorCode(error)));}};
  const edit=()=>setDialog(visibleSelected.length>1?'batch':'edit');
@@ -344,7 +357,7 @@ export default function App(){
  {dialog==='spending'&&<SpendingDialog locale={locale} productIds={chosen} accountIds={query.accountIds??undefined} onClose={()=>setDialog(null)}/>}
  {themeDeleteTarget&&<ConfirmDelete locale={locale} kind="theme" name={themeDeleteTarget.name} onDelete={()=>deleteTheme(themeDeleteTarget.id)} onClose={()=>setThemeDeleteTarget(null)}/>}
  {deleteLocalSelection&&<DeleteLocalProducts locale={locale} {...deleteLocalSelection} onDelete={deleteLocalProducts} onClose={()=>setDeleteLocalSelection(null)}/>}
- {productConfirm&&<ConfirmProducts locale={locale} {...(productConfirm.kind==='downloadAll'?{title:q('downloadAll'),message:q('confirmDownloadAll'),confirm:q('download')}:{title:q('deleteDownloads'),message:q('confirmDeleteDownloads'),confirm:q('delete'),danger:true})} count={productConfirm.ids.length} names={productConfirm.names} onConfirm={async()=>{if(productConfirm.kind==='downloadAll')await invokeAction('storage','enqueue_products',{productIds:productConfirm.ids});else await deleteDownloads({productIds:productConfirm.ids},productConfirm.ids);}} onClose={()=>setProductConfirm(null)}/>}
+ {productConfirm&&<ConfirmProducts locale={locale} {...(productConfirm.kind==='downloadAll'?{title:q('downloadAll'),message:q('confirmDownloadAll'),confirm:q('download')}:productConfirm.kind==='staleDownload'?{title:q('staleDownloadTitle'),message:q('confirmStaleDownload'),confirm:q('updateAndDownload')}:{title:q('deleteDownloads'),message:q('confirmDeleteDownloads'),confirm:q('delete'),danger:true})} count={productConfirm.ids.length} names={productConfirm.names} onConfirm={async()=>{if(productConfirm.kind==='downloadAll')watchDownloads(await invokeAction('storage','enqueue_products',{productIds:productConfirm.ids}));else if(productConfirm.kind==='staleDownload'){await invokeAction('storage','want_download',{productIds:productConfirm.ids});await invokeAction('booth','update_products',{productIds:productConfirm.ids});}else await deleteDownloads({productIds:productConfirm.ids},productConfirm.ids);}} onClose={()=>setProductConfirm(null)}/>}
  {context&&<LibraryContextMenu {...context} actions={contextActions} onClose={()=>setContext(null)}/>}
  {dialog==='avatars'&&<SmallDialog className="avatar-dialog" label={q('manageAvatars')} close={()=>setDialog(null)} q={q}><AvatarManager options={avatarOptions} enabled={avatarEnabled} label={avatarLabel} onChange={changeAvatars} onEdit={changeAvatarDetails} q={q}/></SmallDialog>}
  {libraryOpening&&<div className="modal-backdrop"><LibraryAccess locale={locale} status={libraryState} busy onChoose={()=>{}} onRetry={()=>{}}/></div>}

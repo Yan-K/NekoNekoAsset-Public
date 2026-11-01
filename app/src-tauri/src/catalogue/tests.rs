@@ -2949,6 +2949,73 @@ fn reopen_corrects_stale_partial_badge_without_store_sync() {
     assert_eq!(reopened.command("query", json!({"quick":"downloaded","limit":10})).unwrap()["allDownloaded"], true);
 }
 #[test]
+fn store_dropped_downloads_and_added_files_stay_listed_while_their_bytes_do() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    let source = json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"});
+    c.put("product", "p", source.clone()).unwrap();
+    // The store replaced old.zip, already downloaded, with new.zip and dropped
+    // never.zip, which was never downloaded. A later Full sync had flagged
+    // old.zip for content verification before it disappeared.
+    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["new"],"manifestComplete":true})).unwrap();
+    for (id, name) in [("new", "new.zip"), ("old", "old.zip"), ("never", "never.zip")] {
+        c.put("remote_file", id, json!({"id":id,"productId":"p","name":name,"revision":"r1","requiresContentVerification":id == "old"})).unwrap();
+    }
+    c.put("artifact", "a-old", json!({"id":"a-old","productId":"p","fileId":"old","revision":"r1","status":"extractionFailed","originalAvailable":true})).unwrap();
+    c.put("remote_file", "local-file:added", json!({"id":"local-file:added","productId":"p","provider":"local","originKind":"local","name":"added.zip","revision":"sha256:a"})).unwrap();
+    c.put("artifact", "a-added", json!({"id":"a-added","productId":"p","fileId":"local-file:added","revision":"sha256:a","status":"ready","originalAvailable":true})).unwrap();
+    let product = projection(&c, "p");
+    let files = product["files"].as_array().unwrap();
+    let ids: Vec<_> = files.iter().map(|f| text(f, "id")).collect();
+    assert_eq!(ids, ["new", "local-file:added", "old"]);
+    assert_eq!(files[0]["status"], "notDownloaded");
+    assert!(files[0].get("kept").is_none());
+    assert_eq!((files[1]["kept"].clone(), files[1]["userAdded"].clone(), files[1]["status"].clone()), (json!(true), json!(true), json!("ready")));
+    // No store revision remains to verify or retry, so the copy stays usable.
+    assert_eq!((files[2]["kept"].clone(), files[2]["status"].clone()), (json!(true), json!("downloaded")));
+    assert!(files[2].get("userAdded").is_none());
+    assert_eq!((product["total"].clone(), product["downloaded"].clone(), product["keptFiles"].clone()), (json!(3), json!(2), json!(2)));
+    assert_eq!((product["status"].clone(), product["manifestComplete"].clone()), (json!("partial"), json!(true)));
+    // Deleting a kept file's bytes removes its row through the local refresh.
+    c.delete("artifact", "a-old").unwrap();
+    let product = projection(&c, "p");
+    assert_eq!(product["files"].as_array().unwrap().iter().map(|f| text(f, "id")).collect::<Vec<_>>(), ["new", "local-file:added"]);
+    assert_eq!((product["total"].clone(), product["knownFileCount"].clone(), product["keptFiles"].clone()), (json!(2), json!(2), json!(1)));
+    c.put("product", "p", source).unwrap();
+    let rebuilt = projection(&c, "p");
+    assert_eq!((rebuilt["total"].clone(), rebuilt["keptFiles"].clone()), (json!(2), json!(1)));
+    // Without any grant, an added file still never joins the store manifest.
+    c.delete("entitlement", "e").unwrap();
+    let ungranted = projection(&c, "p");
+    let added = ungranted["files"].as_array().unwrap().iter().find(|f| f["id"] == "local-file:added").unwrap().clone();
+    assert_eq!((added["kept"].clone(), added["userAdded"].clone()), (json!(true), json!(true)));
+}
+#[test]
+fn reopen_lists_downloads_dropped_before_kept_files_existed() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    c.put("product", "p", json!({"id":"p","store":"BOOTH","sourceTitle":"Authored product"})).unwrap();
+    c.put("entitlement", "e", json!({"id":"e","productId":"p","fileIds":["new"],"manifestComplete":true})).unwrap();
+    for id in ["new", "old"] {
+        c.put("remote_file", id, json!({"id":id,"productId":"p","name":format!("{id}.zip"),"revision":"r1"})).unwrap();
+    }
+    c.put("artifact", "a-old", json!({"id":"a-old","productId":"p","fileId":"old","revision":"r1","status":"ready","originalAvailable":true})).unwrap();
+    {
+        // The projection an earlier version stored: only the grant's file.
+        let conn = c.inner.lock().unwrap();
+        conn.execute("UPDATE products SET body=json_set(json_remove(body,'$.files[1]','$.keptFiles'),'$.total',1,'$.knownFileCount',1),summary=json_set(json_remove(summary,'$.keptFiles'),'$.total',1,'$.knownFileCount',1) WHERE id='p'", []).unwrap();
+    }
+    assert_eq!(projection(&c, "p")["files"].as_array().unwrap().len(), 1);
+    drop(c);
+    let reopened = fixture.open();
+    let product = projection(&reopened, "p");
+    assert_eq!((product["keptFiles"].clone(), product["files"][1]["id"].clone()), (json!(1), json!("old")));
+    // Later opens find nothing left to list.
+    let revisions = reopened.change_domains().unwrap();
+    drop(reopened);
+    assert_eq!(fixture.open().change_domains().unwrap(), revisions);
+}
+#[test]
 fn source_overlay_restart_and_cjk_index() {
     let f = Fixture::new();
     let c = f.open();

@@ -37,13 +37,16 @@ impl ProjectionChanges {
         roots_changed: bool,
     ) -> Result<()> {
         self.prepare_jobs(conn)?;
-        refresh_local(
+        if !refresh_local(
             conn,
             id,
             files,
             roots_changed,
             self.local_import_jobs.as_deref().unwrap(),
-        )
+        )? {
+            self.refresh(conn, id)?;
+        }
+        Ok(())
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -282,6 +285,27 @@ pub(super) fn reconcile_ready_badges(conn: &Connection) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+/// Store products whose projection predates kept files: a downloaded file that
+/// no grant lists any more is recorded but not yet shown. Reads compact rows only.
+pub(super) fn unlisted_kept_files(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT a.product_id FROM entities a
+         JOIN entities r ON r.kind='remote_file' AND r.id=json_extract(a.body,'$.fileId') AND r.product_id=a.product_id
+         JOIN products p ON p.id=a.product_id
+         WHERE a.kind='artifact'
+           AND json_extract(a.body,'$.status') IN ('ready','downloaded','extracting','extractionFailed')
+           AND json_extract(a.body,'$.revision')=json_extract(r.body,'$.revision')
+           AND json_extract(p.summary,'$.keptFiles') IS NULL
+           AND COALESCE(json_extract(p.summary,'$.provider'),'')<>'local'
+           AND EXISTS(SELECT 1 FROM entities e WHERE e.kind='entitlement' AND e.product_id=a.product_id)
+           AND NOT EXISTS(SELECT 1 FROM entities e, json_each(e.body,'$.fileIds') f
+             WHERE e.kind='entitlement' AND e.product_id=a.product_id AND f.value=r.id)",
+    )?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
 fn unique(values: impl Iterator<Item = String>) -> Vec<String> {
     values.collect::<BTreeSet<_>>().into_iter().collect()
 }
@@ -290,6 +314,15 @@ fn byte_complete(v: &Value) -> bool {
         text(v, "status"),
         "ready" | "downloaded" | "extracting" | "extractionFailed"
     )
+}
+/// A file the store stopped offering has no revision to verify or retry
+/// against; its downloaded original stays usable even if extraction failed.
+fn retained_status(retained: bool, status: &str) -> &str {
+    if retained && status == "extractionFailed" {
+        "downloaded"
+    } else {
+        status
+    }
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
     let status = text(artifact, "status");
@@ -418,20 +451,21 @@ fn update_status(product: &mut Value, jobs: &[Value]) {
 
 /// Local state never changes taxonomy, filename search or compatibility evidence.
 /// Keep their materialized values and update only affected file facts and badges.
+/// Returns false when the product needs a full refresh instead.
 fn refresh_local(
     conn: &Connection,
     id: &str,
     changed_files: &BTreeSet<String>,
     roots_changed: bool,
     local_import_jobs: &[Value],
-) -> Result<()> {
+) -> Result<bool> {
     let body: Option<String> = conn
         .query_row("SELECT body FROM products WHERE id=?1", [id], |row| {
             row.get(0)
         })
         .optional()?;
     let Some(body) = body else {
-        return Ok(());
+        return Ok(true);
     };
     let mut product: Value = serde_json::from_str(&body)?;
     if !changed_files.is_empty() {
@@ -445,6 +479,21 @@ fn refresh_local(
             if let Some(file) = raw(conn, "remote_file", file)? {
                 remote.push(file);
             }
+        }
+        // A store file outside the current list that gains bytes has no row yet.
+        let unlisted = product["provider"] != "local" && {
+            let listed: BTreeSet<&str> = product["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|file| text(file, "id"))
+                .collect();
+            artifacts
+                .iter()
+                .any(|artifact| !listed.contains(text(artifact, "fileId")))
+        };
+        if unlisted {
+            return Ok(false);
         }
         let mut by_revision = BTreeMap::new();
         for artifact in &artifacts {
@@ -485,8 +534,10 @@ fn refresh_local(
                     } else {
                         "unknown"
                     });
+            let retained = file["kept"] == true;
             let status = if source
                 .is_some_and(|source| source["requiresContentVerification"] == true)
+                && !retained
                 && !failed
                 && !matches!(
                     state,
@@ -502,7 +553,7 @@ fn refresh_local(
             } else {
                 state
             };
-            file["status"] = json!(status);
+            file["status"] = json!(retained_status(retained, status));
             for field in [
                 "rootId",
                 "relativePath",
@@ -532,6 +583,18 @@ fn refresh_local(
                 file["verifiedHash"] = artifact["hash"].clone();
                 if let Some(root) = artifact["rootId"].as_str().and_then(|root| roots.get(root)) {
                     file["rootStatus"] = root["status"].clone();
+                }
+            }
+        }
+        // A kept row lasts only while its bytes do.
+        if let Some(files) = product["files"].as_array_mut() {
+            let rows = files.len();
+            files.retain(|file| file["kept"] != true || byte_complete(file));
+            let dropped = (rows - files.len()) as u64;
+            if dropped > 0 {
+                for field in ["total", "knownFileCount", "keptFiles"] {
+                    product[field] =
+                        json!(product[field].as_u64().unwrap_or(0).saturating_sub(dropped));
                 }
             }
         }
@@ -570,7 +633,7 @@ fn refresh_local(
             ],
         )?;
     }
-    Ok(())
+    Ok(true)
 }
 fn category(source: &Value) -> Value {
     crate::taxonomy::infer_product_category(source)
@@ -905,16 +968,36 @@ fn effective_with_jobs(
         .map(|v| (text(&v, "id").to_owned(), v))
         .collect();
     let file_ids: BTreeSet<_> = if provider != "local" && entitlements.is_empty() {
-        remote_map.keys().cloned().collect()
+        remote_map
+            .iter()
+            .filter(|(_, file)| file["originKind"] != "local")
+            .map(|(id, _)| id.clone())
+            .collect()
     } else {
         required
+    };
+    // Store products keep files outside the store's current list: downloads the
+    // store stopped offering and files the user added. They stay listed while
+    // their bytes do and are never fetched from the store.
+    let kept: Vec<String> = if provider == "local" {
+        vec![]
+    } else {
+        remote_map
+            .keys()
+            .filter(|fid| !file_ids.contains(*fid))
+            .cloned()
+            .collect()
     };
     let mut files = vec![];
     let mut evidence = vec![];
     let mut known_file_count = 0;
-    for fid in file_ids {
+    let mut kept_count = 0;
+    for (fid, retained) in file_ids
+        .into_iter()
+        .map(|fid| (fid, false))
+        .chain(kept.into_iter().map(|fid| (fid, true)))
+    {
         let known = remote_map.contains_key(&fid);
-        known_file_count += usize::from(known);
         let f = remote_map
             .remove(&fid)
             .unwrap_or(json!({"id":fid,"productId":id}));
@@ -932,6 +1015,7 @@ fn effective_with_jobs(
             "unknown"
         });
         let status = if f["requiresContentVerification"] == true
+            && !retained
             && !failed
             && !matches!(
                 artifact_status,
@@ -947,9 +1031,21 @@ fn effective_with_jobs(
         } else {
             artifact_status
         };
+        let status = retained_status(retained, status);
+        if retained && !matches!(status, "ready" | "downloaded" | "extracting") {
+            continue;
+        }
+        known_file_count += usize::from(known);
         let mut file = json!({"id":fid,"name":text(&f,"name"),"type":text(&f,"name").rsplit('.').next().unwrap_or("").to_uppercase(),"size":f["sizeBytes"].as_u64().map(|n|n.to_string()).unwrap_or_default(),"status":status,"revision":f["revision"],"provenance":[{"accountId":f["accountId"],"sourceFileId":f["sourceFileId"],"variantId":f["variantId"],"variantName":f["variantName"]}],"originalAvailable":false});
         if let Some(size) = f.get("sizeBytes") {
             file["sizeBytes"] = size.clone();
+        }
+        if retained {
+            file["kept"] = json!(true);
+            if f["originKind"] == "local" {
+                file["userAdded"] = json!(true);
+            }
+            kept_count += 1;
         }
         if let Some(a) = artifact {
             for key in [
@@ -985,6 +1081,9 @@ fn effective_with_jobs(
     }
     p["total"] = json!(files.len());
     p["knownFileCount"] = json!(known_file_count);
+    if kept_count > 0 {
+        p["keptFiles"] = json!(kept_count);
+    }
     p["files"] = json!(files);
     update_status(&mut p, &jobs);
     p["ownedAvatarEvidence"] = json!(evidence);
@@ -1322,6 +1421,7 @@ pub(super) fn summary(product: &Value) -> Value {
         "newlyDiscovered",
         "manifestComplete",
         "knownFileCount",
+        "keptFiles",
         "fullyDownloaded",
         "previewUrl",
         "sourcePreviewUrl",

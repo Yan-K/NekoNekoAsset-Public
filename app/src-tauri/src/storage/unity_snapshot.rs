@@ -195,7 +195,7 @@ impl StorageService {
                 .unwrap_or(product)
                 .to_owned();
             let start = result.len();
-            for remote in self.remote_files(product)?.0 {
+            for remote in self.kept_files(product)? {
                 let revision = remote["revision"].as_str().unwrap_or("");
                 if revision.is_empty() || revision == "unknown" {
                     continue;
@@ -651,6 +651,35 @@ mod tests {
             fs::read(root.join(base).join("Models/example.fbx")).unwrap(),
             b"damaged model!"
         );
+    }
+
+    #[tokio::test]
+    async fn unity_inventory_offers_store_files_kept_outside_the_current_list() {
+        let (service, root) = fixture();
+        let c = &service.catalogue;
+        c.put("product", "900001", json!({"id":"900001","store":"BOOTH","title":"Authored store product"})).unwrap();
+        c.put("entitlement", "grant", json!({"id":"grant","productId":"900001","accountId":"authored-account","fileIds":["current"],"manifestComplete":true})).unwrap();
+        // The store dropped `dropped` after its download; the user added the third.
+        for (id, origin) in [("current", None), ("dropped", None), ("local-file:added", Some("local"))] {
+            let mut remote = json!({"id":id,"productId":"900001","name":format!("{}.unitypackage", id.replace(':', "-")),"revision":"r1"});
+            if let Some(origin) = origin {
+                remote["originKind"] = json!(origin);
+            }
+            c.put("remote_file", id, remote.clone()).unwrap();
+            let relative = format!("assets/Authored--900001/{}.unitypackage", id.replace(':', "-"));
+            let path = root.join(&relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("authored {id}")).unwrap();
+            let (hash, size) = io::hash_file(&path).unwrap();
+            let artifact = json!({"id":artifact_id(&remote),"productId":"900001","fileId":id,"revision":"r1","rootId":"synthetic-root","productDirectory":"assets/Authored--900001","relativePath":relative,"hash":hash,"sizeBytes":size,"status":"ready","originalAvailable":true});
+            c.put("artifact", artifact["id"].as_str().unwrap(), artifact.clone()).unwrap();
+        }
+        // A dropped file that was never downloaded has nothing to import.
+        c.put("remote_file", "gone", json!({"id":"gone","productId":"900001","name":"gone.unitypackage","revision":"r1"})).unwrap();
+        let leaves = service.list_unity_inventory(&["900001".to_owned()]).await.unwrap();
+        let mut ids: Vec<_> = leaves.iter().map(|leaf| leaf.file_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["current", "dropped", "local-file:added"]);
     }
 
     #[tokio::test]

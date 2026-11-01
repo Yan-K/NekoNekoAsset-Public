@@ -77,7 +77,9 @@ impl StorageService {
             let _gate = self.queue_gate.lock().await;
             let busy = self.catalogue.list("job")?.iter().any(|job| {
                 matches!(job["state"].as_str(), Some("queued" | "running"))
-                    && (job["type"] == "download" || job["type"] == "unity:import")
+                    && (job["type"] == "download"
+                        || job["type"] == "unity:import"
+                        || job["type"] == "storage:import_local")
                     && std::iter::once(&job["productId"])
                         .chain(job["productIds"].as_array().into_iter().flatten())
                         .filter_map(Value::as_str)
@@ -105,6 +107,25 @@ impl StorageService {
     }
 
     fn remove_downloads(&self, products: &[String], file: Option<&str>) -> Result<Value> {
+        // Removing a product's downloads leaves the kept files Files lists, which
+        // the store cannot provide again: ones it stopped offering and ones the
+        // user added. Each file's own delete still removes them.
+        let mut irreplaceable = HashSet::new();
+        if file.is_none() {
+            for product in products {
+                let details = self
+                    .catalogue
+                    .command("product_details", json!({"id":product}))?;
+                irreplaceable.extend(
+                    details["files"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|f| f["kept"] == true)
+                        .filter_map(|f| f["id"].as_str().map(str::to_owned)),
+                );
+            }
+        }
         let (targets, kept): (Vec<_>, Vec<_>) =
             self.catalogue
                 .list("artifact")?
@@ -114,6 +135,9 @@ impl StorageService {
                         .as_str()
                         .is_some_and(|id| products.iter().any(|product| product == id))
                         && file.is_none_or(|file| artifact["fileId"] == file)
+                        && !artifact["fileId"]
+                            .as_str()
+                            .is_some_and(|id| irreplaceable.contains(id))
                 });
         let mut tops = HashSet::new();
         for artifact in &targets {
@@ -215,6 +239,17 @@ impl StorageService {
             };
             expected.push(("artifact".into(), id.clone(), Some(artifact.clone())));
             records.push(("artifact".into(), id, value));
+        }
+        if let Some(id) = file.filter(|id| !incomplete.contains(*id)) {
+            // A file the user added to a store product leaves with its bytes.
+            if let Some(remote) = self
+                .catalogue
+                .get("remote_file", id)?
+                .filter(|remote| remote["originKind"] == "local")
+            {
+                expected.push(("remote_file".into(), id.to_owned(), Some(remote)));
+                records.push(("remote_file".into(), id.to_owned(), None));
+            }
         }
         if file.is_none() {
             // Explicit removal also stops automatic downloads until the next Download.
@@ -327,6 +362,40 @@ mod tests {
                 .starts_with("nna-download-delete-authored-"));
             remove_checked_tree(&path).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn product_delete_keeps_files_the_store_cannot_provide_again() {
+        let f = Fixture::new();
+        let directory = f.product("alpha", &["New.zip", "Old.zip"]);
+        let c = &f.service.catalogue;
+        // The store dropped Old.zip after its download; the user added Mine.zip.
+        c.put("entitlement","entitlement-alpha",json!({"id":"entitlement-alpha","productId":"alpha","accountId":"account","fileIds":["alpha-New.zip"],"manifestComplete":true})).unwrap();
+        let relative = format!("{directory}/Mine.zip");
+        let mine = f.library.join(&relative);
+        fs::write(&mine, b"authored user copy").unwrap();
+        let (hash, size) = io::hash_file(&mine).unwrap();
+        let revision = format!("sha256:{hash}");
+        c.put("remote_file","local-file:mine",json!({"id":"local-file:mine","productId":"alpha","provider":"local","originKind":"local","name":"Mine.zip","revision":revision,"sizeBytes":size})).unwrap();
+        c.put("artifact","artifact-mine",json!({"id":"artifact-mine","productId":"alpha","fileId":"local-file:mine","rootId":"root","relativePath":relative,"productDirectory":directory,"revision":revision,"hash":hash,"sizeBytes":size,"status":"ready","originalAvailable":true})).unwrap();
+        let old = f.library.join(&directory).join("Old.zip--dir/Old.zip");
+
+        let result = f.service.delete_downloads(&json!({"productIds":["alpha"]})).await.unwrap();
+        assert_eq!(result["deletedFileIds"], json!(["alpha-New.zip"]));
+        assert!(old.exists() && mine.exists());
+        assert_eq!(f.file_status("alpha", "alpha-Old.zip"), "ready");
+        assert_eq!(f.file_status("alpha", "local-file:mine"), "ready");
+
+        // Each file's own delete removes them; an added file leaves with its record.
+        f.service.delete_downloads(&json!({"fileId":"local-file:mine"})).await.unwrap();
+        f.service.delete_downloads(&json!({"fileId":"alpha-Old.zip"})).await.unwrap();
+        assert!(!old.exists() && !mine.exists());
+        assert!(c.get("remote_file", "local-file:mine").unwrap().is_none());
+        assert!(c.get("remote_file", "alpha-Old.zip").unwrap().is_some());
+        let details = c.command("product_details", json!({"id":"alpha"})).unwrap();
+        let ids: Vec<_> = details["files"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["alpha-New.zip"]);
+        f.finish();
     }
 
     #[tokio::test]

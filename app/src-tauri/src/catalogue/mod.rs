@@ -1722,6 +1722,22 @@ impl Catalogue {
             worker: Arc::new(worker::Worker::default()),
             is_sync_worker: false,
         };
+        // Downloads a store stopped offering before 0.3.5 left Files while their
+        // bytes stayed. List them once; later opens find none.
+        let unlisted = projection::unlisted_kept_files(
+            &*this
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
+        )?;
+        if !unlisted.is_empty() {
+            this.mutate(|tx, projections| {
+                for id in &unlisted {
+                    projections.refresh(tx, id)?;
+                }
+                Ok(())
+            })?;
+        }
         // Durable document is saved atomically with projections; no startup network is needed.
         Ok(this)
     }

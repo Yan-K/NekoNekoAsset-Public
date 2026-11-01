@@ -48,6 +48,7 @@ const labels:Record<string,string[]>={
  network_failed:['Download connection failed; retry','ダウンロード接続に失敗しました。再試行してください','다운로드 연결 실패 · 다시 시도하세요','下载连接失败，请重试','下載連線失敗，請重試'],
  network_timeout:['Download connection timed out; retry','ダウンロード接続がタイムアウトしました。再試行してください','다운로드 연결 시간 초과 · 다시 시도하세요','下载连接超时，请重试','下載連線逾時，請重試'],
  rate_limited:['Store rate limit reached; retry later','ストアのリクエスト制限に達しました。後で再試行してください','스토어 요청 제한 · 나중에 다시 시도하세요','商店请求达到频率限制，请稍后重试','商店請求達到頻率限制，請稍後重試'],
+ file_unavailable:['The store no longer offers this file; update the product','ストアでこのファイルが提供されていません。商品を更新してください','스토어에서 더 이상 이 파일을 제공하지 않습니다. 상품을 업데이트하세요','商店已不再提供此文件，请更新商品','商店已不再提供此檔案，請更新商品'],
  source_changed:['File information changed during download; update and retry','ダウンロード中にファイル情報が変更されました。更新して再試行してください','다운로드 중 파일 정보 변경 · 업데이트 후 다시 시도하세요','下载期间文件信息已更改，请更新后重试','下載期間檔案資訊已變更，請更新後重試'],
  download_size_mismatch:['Downloaded size does not match the file; retry','ダウンロードしたサイズが一致しません。再試行してください','다운로드 파일 크기 불일치 · 다시 시도하세요','下载文件大小不符，请重试','下載檔案大小不符，請重試'],
  download_resolver_failed:['Store could not provide a download link; retry','ストアからダウンロードリンクを取得できません。再試行してください','스토어 다운로드 링크를 가져오지 못했습니다 · 다시 시도하세요','无法从商店取得下载链接，请重试','無法從商店取得下載連結，請重試'],

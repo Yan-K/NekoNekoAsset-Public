@@ -2,7 +2,9 @@ import {t} from './i18n';
 export type Locale = 'en' | 'ja' | 'ko' | 'zh-Hans' | 'zh-Hant';
 export interface AcquisitionProvenance { rowId: string; source: string; acquisitionKey: string | null; acquiredDateText: string | null; acquisitionKind: string | null; variantName: string | null; accountId?: string }
 export interface FileProvenance { rowId: string; source: string; acquisitionKey: string | null; variantId: string | null; variantName: string | null; accountId?: string }
-export interface AssetFile { id: string; name: string; type: string; size: string; status: string; provenance?: FileProvenance[]; sizeBytes?:number; rootId?:string; relativePath?:string; originalAvailable?:boolean; verifiedHash?:string; errorCode?:string }
+export interface AssetFile { id: string; name: string; type: string; size: string; status: string; provenance?: FileProvenance[]; sizeBytes?:number; rootId?:string; relativePath?:string; originalAvailable?:boolean; verifiedHash?:string; errorCode?:string;
+  /** A store product's file outside the store's current list: a download it stopped offering, or one the user added. */
+  kept?: boolean; userAdded?: boolean }
 export interface SourceCategory { id: string | null; name: string | null; parentId: string | null; parentName: string | null }
 export interface Account { id: string; name: string; store: string; status: string; lastSync?:string;lastSyncAt?:string;authenticatedAt?:string }
 export interface AvatarEvidence { avatar: string; source: 'accountVariant' | 'accountFilename' | 'user' | 'sourceTag' | 'userTag'; accountId?: string; fileId?: string;avatarId?:string;entitlementEstablished?:false }
@@ -12,7 +14,7 @@ export interface Product {
   avatar: string; listingAvatars: string[]; ownedAvatars: string[]; files: AssetFile[];
   status: string; downloaded: number; total: number; price: number | null; filesLoaded?:boolean; fullyDownloaded?:boolean; unavailable?:boolean;
   priceCurrency?:string|null; currentPriceText?:string|null; listingStartingPrice?:number|null; paidPrice?:number|null; paidCurrency?:string|null;
-  knownFileCount?:number;
+  knownFileCount?:number; keptFiles?:number;
   ownedCurrentPrices?:{variantId:string;name:string;price:number|null;currency:string|null;accountIds:string[]}[];
   ownedPaidPrices?:{variantId:string;name:string;price:number|null;currency:string|null;accountId?:string;acquisitionKey?:string;quantity?:number}[];
   acquired: string; note: string; sensitive: boolean; kind?: number;

@@ -41,6 +41,11 @@ const labels:Record<string,string[]>={
  deleteDownloads:['Delete downloaded files','ダウンロード済みファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],
  confirmDeleteDownloads:['Delete the downloaded files of {count} product(s)? The products stay in your library.','{count} 件の商品のダウンロード済みファイルを削除しますか？商品はライブラリに残ります。','상품 {count}개의 다운로드한 파일을 삭제할까요? 상품은 라이브러리에 남습니다.','要删除 {count} 个商品的已下载文件吗？商品仍保留在资产库中。','要刪除 {count} 個產品的已下載檔案嗎？產品仍會保留在資產庫中。'],
  hideUnavailable:['Hide unavailable products','ダウンロードできない商品を非表示','다운로드할 수 없는 상품 숨기기','隐藏无法下载的商品','隱藏無法下載的產品'],downloadUnavailable:['Unavailable','利用不可','사용 불가','不可用','不可用'],
+ fileRemovedFromStore:['Removed from store','ストアから削除済み','스토어에서 삭제됨','商店已移除','商店已移除'],fileAddedByYou:['Added by you','自分で追加','직접 추가','自行添加','自行加入'],
+ fileUnavailable:['No longer offered by the store','ストアで提供されていません','스토어에서 더 이상 제공하지 않음','商店已不再提供','商店已不再提供'],
+ staleDownloadTitle:['File list out of date','ファイル一覧が古くなっています','파일 목록이 최신이 아닙니다','文件列表不是最新的','檔案清單不是最新的'],
+ confirmStaleDownload:['The file list of {count} product(s) is out of date, so some files could not be downloaded. Update and then download automatically?','{count} 件の商品のファイル一覧が古いため、一部のファイルをダウンロードできませんでした。更新してから自動でダウンロードしますか？','상품 {count}개의 파일 목록이 최신이 아니어서 일부 파일을 다운로드하지 못했습니다. 업데이트한 후 자동으로 다운로드할까요?','{count} 个商品的文件列表不是最新的，部分文件无法下载。要更新后自动下载吗？','{count} 個商品的檔案清單不是最新的，部分檔案無法下載。要更新後自動下載嗎？'],
+ updateAndDownload:['Update and download','更新してダウンロード','업데이트 후 다운로드','更新并下载','更新並下載'],
  deleteDownloadedFile:['Delete downloaded file','ダウンロード済みファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],confirmDeleteFile:['Confirm deletion','削除を確認','삭제 확인','确认删除','確認刪除'],
  movedToCategory:['Moved {count} product(s) to {category}','{count} 件の商品を「{category}」に移動しました','상품 {count}개를 {category}(으)로 옮겼습니다','已将 {count} 个商品移到“{category}”','已將 {count} 個產品移到「{category}」'],
 };

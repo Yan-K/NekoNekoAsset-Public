@@ -292,6 +292,35 @@ mod tests {
     }
 
     #[test]
+    fn store_product_accepts_added_files_without_changing_its_store_record() {
+        let (path, service) = fixture();
+        fs::write(path.join("Product_1.0.0.unitypackage"), b"authored old version").unwrap();
+        let store = json!({"id":"900001","store":"BOOTH","provider":"booth","title":"Authored online","sourceTitle":"Authored online"});
+        service.catalogue.put("product", "900001", store.clone()).unwrap();
+        service.catalogue.put("entitlement", "grant", json!({"id":"grant","productId":"900001","accountId":"authored-account","fileIds":["authored-account:700001:"],"manifestComplete":true})).unwrap();
+        let result = service.prepare_local_membership(&json!({"draftId":uuid::Uuid::new_v4(),"productId":"900001","rootId":"authored-root","addSources":[path.join("Product_1.0.0.unitypackage")]})).unwrap();
+        let mut job = service
+            .catalogue
+            .get("job", result["jobId"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        service
+            .run_local_import(&mut job, Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(service.catalogue.get("product", "900001").unwrap(), Some(store));
+        let artifact = service.catalogue.related("artifact", "900001").unwrap().remove(0);
+        assert!(path.join("library").join(artifact["relativePath"].as_str().unwrap()).exists());
+        assert!(path.join("Product_1.0.0.unitypackage").exists());
+        let details = service.catalogue.command("product_details", json!({"id":"900001"})).unwrap();
+        let added = details["files"].as_array().unwrap().iter().find(|f| f["userAdded"] == true).unwrap().clone();
+        assert_eq!((added["name"].clone(), added["status"].clone()), (json!("Product_1.0.0.unitypackage"), json!("ready")));
+        // Downloads still follow only the store's own list.
+        assert!(service.remote_files("900001").unwrap().0.is_empty());
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn initial_category_distinguishes_default_from_explicit_choices_and_preserves_overlays() {
         let mut default_overlay = json!({"id":"local:synthetic","note":"keep"});
         apply_initial_category(&mut default_overlay, &json!({"category":"NonVRChat"}));
@@ -459,7 +488,12 @@ impl StorageService {
             .catalogue
             .get("product", product_id)?
             .ok_or_else(|| anyhow::anyhow!("product_missing"))?;
-        ensure!(product["provider"] == "local", "local_product_required");
+        // A store product accepts the user's own copies; its store files are
+        // never removed here.
+        ensure!(
+            product["provider"] == "local" || strings(&args["removeFileIds"]).is_empty(),
+            "local_product_required"
+        );
         let draft = uuid::Uuid::parse_str(io::required_string(args, "draftId")?)?.to_string();
         let id = format!("local-import:{draft}");
         let fingerprint = io::key(&serde_json::to_string(args)?);
@@ -474,8 +508,8 @@ impl StorageService {
             !self.catalogue.list("job")?.iter().any(|job| matches!(
                 job["state"].as_str(),
                 Some("queued" | "running")
-            ) && strings(&job["productIds"])
-                .contains(&product_id.to_owned())),
+            ) && (strings(&job["productIds"]).contains(&product_id.to_owned())
+                || job["productId"] == product_id)),
             "storage_busy"
         );
         let removes = strings(&args["removeFileIds"]);
@@ -510,10 +544,14 @@ impl StorageService {
             .and_then(|a| a["productDirectory"].as_str())
             .map(str::to_owned)
             .unwrap_or_else(|| {
+                // The same directory a store download would choose.
                 format!(
                     "assets/{}",
                     io::readable_component(
-                        product["title"].as_str().unwrap_or("Local"),
+                        product["sourceTitle"]
+                            .as_str()
+                            .or(product["title"].as_str())
+                            .unwrap_or("Local"),
                         product_id
                     )
                 )
@@ -1171,12 +1209,17 @@ impl StorageService {
                 let metadata = group.metadata.as_ref().unwrap_or(&plan.metadata);
                 let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":"","importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
                 product["previewUrl"] = metadata["sourceThumbnailUrl"].clone();
+                let mut store_product = false;
                 if group.membership {
                     product = self
                         .catalogue
                         .get("product", &group.product_id)?
                         .ok_or_else(|| anyhow::anyhow!("product_missing"))?;
-                    ensure!(product["provider"] == "local", "local_product_required");
+                    // Added files join a store product through their own
+                    // records; its store-observed record stays unchanged.
+                    store_product = product["provider"] != "local";
+                }
+                if group.membership && !store_product {
                     let mut ids = strings(&product["localManifest"]["fileIds"]);
                     ids.retain(|id| !group.remove_file_ids.contains(id));
                     ids.extend(file_ids.iter().cloned());
@@ -1213,7 +1256,9 @@ impl StorageService {
                     }
                     writes.push(("overlay".into(), group.product_id.clone(), overlay));
                 }
-                writes.push(("product".into(), group.product_id.clone(), product));
+                if !store_product {
+                    writes.push(("product".into(), group.product_id.clone(), product));
+                }
                 let mut artifacts = Vec::new();
                 for ((file, copy), id) in group.files.iter().zip(&copies).zip(&file_ids) {
                     let revision = format!("sha256:{}", io::required_string(copy, "hash")?);
