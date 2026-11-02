@@ -50,7 +50,8 @@ export function syncProgressLabel(locale:Locale,job:NativeJob):string {
  const count=(value:number)=>value.toLocaleString(locale);
  const counts=[typeof progress.pages==='number'?`${L('syncListPages')} ${count(progress.pages)}`:'',typeof progress.detailsCompleted==='number'?`${L('syncDetails')} ${count(progress.detailsCompleted)}`:'',typeof progress.published==='number'?`${L('syncSaved')} ${count(progress.published)}`:progress.stage!=='collecting'&&typeof progress.metadataTotal==='number'&&progress.metadataTotal>0?`${L('syncDetails')} ${count(progress.metadataCompleted??0)}/${count(progress.metadataTotal)}`:''];
  const warning=typeof progress.availabilityWarnings==='number'&&progress.availabilityWarnings>0?`${L('syncUnavailableOffers')} ${count(progress.availabilityWarnings)}`:'';
- return [stage,source,...counts,warning].filter(Boolean).join(' · ');
+ const incomplete=typeof progress.incompleteProducts==='number'&&progress.incompleteProducts>0?`${L('syncIncompleteAssets')} ${count(progress.incompleteProducts)}`:'';
+ return [stage,source,...counts,warning,incomplete].filter(Boolean).join(' · ');
 }
 const unfinishedLocalImport=(job:NativeJob)=>job.type==='storage:import_local'&&(!job.productIds?.length||job.productIds.some(id=>!job.completedProductIds?.includes(id)));
 async function native(c:Ctx,service:'catalogue'|'booth'|'storage'|'unity'|'dialog',action:string,args:Record<string,unknown>={}) {if(!c.onNative)throw new Error('nativeUnavailable');return c.onNative(service,action,args);}

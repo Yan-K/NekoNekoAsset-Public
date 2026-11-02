@@ -321,23 +321,33 @@ pub async fn jar(
             .collect(),
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let jar = Arc::new(reqwest::cookie::Jar::default());
-        let mut count = 0;
-        for url in origins {
-            for cookie in cookies_for_request(&window, &url)? {
-                if cookie.name().is_empty()
-                    || cookie.domain().is_some_and(|domain| {
-                        !cookie_host(provider, domain.trim_start_matches('.'))
-                    })
-                {
-                    continue;
+        // A reopened hidden WebView loads its profile asynchronously, slowly on a busy
+        // disk. No cookies means signed out only once the profile had time to load.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut wait = std::time::Duration::from_millis(100);
+        loop {
+            let jar = Arc::new(reqwest::cookie::Jar::default());
+            let mut count = 0;
+            for url in &origins {
+                for cookie in cookies_for_request(&window, url)? {
+                    if cookie.name().is_empty()
+                        || cookie.domain().is_some_and(|domain| {
+                            !cookie_host(provider, domain.trim_start_matches('.'))
+                        })
+                    {
+                        continue;
+                    }
+                    jar.add_cookie_str(&cookie.to_string(), url);
+                    count += 1;
                 }
-                jar.add_cookie_str(&cookie.to_string(), &url);
-                count += 1;
             }
+            if count != 0 {
+                return Ok(jar);
+            }
+            ensure!(std::time::Instant::now() + wait < deadline, "AUTH_REQUIRED");
+            std::thread::sleep(wait);
+            wait = (wait * 2).min(std::time::Duration::from_secs(1));
         }
-        ensure!(count != 0, "AUTH_REQUIRED");
-        Ok(jar)
     })
     .await
     .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?

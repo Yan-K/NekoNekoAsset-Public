@@ -16,6 +16,7 @@ const HTTP_SCOPES: &[&str] = &["library", "purchase", "gift", "free", "receipt",
 const PROGRESS_COUNTS: &[&str] = &[
     "pages", "detailsCompleted", "requestsCompleted", "products", "published",
     "metadataCompleted", "metadataTotal", "remaining", "unresolvedRows", "availabilityWarnings",
+    "incompleteProducts",
 ];
 const COVERAGE_COUNTS: &[&str] = &[
     "pages", "detailsCompleted", "requestsCompleted", "unresolvedRows", "productCount", "availabilityWarnings",

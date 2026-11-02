@@ -41,6 +41,7 @@ const words:Record<string,string[]>={
  syncDetails:['Details','詳細','상세','详情','詳情'],
  syncSaved:['Saved','保存済み','저장됨','已保存','已儲存'],
  syncUnavailableOffers:['Unavailable free offers','無料配布終了','무료 배포 종료','免费资源已停止提供','免費資源已停止提供'],
+ syncIncompleteAssets:['Assets not fully read','読み込めなかったアセット','읽지 못한 에셋','未能完整读取的资产','未能完整讀取的資產'],
  enabled:['Enabled','有効','활성화','已启用','已啟用'],
  disabled:['Disabled','無効','비활성화','已停用','已停用'],
  setupLocationRequired:['Choose a drive with plenty of free space for your assets.','アセットの保存先には、空き容量の多いドライブをおすすめします。','에셋을 저장할 여유 공간이 많은 드라이브를 권장합니다.','建议将资产库放在可用空间充足的磁盘。','建議將資產庫放在可用空間充足的磁碟。'],
