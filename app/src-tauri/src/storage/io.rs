@@ -263,6 +263,34 @@ pub fn absolute_dir(path: &Path, create: bool) -> Result<PathBuf> {
     file.sync_all()?;
     drop(file);
     fs::remove_file(probe)?;
+/// Total size of the files below `root`, as Explorer's folder Properties reports it. Links
+/// and junctions are neither followed nor counted; entries removed by concurrent work are skipped.
+pub fn tree_bytes(root: &Path) -> Result<u64> {
+    let mut total = 0;
+    let mut pending = vec![root.to_owned()];
+    while let Some(directory) = pending.pop() {
+        let items = match fs::read_dir(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && directory != root => {
+                continue
+            }
+            items => items?,
+        };
+        for item in items {
+            let item = item?;
+            let kind = item.file_type()?;
+            if kind.is_dir() {
+                pending.push(item.path());
+            } else if kind.is_file() {
+                match item.metadata() {
+                    Ok(metadata) => total += metadata.len(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+    Ok(total)
+}
     Ok(path)
 }
 pub fn stable_error(err: &anyhow::Error) -> &'static str {
@@ -536,3 +564,32 @@ pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<
         _ => bail!("invalid_arguments"),
     }
 }
+
+    #[cfg(windows)]
+    #[test]
+    fn library_usage_sums_nested_files_without_following_junctions() {
+        use std::os::windows::process::CommandExt;
+        let root = std::env::temp_dir().join(format!("nna-usage-{}", uuid::Uuid::new_v4()));
+        let library = root.join("library");
+        fs::create_dir_all(library.join("assets/衣装/Textures")).unwrap();
+        fs::write(library.join("catalogue.sqlite3"), [0; 3]).unwrap();
+        fs::write(library.join("assets/衣装/Textures/body.png"), [0; 4096]).unwrap();
+        fs::write(root.join("outside.bin"), [0; 1000]).unwrap();
+        // A junction back to the parent would both escape the library and loop.
+        let link = library.join("assets").join("loop");
+        let output = std::process::Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&root)
+            .creation_flags(0x08000000)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(tree_bytes(&library).unwrap(), 4099);
+        fs::remove_dir(link).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }

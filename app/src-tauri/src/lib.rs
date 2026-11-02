@@ -855,7 +855,11 @@ async fn storage_action(
         .map_err(UiError::from_error)?;
     if !matches!(
         action.as_str(),
-        "product_availability" | "open_file" | "open_product_folder" | "open_root_folder"
+        "product_availability"
+            | "root_usage"
+            | "open_file"
+            | "open_product_folder"
+            | "open_root_folder"
     ) {
         changed(
             &app,

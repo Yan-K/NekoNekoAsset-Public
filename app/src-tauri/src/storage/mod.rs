@@ -886,6 +886,7 @@ impl StorageService {
                     | "restore_backup"
                     | "export_zip"
                     | "product_availability"
+                    | "root_usage"
                     | "open_product_folder"
                     | "open_file"
                     | "open_root_folder"
@@ -946,6 +947,10 @@ impl StorageService {
                 let service = self.clone();
                 tokio::task::spawn_blocking(move || service.product_availability(&args)).await?
             }
+            "root_usage" => {
+                let service = self.clone();
+                tokio::task::spawn_blocking(move || service.root_usage(&args)).await?
+            }
             "open_product_folder" | "open_file" | "open_root_folder" => {
                 let service = self.clone();
                 let action = action.to_owned();
@@ -955,7 +960,11 @@ impl StorageService {
         };
         if !matches!(
             action,
-            "product_availability" | "open_product_folder" | "open_file" | "open_root_folder"
+            "product_availability"
+                | "root_usage"
+                | "open_product_folder"
+                | "open_file"
+                | "open_root_folder"
         ) {
             self.changed(app, None);
         }
@@ -982,7 +991,7 @@ impl StorageService {
             "use_remap_or_migrate"
         );
         let id = uuid::Uuid::new_v4().to_string();
-        let root = json!({"id":id,"path":path,"status":"online","active":true,"freeBytes":fs2::available_space(&path)?,"usedBytes":0});
+        let root = json!({"id":id,"path":path,"status":"online","active":true});
         self.catalogue.put("root", &id, root.clone())?;
         self.catalogue
             .command("preferences", json!({"patch":{"libraryRootId":id}}))?;

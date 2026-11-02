@@ -377,9 +377,6 @@ impl StorageService {
                 let receipt = portable::copy_verified_root(&source, destination, &payload, cancel)?;
                 io::check_cancel(cancel)?;
                 root["path"] = json!(receipt.destination_root);
-                root["freeBytes"] = json!(fs2::available_space(&receipt.destination_root)?);
-                root["usedBytes"] =
-                    json!(receipt.inventory.iter().map(|e| e.size_bytes).sum::<u64>());
                 root["previousMigration"] = serde_json::to_value(receipt)?;
                 root["status"] = json!("online");
                 self.catalogue.put("root", &id, root.clone())?;
@@ -527,8 +524,6 @@ impl StorageService {
                     )?;
                 }
                 root["status"] = json!("online");
-                root["freeBytes"] = json!(fs2::available_space(&path)?);
-                root["totalBytes"] = json!(fs2::total_space(&path)?);
                 self.catalogue.put("root", &id, root)?;
                 Ok(json!({"status":"online","verified":verified,"missing":missing}))
             }
@@ -694,6 +689,11 @@ impl StorageService {
         let path = self.resolve_open_target(action, args)?;
         io::open_path(&path)?;
         Ok(json!({"opened":true}))
+    }
+    /// Measured on request so Settings always shows the folder's and drive's current state.
+    pub(super) fn root_usage(&self, args: &Value) -> Result<Value> {
+        let path = self.root_path(&self.root(args["rootId"].as_str())?)?;
+        Ok(json!({"usedBytes":io::tree_bytes(&path)?,"freeBytes":fs2::available_space(&path)?}))
     }
     /// Resolve a completed target without launching a shell; regression tests are inert.
     pub(super) fn resolve_open_target(&self, action: &str, args: &Value) -> Result<PathBuf> {
