@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.6 Beta - 2026-11-02
+
+### Added
+
+- Aqua, a light theme, in Settings › Appearance.
+
+### Changed
+
+- Library items are called assets, and store pages are called listings, in all five languages.
+- Update and restart no longer waits for store syncs: they continue where they stopped after the restart. When other work has to finish first, the update prompt names it.
+- One asset a store can't fully provide, for example a removed listing, files that aren't ready yet or a page that answers with an error, no longer fails a sync or leaves it needing action. The sync completes and Activity and the Sync dialog show how many assets weren't fully read; those assets keep what they had.
+
+### Fixed
+
+- Signing in to BOOTH/pixiv, Gumroad or Jinxxy with Google, X, Facebook or Weibo no longer stays on the provider's page.
+- Settings › Storage shows the library's used and free space.
+- Sync and downloads work where antivirus or a school or company network inspects HTTPS connections, and they follow the Windows proxy settings.
+- Brief connection drops, server errors and rate limits are retried for about 30 seconds instead of 6, including responses cut off partway.
+- A sync or download no longer signs you out because one listing or file asked for sign-in, and a sync waits for a slow sign-in profile to load. Your sign-in stays saved until you log out.
+- Syncs and downloads follow a store's pages and files to other HTTPS hosts, such as a new download server or a Jinxxy language subdomain.
+- BOOTH: a passing 403 no longer leaves the account needing action, and Update during a sync waits for the sync instead of failing.
+- Gumroad and Jinxxy: a sync no longer fails when a purchase arrives or a seller edits a listing while it runs.
+- A finished download or extraction no longer fails when antivirus or Windows Search briefly opens the new file.
+- Archives with UTF-8 names, folders that differ only in letter case or duplicate entries now extract; a clashing file is kept as `name_1`.
+- Store files whose names Windows doesn't allow are saved under a readable name and can still be imported into Unity.
+- Adding your own files works from redirected folders such as OneDrive's Desktop and Documents, including files that are only in the cloud, and waits briefly for a file another program is using.
+- Errors say when a file is in use by another program or the library's drive went away, and Copy diagnostics in Activity tells certificate, DNS, connection and timeout failures apart.
+- Unity Bridge: packages that write to `Packages/` or `ProjectSettings/` import correctly, including tar-packed packages, folders without `folderAsset`, updates of installed packages and long paths, and Unity registers new embedded packages right away.
+
+### Release notes
+
+- The App and the Unity Bridge move to 0.3.6. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.5 Beta - 2026-11-01
 
 ### Added
