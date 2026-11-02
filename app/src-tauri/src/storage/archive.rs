@@ -898,11 +898,13 @@ pub fn verify_extracted_inventory(
                 writable.set_readonly(false);
                 fs::set_permissions(&path, writable).context("storage_write_failed")?;
             }
-            let file = OpenOptions::new()
-                .read(true)
-                .write(cfg!(windows))
-                .open(&path)
-                .context("storage_read_failed")?;
+            let file = super::io::retry_busy(|| {
+                OpenOptions::new()
+                    .read(true)
+                    .write(cfg!(windows))
+                    .open(&path)
+            })
+            .context("storage_read_failed")?;
             reject_hard_links(&file, &metadata)?;
             let flushed = file.sync_all();
             drop(file);
@@ -1117,7 +1119,8 @@ pub fn extract_archive(
     if inputs.exists() {
         remove_private_tree(&inputs)?;
     }
-    fs::remove_file(&member_list).context("storage_staging_cleanup_failed")?;
+    super::io::retry_busy(|| fs::remove_file(&member_list))
+        .context("storage_staging_cleanup_failed")?;
     Ok(ArchiveExtraction {
         staging_path: content,
         inventory,

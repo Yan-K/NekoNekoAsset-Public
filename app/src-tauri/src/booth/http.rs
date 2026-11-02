@@ -8,6 +8,10 @@ use std::{
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
 
+/// Attempts for a dropped connection, a cut-off body, 5xx or 429/503, waiting 2, 4, 8 and 16 s:
+/// long enough to ride out a Wi-Fi drop or waking from sleep, still bounded.
+const ATTEMPTS: u32 = 5;
+
 /// One listing and two detail requests across accounts, with shared request-start pacing.
 #[derive(Clone)]
 pub struct MetadataHttp {
@@ -52,7 +56,7 @@ impl MetadataHttp {
             .acquire()
             .await
             .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))?;
-        for attempt in 0..3 {
+        for attempt in 0..ATTEMPTS {
             self.wait_start().await;
             let response = match client
                 .get(url.clone())
@@ -63,7 +67,7 @@ impl MetadataHttp {
                 Ok(response) => response,
                 Err(error) => {
                     let code = transport_code(&error);
-                    if code == "NETWORK_UNAVAILABLE" && attempt < 2 {
+                    if code == "NETWORK_UNAVAILABLE" && attempt + 1 < ATTEMPTS {
                         self.defer(Duration::from_secs(2u64.pow(attempt + 1))).await;
                         continue;
                     }
@@ -89,7 +93,7 @@ impl MetadataHttp {
                 );
                 self.defer(wait.max(Duration::from_secs(2u64.pow(attempt + 1))))
                     .await;
-                if attempt == 2 || wait > Duration::from_secs(120) {
+                if attempt + 1 == ATTEMPTS || wait > Duration::from_secs(120) {
                     bail!("RATE_LIMITED");
                 }
                 continue;
@@ -120,7 +124,7 @@ impl MetadataHttp {
             .acquire()
             .await
             .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))?;
-        for attempt in 0..3 {
+        for attempt in 0..ATTEMPTS {
             self.wait_start().await;
             crate::support_trace::request(&url, attempt);
             let response = match client.get(url.clone()).send().await {
@@ -129,7 +133,7 @@ impl MetadataHttp {
                     let code = transport_code(&error);
                     crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { code });
                     if code == "UNSAFE_REDIRECT" { crate::support_trace::redirect_rejected(&url); }
-                    if code == "NETWORK_UNAVAILABLE" && attempt < 2 {
+                    if code == "NETWORK_UNAVAILABLE" && attempt + 1 < ATTEMPTS {
                         let wait = Duration::from_secs(2u64.pow(attempt + 1));
                         crate::support_trace::backoff(&url, wait);
                         self.defer(wait).await;
@@ -172,12 +176,12 @@ impl MetadataHttp {
                 let wait = wait.max(Duration::from_secs(2u64.pow(attempt + 1)));
                 crate::support_trace::backoff(&url, wait);
                 self.defer(wait).await;
-                if attempt == 2 || wait > Duration::from_secs(120) {
+                if attempt + 1 == ATTEMPTS || wait > Duration::from_secs(120) {
                     bail!("RATE_LIMITED");
                 }
                 continue;
             }
-            if status.is_server_error() && attempt < 2 {
+            if status.is_server_error() && attempt + 1 < ATTEMPTS {
                 let wait = Duration::from_secs(2u64.pow(attempt + 1));
                 crate::support_trace::backoff(&url, wait);
                 self.defer(wait).await;
@@ -209,7 +213,7 @@ impl MetadataHttp {
             // A body cut off after its headers is the same transient failure
             // as a dropped request, with the same bounded retry.
             if interrupted {
-                if attempt < 2 {
+                if attempt + 1 < ATTEMPTS {
                     let wait = Duration::from_secs(2u64.pow(attempt + 1));
                     crate::support_trace::backoff(&url, wait);
                     self.defer(wait).await;

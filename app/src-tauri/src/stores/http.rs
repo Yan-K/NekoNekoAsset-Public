@@ -10,6 +10,10 @@ use std::{
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
 
+/// Attempts for a dropped connection, a cut-off body, 5xx or 429, waiting 2, 4, 8 and 16 s:
+/// long enough to ride out a Wi-Fi drop or waking from sleep, still bounded.
+const ATTEMPTS: u32 = 5;
+
 pub fn metadata_destination(provider: StoreProvider, url: &Url) -> bool {
     url.scheme() == "https"
         && url.username().is_empty()
@@ -332,7 +336,7 @@ impl MetadataHttp {
             }
         };
         ensure!(destination(&url), "INVALID_METADATA_URL");
-        for attempt in 0..3u32 {
+        for attempt in 0..ATTEMPTS {
             let waiting = Instant::now();
             self.wait_start().await;
             let wait_ms = waiting.elapsed().as_millis() as u64;
@@ -361,7 +365,7 @@ impl MetadataHttp {
             let response = match sent {
                 Ok(response) => response,
                 Err(error) if error.is_redirect() => bail!("UNSAFE_REDIRECT"),
-                Err(_) if attempt < 2 => {
+                Err(_) if attempt + 1 < ATTEMPTS => {
                     self.defer(Duration::from_secs(1 << (attempt + 1))).await;
                     continue;
                 }
@@ -404,7 +408,7 @@ impl MetadataHttp {
                 );
                 self.defer(wait.max(Duration::from_secs(1 << (attempt + 1))))
                     .await;
-                if attempt == 2 || wait > Duration::from_secs(120) {
+                if attempt + 1 == ATTEMPTS || wait > Duration::from_secs(120) {
                     if response.status() == StatusCode::TOO_MANY_REQUESTS {
                         bail!("RATE_LIMITED");
                     }
@@ -450,18 +454,36 @@ impl MetadataHttp {
             .acquire()
             .await
             .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))?;
-        let response = self
-            .request(client, url, false, Method::GET, None, kind)
-            .await?;
-        let final_url = response.url().clone();
-        let started = Instant::now();
-        let read = Self::read_metadata(response).await;
-        let body_ms = started.elapsed().as_millis() as u64;
-        self.record(kind, |metrics| {
-            metrics.body_ms.fetch_add(body_ms, Ordering::Relaxed);
-        });
-        let (status, body) = read?;
-        Ok((status, body, final_url))
+        for attempt in 0..ATTEMPTS {
+            let response = self
+                .request(client, url.clone(), false, Method::GET, None, kind)
+                .await?;
+            let final_url = response.url().clone();
+            let started = Instant::now();
+            let read = Self::read_metadata(response).await;
+            let body_ms = started.elapsed().as_millis() as u64;
+            self.record(kind, |metrics| {
+                metrics.body_ms.fetch_add(body_ms, Ordering::Relaxed);
+            });
+            match read {
+                // A body cut off after its headers is the same transient failure as a
+                // dropped request, with the same bounded retry.
+                Err(error)
+                    if error.to_string() == "NETWORK_UNAVAILABLE" && attempt + 1 < ATTEMPTS =>
+                {
+                    self.record(kind, |metrics| {
+                        metrics.transport_errors.fetch_add(1, Ordering::Relaxed);
+                        metrics.retries.fetch_add(1, Ordering::Relaxed);
+                    });
+                    self.defer(Duration::from_secs(1 << (attempt + 1))).await;
+                }
+                read => {
+                    let (status, body) = read?;
+                    return Ok((status, body, final_url));
+                }
+            }
+        }
+        bail!("NETWORK_UNAVAILABLE")
     }
 
     /// The one buyer download-capability mutation; no arbitrary service POST surface.
@@ -591,6 +613,36 @@ mod tests {
             }
             server.await.unwrap();
         }
+    }
+    #[tokio::test]
+    async fn a_body_cut_off_after_its_headers_is_retried() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move {
+            for response in [
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n{\"".as_slice(),
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".as_slice(),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                socket.read(&mut bytes).await.unwrap();
+                socket.write_all(response).await.unwrap();
+            }
+        });
+        let mut transport = MetadataHttp::new(StoreProvider::Gumroad);
+        transport.authored_origin = Some(origin.clone());
+        let client = Client::builder().no_proxy().build().unwrap();
+        let (status, body) = transport
+            .get_classified(&client, origin, RequestKind::Public)
+            .await
+            .unwrap();
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "{}"));
+        server.await.unwrap();
+        let metrics = transport.classified_since([[0; 9]; 2]);
+        assert_eq!(metrics["public"]["requests"], 2);
+        assert_eq!(metrics["public"]["retries"], 1);
+        assert_eq!(metrics["public"]["transportErrors"], 1);
     }
     #[test]
     fn retry_after_rejects_unrepresentable_delays() {

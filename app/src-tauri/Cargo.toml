@@ -24,7 +24,9 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process", "net"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "json", "stream"] }
+# Windows roots keep HTTPS working where antivirus or a network inspects it, as it already does
+# for the sign-in WebView; the bundled roots stay as a fallback. System proxy settings apply.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "system-proxy", "cookies", "json", "stream"] }
 url = "2"
 scraper = "0.24"
 rusqlite = { version = "0.37", features = ["bundled"] }

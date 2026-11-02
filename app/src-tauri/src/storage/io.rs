@@ -67,6 +67,26 @@ pub fn unused_relative(root: &Path, base: &str) -> Result<String> {
     }
     bail!("archive_path_collision")
 }
+/// Antivirus and search indexers briefly open files that were just written, and Windows then
+/// refuses to move or remove them (sharing or lock violation, or access denied while the handle
+/// is open). Retry such a move or removal for about ten seconds before reporting its error.
+pub fn retry_busy<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut wait = std::time::Duration::from_millis(50);
+    loop {
+        match operation() {
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+                    && std::time::Instant::now() + wait < deadline =>
+            {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(std::time::Duration::from_secs(1));
+            }
+            result => return result,
+        }
+    }
+}
 /// This guard owns only the exact per-file temporary, never published content.
 pub struct PartialGuard {
     path: PathBuf,
@@ -243,26 +263,6 @@ pub fn space(path: &Path, required: u64) -> Result<()> {
     );
     Ok(())
 }
-pub fn absolute_dir(path: &Path, create: bool) -> Result<PathBuf> {
-    ensure!(path.is_absolute(), "root_not_absolute");
-    for ancestor in path.ancestors() {
-        if ancestor.exists() {
-            reject_link(ancestor)?;
-        }
-    }
-    if create {
-        fs::create_dir_all(path)?;
-    }
-    ensure!(path.is_dir(), "root_offline");
-    let path = path.canonicalize()?;
-    let probe = path.join(format!(".nna-probe-{}", uuid::Uuid::new_v4()));
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)?;
-    file.sync_all()?;
-    drop(file);
-    fs::remove_file(probe)?;
 /// Total size of the files below `root`, as Explorer's folder Properties reports it. Links
 /// and junctions are neither followed nor counted; entries removed by concurrent work are skipped.
 pub fn tree_bytes(root: &Path) -> Result<u64> {
@@ -291,6 +291,26 @@ pub fn tree_bytes(root: &Path) -> Result<u64> {
     }
     Ok(total)
 }
+pub fn absolute_dir(path: &Path, create: bool) -> Result<PathBuf> {
+    ensure!(path.is_absolute(), "root_not_absolute");
+    for ancestor in path.ancestors() {
+        if ancestor.exists() {
+            reject_link(ancestor)?;
+        }
+    }
+    if create {
+        fs::create_dir_all(path)?;
+    }
+    ensure!(path.is_dir(), "root_offline");
+    let path = path.canonicalize()?;
+    let probe = path.join(format!(".nna-probe-{}", uuid::Uuid::new_v4()));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)?;
+    file.sync_all()?;
+    drop(file);
+    fs::remove_file(probe)?;
     Ok(path)
 }
 pub fn stable_error(err: &anyhow::Error) -> &'static str {
@@ -478,6 +498,36 @@ fn windows_shell_path(path: &str) -> Result<String> {
 #[cfg(test)]
 mod launch_path_tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn a_move_waits_out_a_brief_exclusive_handle_but_not_a_missing_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!("nna-busy-move-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let (part, published) = (root.join("authored.part"), root.join("authored.zip"));
+        fs::write(&part, b"authored payload").unwrap();
+        // As an antivirus scan does: an open handle that shares neither writes nor deletes.
+        let scan = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&part)
+            .unwrap();
+        assert_eq!(
+            fs::rename(&part, &published).unwrap_err().raw_os_error(),
+            Some(32)
+        );
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(scan);
+        });
+        retry_busy(|| fs::rename(&part, &published)).unwrap();
+        release.join().unwrap();
+        assert_eq!(fs::read(&published).unwrap(), b"authored payload");
+        let started = std::time::Instant::now();
+        assert!(retry_busy(|| fs::rename(root.join("missing.part"), &published)).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn completed_file_does_not_remove_a_waiting_transfers_shared_parent() {
         let root =
@@ -557,13 +607,6 @@ mod launch_path_tests {
         assert!(windows_shell_path(r"\\.\PhysicalDrive0").is_err());
         assert!(windows_shell_path("E:\\Synthetic\0Ignored").is_err());
     }
-}
-pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
-    match value[field].as_str() {
-        Some(s) if !s.is_empty() => Ok(s),
-        _ => bail!("invalid_arguments"),
-    }
-}
 
     #[cfg(windows)]
     #[test]
@@ -593,3 +636,10 @@ pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<
         fs::remove_dir(link).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
+}
+pub fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    match value[field].as_str() {
+        Some(s) if !s.is_empty() => Ok(s),
+        _ => bail!("invalid_arguments"),
+    }
+}

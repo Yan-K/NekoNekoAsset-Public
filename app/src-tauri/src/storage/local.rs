@@ -1573,7 +1573,7 @@ impl StorageService {
             target = io::safe_join(root, &relative)?;
         }
         fs::create_dir_all(target.parent().unwrap())?;
-        fs::rename(&extraction.staging_path, &target)?;
+        io::retry_busy(|| fs::rename(&extraction.staging_path, &target))?;
         Ok((relative, inventory, extraction.source_paths.clone()))
     }
 

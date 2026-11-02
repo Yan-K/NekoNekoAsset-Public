@@ -880,9 +880,11 @@ impl BoothService {
                         self.inner
                             .catalogue
                             .put("source_coverage", &coverage_id, coverage)?;
+                        // Only sign-in evidence needs the human. A 403 can be a passing block or
+                        // limit; the job still ends needing action, but startup sync keeps the account.
                         if matches!(
                             super::code(&error).as_str(),
-                            "AUTH_REQUIRED" | "AUTH_CHALLENGE" | "PERMISSION_DENIED"
+                            "AUTH_REQUIRED" | "AUTH_CHALLENGE"
                         ) {
                             let mut account_record = self.account(account)?;
                             account_record["state"] = json!("needsAction");

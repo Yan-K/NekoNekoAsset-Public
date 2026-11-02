@@ -842,7 +842,12 @@ impl BoothService {
                         if error.is_none() {
                             account["lastSync"] = terminal["completedAt"].clone();
                             account["lastSyncAt"] = terminal["completedAt"].clone();
-                            if account["disconnected"] != true && account["identityVerified"] == true {
+                            // BOOTH sign-in records authenticatedAt, never identityVerified.
+                            let established = account["identityVerified"] == true
+                                || account["authenticatedAt"]
+                                    .as_str()
+                                    .is_some_and(|at| !at.is_empty());
+                            if account["disconnected"] != true && established {
                                 account["state"] = json!("connected");
                                 account["status"] = json!("connected");
                             }

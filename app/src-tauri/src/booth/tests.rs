@@ -58,6 +58,18 @@ fn successful_sync_clears_previous_action_state_without_replacing_identity() {
     for key in ["identityVerified", "identityHash", "authenticatedAt"] {
         assert_eq!(recovered[key], account[key]);
     }
+    // BOOTH sign-in records only authenticatedAt; such an account recovers the same way.
+    let signed_in = json!({"id":A,"store":"BOOTH","status":"needsAction","state":"needsAction","identityVerified":false,"authenticatedAt":"2026-01-01T00:00:00Z"});
+    catalogue.put("account", A, signed_in).unwrap();
+    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    fixture.service.finish_job(&job, None).unwrap();
+    assert_eq!(catalogue.get("account", A).unwrap().unwrap()["status"], "connected");
+    // A draft that never signed in is not promoted by a finished job.
+    let draft = json!({"id":A,"store":"BOOTH","status":"disconnected","state":"needsAction","identityVerified":false});
+    catalogue.put("account", A, draft).unwrap();
+    catalogue.put("job", "authored-recovered-sync", job.clone()).unwrap();
+    fixture.service.finish_job(&job, None).unwrap();
+    assert_eq!(catalogue.get("account", A).unwrap().unwrap()["status"], "disconnected");
     let path = fixture.path.clone();
     drop(fixture);
     std::fs::remove_dir_all(path).unwrap();

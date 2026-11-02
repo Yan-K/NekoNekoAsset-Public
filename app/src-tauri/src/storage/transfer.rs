@@ -1,5 +1,9 @@
 use super::*;
 
+/// A dropped transfer restarts from the first byte after 2, 4, 8 and 16 s, so a Wi-Fi drop or
+/// waking from sleep does not fail the download; final size and hash are still checked.
+const DOWNLOAD_ATTEMPTS: u32 = 5;
+
 fn retryable_download_resolution(error: &anyhow::Error) -> bool {
     matches!(
         io::stable_error(error),
@@ -172,9 +176,12 @@ fn publish_source_tree_part(
         let new: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
         // Same-root staging permits a same-volume rename. Flags 0 never replace
         // an existing target and work without hard links or another payload copy.
-        if unsafe { MoveFileExW(existing.as_ptr(), new.as_ptr(), 0) } == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        io::retry_busy(|| {
+            if unsafe { MoveFileExW(existing.as_ptr(), new.as_ptr(), 0) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        })?;
     }
     #[cfg(not(windows))]
     {
@@ -1100,10 +1107,18 @@ impl StorageService {
                         .await??;
                     } else if let Some(relative) = duplicate {
                         artifact["relativePath"] = relative;
-                        std::fs::remove_file(&part)?;
+                        let part = part.clone();
+                        tokio::task::spawn_blocking(move || {
+                            io::retry_busy(|| std::fs::remove_file(&part))
+                        })
+                        .await??;
                     } else {
                         std::fs::create_dir_all(destination.parent().unwrap())?;
-                        std::fs::rename(&part, &destination)?;
+                        let (part, destination) = (part.clone(), destination.clone());
+                        tokio::task::spawn_blocking(move || {
+                            io::retry_busy(|| std::fs::rename(&part, &destination))
+                        })
+                        .await??;
                     }
                     artifact["hash"] = json!(hash);
                     artifact["sizeBytes"] = json!(size);
@@ -1226,7 +1241,7 @@ impl StorageService {
         cancel: &AtomicBool,
     ) -> Result<(String, u64, String, String, Value)> {
         let mut last = anyhow::anyhow!("download_failed");
-        for attempt in 0..3u32 {
+        for attempt in 0..DOWNLOAD_ATTEMPTS {
             io::check_cancel(cancel)?;
             let ticket = io::cancellable(
                 cancel,
@@ -1236,8 +1251,10 @@ impl StorageService {
             .await?;
             let ticket = match ticket {
                 Ok(ticket) => ticket,
-                Err(error) if retryable_download_resolution(&error) && attempt < 2 => {
-                    io::delay(cancel, Duration::from_secs(1 << attempt)).await?;
+                Err(error)
+                    if retryable_download_resolution(&error) && attempt + 1 < DOWNLOAD_ATTEMPTS =>
+                {
+                    io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -1280,8 +1297,8 @@ impl StorageService {
                 Ok(r) => r,
                 Err(e) => {
                     last = e;
-                    if attempt < 2 {
-                        io::delay(cancel, Duration::from_secs(1 << attempt)).await?;
+                    if attempt + 1 < DOWNLOAD_ATTEMPTS {
+                        io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
                     }
                     continue;
                 }
@@ -1299,8 +1316,8 @@ impl StorageService {
                     return Err(error);
                 }
                 last = error;
-                if attempt < 2 {
-                    io::delay(cancel, Duration::from_secs(1 << attempt)).await?;
+                if attempt + 1 < DOWNLOAD_ATTEMPTS {
+                    io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
                 }
                 continue;
             }
@@ -1321,7 +1338,7 @@ impl StorageService {
                 let Some(wait) = wait else {
                     return Err(last);
                 };
-                if attempt < 2 {
+                if attempt + 1 < DOWNLOAD_ATTEMPTS {
                     io::delay(cancel, wait).await?;
                 }
                 continue;
@@ -1439,8 +1456,8 @@ impl StorageService {
                     last = e;
                 }
             }
-            if attempt < 2 {
-                io::delay(cancel, Duration::from_secs(1 << attempt)).await?;
+            if attempt + 1 < DOWNLOAD_ATTEMPTS {
+                io::delay(cancel, Duration::from_secs(2 << attempt)).await?;
             }
         }
         Err(last)
@@ -1553,7 +1570,9 @@ impl StorageService {
         )?;
         let destination = io::safe_join(&root_path, &relative)?;
         std::fs::create_dir_all(destination.parent().unwrap())?;
-        std::fs::rename(&extracted.staging_path, &destination)?;
+        let (staging, target) = (extracted.staging_path.clone(), destination.clone());
+        tokio::task::spawn_blocking(move || io::retry_busy(|| std::fs::rename(&staging, &target)))
+            .await??;
         artifact["status"] = json!("ready");
         artifact["extractedPath"] = json!(relative);
         artifact["productDirectory"] = json!(product_directory);
