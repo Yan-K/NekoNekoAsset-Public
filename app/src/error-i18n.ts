@@ -78,7 +78,7 @@ export function nativeErrorText(locale:Locale,code:string):string|undefined {
  const lower=code.toLowerCase();
  const nativeCode=lower.split('.').at(-1)??lower;
  const upper=nativeCode.toUpperCase();
- const aliases:Record<string,string>={SOURCE_UNSUPPORTED:'COLLECTOR_UNSUPPORTED',RECEIPT_BODY_FAILED:'RECEIPT_REQUEST_FAILED',RECEIPT_AUTH_FAILED:'auth',RECEIPT_AUTHORIZATION_REQUIRED:'auth',PROTECTED_SESSION_UNAVAILABLE:'auth',DIGITAL_DETAIL_ROLE_UNKNOWN:'RECEIPT_PARSE_FAILED',GUMROAD_PUBLIC_METADATA_UNAVAILABLE:'PUBLIC_METADATA_UNAVAILABLE',FILE_INCOMPLETE:'manifest_incomplete',DOWNLOAD_LINK_UNAVAILABLE:'download_resolver_failed',DOWNLOAD_RESOLVER_FAILED:'download_resolver_failed'};
+ const aliases:Record<string,string>={STORAGE_SOURCE_LOCKED:'move_file_in_use',FILE_IN_USE:'move_file_in_use',SOURCE_UNSUPPORTED:'COLLECTOR_UNSUPPORTED',RECEIPT_BODY_FAILED:'RECEIPT_REQUEST_FAILED',RECEIPT_AUTH_FAILED:'auth',RECEIPT_AUTHORIZATION_REQUIRED:'auth',PROTECTED_SESSION_UNAVAILABLE:'auth',DIGITAL_DETAIL_ROLE_UNKNOWN:'RECEIPT_PARSE_FAILED',GUMROAD_PUBLIC_METADATA_UNAVAILABLE:'PUBLIC_METADATA_UNAVAILABLE',FILE_INCOMPLETE:'manifest_incomplete',DOWNLOAD_LINK_UNAVAILABLE:'download_resolver_failed',DOWNLOAD_RESOLVER_FAILED:'download_resolver_failed'};
  let key=labels[code]?code:labels[upper]?upper:labels[nativeCode]?nativeCode:aliases[upper]??'';
  if(!key&&['store_identity_changed','store_identity_mismatch','account_identity_mismatch'].includes(nativeCode))key='auth';
  if(!key&&/^(jinxxy|gumroad)_(source_unsupported|scope_changed|pagination_unproven)$/.test(nativeCode))key='operationFailed';

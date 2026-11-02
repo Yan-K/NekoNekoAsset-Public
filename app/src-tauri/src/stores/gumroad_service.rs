@@ -2034,7 +2034,7 @@ impl GumroadService {
         &self,
         job: &mut Value,
         before: [u64; 3],
-        classified_before: [[u64; 9]; 2],
+        classified_before: [[u64; 13]; 2],
     ) {
         let metrics = self.inner.http.metrics();
         let by_kind = self.inner.http.classified_since(classified_before);

@@ -404,6 +404,14 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
         }
     }
     if let Some(e) = err.downcast_ref::<std::io::Error>() {
+        // Another program or a scanner still held the file after the retries.
+        if cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)) {
+            return "file_in_use";
+        }
+        // The drive or network share holding the library went away.
+        if cfg!(windows) && matches!(e.raw_os_error(), Some(21 | 53 | 59 | 64 | 67 | 1231)) {
+            return "root_offline";
+        }
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             return "permission_denied";
         }
@@ -612,6 +620,17 @@ mod launch_path_tests {
             stable_error(&anyhow::anyhow!("UNRECOGNIZED_PROVIDER_FAILURE")),
             "storage_failed"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_files_and_vanished_library_drives_keep_their_own_codes() {
+        let os = |code| stable_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(code)));
+        assert_eq!((os(32), os(33)), ("file_in_use", "file_in_use"));
+        for code in [21, 53, 59, 64, 67, 1231] {
+            assert_eq!(os(code), "root_offline", "{code}");
+        }
+        assert_eq!((os(5), os(112)), ("permission_denied", "low_space"));
     }
 
     #[test]

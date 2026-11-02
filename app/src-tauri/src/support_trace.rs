@@ -152,13 +152,57 @@ pub(crate) fn response(url: &url::Url, status: u16) {
         if matches!(status,429|503) {increment(row,"rateLimits",1);}
     });
 }
-pub(crate) fn transport(url: &url::Url, code: &str) {
+/// `cause` is a `network_cause`, so a copied report tells certificate, DNS, connection and
+/// timeout failures apart.
+pub(crate) fn transport(url: &url::Url, cause: &str) {
     let key=request_kind(url);
+    let counter=match cause {
+        "timeout"=>Some("timeouts"), "tls"=>Some("tlsFailures"), "dns"=>Some("dnsFailures"),
+        "connect"=>Some("connectFailures"), _=>None,
+    };
     update(|trace| {
         let row=&mut trace["http"][key];
         increment(row,"transportFailures",1);
-        if code=="NETWORK_TIMEOUT" {increment(row,"timeouts",1);}
+        if let Some(counter)=counter {increment(row,counter,1);}
     });
+}
+/// TLS failures, an untrusted certificate included, arrive as rustls errors inside one or more
+/// I/O errors from the TLS stream and connector.
+fn tls_failure(io: &std::io::Error) -> bool {
+    match io.get_ref() {
+        Some(inner) if inner.is::<rustls::Error>() => true,
+        Some(inner) => inner.downcast_ref::<std::io::Error>().is_some_and(tls_failure),
+        None => false,
+    }
+}
+/// What a transport failure was. Only fixed library texts are compared; none is kept.
+pub(crate) fn network_cause(error: &reqwest::Error) -> &'static str {
+    use std::error::Error;
+    if error.is_timeout() {
+        return "timeout";
+    }
+    let mut source = error.source();
+    while let Some(inner) = source {
+        if inner.to_string().starts_with("dns error") {
+            return "dns";
+        }
+        if let Some(io) = inner.downcast_ref::<std::io::Error>() {
+            if tls_failure(io) {
+                return "tls";
+            }
+            if io.kind() == std::io::ErrorKind::TimedOut {
+                return "timeout";
+            }
+        }
+        source = inner.source();
+    }
+    if error.is_connect() {
+        "connect"
+    } else if error.is_body() || error.is_decode() {
+        "body"
+    } else {
+        "other"
+    }
 }
 pub(crate) fn backoff(url: &url::Url, duration: std::time::Duration) {
     let key = request_kind(url);
@@ -231,7 +275,7 @@ mod tests {
         let ((), facts)=capture(async {
             let url=url::Url::parse("https://accounts.booth.pm/orders/123456789?cookie=PRIVATE_COOKIE").unwrap();
             source_start("purchase"); stage("PRIVATE_STAGE"); stage("collecting");
-            request(&url,0); response(&url,503); request(&url,1); transport(&url,"NETWORK_TIMEOUT");
+            request(&url,0); response(&url,503); request(&url,1); transport(&url,"timeout"); transport(&url,"tls");
             backoff(&url, std::time::Duration::from_secs(2));
             page("purchase",true,2,1,false); source_done("purchase",None,Some("PRIVATE_ERROR"));
             receipt(&json!({"unitPriceItems":1,"private":"PRIVATE_COOKIE"}),2,1,0,false,"PRIVATE_LANGUAGE");
@@ -240,6 +284,8 @@ mod tests {
         assert_eq!(facts["http"]["receipt"]["requests"],2);
         assert_eq!(facts["http"]["receipt"]["retries"],1);
         assert_eq!(facts["http"]["receipt"]["timeouts"],1);
+        assert_eq!(facts["http"]["receipt"]["tlsFailures"],1);
+        assert_eq!(facts["http"]["receipt"]["transportFailures"],2);
         assert_eq!(facts["http"]["receipt"]["backoffMs"],2000);
         assert_eq!(facts["sources"]["purchase"]["errorCode"],"UNKNOWN_ERROR");
         assert_eq!(facts["financial"]["htmlUnknown"],1);
@@ -289,5 +335,36 @@ mod tests {
             job_stage(&json!({"type":"boothLogin","progress":{"stage":"failed","loginStage":"PRIVATE_STAGE"}}));
         }).await;
         assert_eq!(facts["lastStage"],"parserRecognition");
+    }
+    #[tokio::test]
+    async fn transport_failures_name_their_cause_from_local_authored_servers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Windows retries a refused loopback connect for about two seconds before failing.
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap();
+        let impatient = reqwest::Client::builder().timeout(std::time::Duration::from_millis(400)).build().unwrap();
+        let cause = |result: reqwest::Result<reqwest::Response>| network_cause(&result.unwrap_err());
+        // Nothing listens on a port that was just released.
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert_eq!(cause(client.get(format!("https://127.0.0.1:{port}/")).send().await), "connect");
+        // A plain-text answer to a TLS handshake.
+        let plain = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = plain.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = plain.accept().await.unwrap();
+            let mut hello = [0u8; 512];
+            let _ = socket.read(&mut hello).await;
+            let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        });
+        assert_eq!(cause(client.get(format!("https://127.0.0.1:{port}/")).send().await), "tls");
+        // A server that accepts and never answers.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = silent.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (_socket, _) = silent.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        assert_eq!(cause(impatient.get(format!("http://127.0.0.1:{port}/")).send().await), "timeout");
     }
 }

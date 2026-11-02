@@ -27,6 +27,7 @@ const COVERAGE_FLAGS: &[&str] = &[
 const HTTP_COUNTS: &[&str] = &[
     "requests", "retries", "status2xx", "status3xx", "status4xx", "status5xx",
     "rateLimits", "transportFailures", "timeouts", "redirectRejected", "backoffs", "backoffMs",
+    "tlsFailures", "dnsFailures", "connectFailures",
 ];
 const PROVIDER_METRIC_COUNTS: &[&str] = &[
     "requests", "pacingWaitMs", "responseWaitMs", "activeRequestLimit", "startSpacingMs",
@@ -35,6 +36,7 @@ const PROVIDER_METRIC_COUNTS: &[&str] = &[
 const KIND_METRIC_COUNTS: &[&str] = &[
     "requests", "pacingWaitMs", "responseWaitMs", "bodyReadMs", "retries",
     "rateLimits", "serverErrors", "transportErrors", "clientErrors",
+    "timeouts", "tlsErrors", "dnsErrors", "connectErrors",
 ];
 const FINANCIAL_COUNTS: &[&str] = &[
     "receiptPages", "digitalBoundItems", "uniqueMetadataItems", "unitPriceItems",
@@ -106,7 +108,7 @@ pub(crate) fn safe_code(value: &str) -> &'static str {
         "archive_password_required", "archive_missing_volume", "archive_corrupt", "archive_unsafe_path",
         "archive_unsafe_link", "archive_path_collision", "archive_tool_unavailable", "revision_unknown",
         "unsupported_backup_version", "backup_payload_missing", "destination_not_empty", "storage_busy",
-        "storage_failed", "local_membership_changed", "local_product_required", "local_delete_unsafe_path",
+        "storage_failed", "storage_source_locked", "file_in_use", "unsafe_link", "local_membership_changed", "local_product_required", "local_delete_unsafe_path",
         "local_delete_shared_path", "local_delete_cleanup_failed", "local_delete_rollback_failed",
         "local_delete_retry_required", "library_not_open", "library_not_configured", "library_opening",
         "worker_failed", "access_denied", "operation_failed", "operationFailed", "nativeUnavailable",

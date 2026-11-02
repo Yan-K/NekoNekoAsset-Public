@@ -195,6 +195,10 @@ struct RequestMetrics {
     server_errors: AtomicU64,
     transport_errors: AtomicU64,
     client_errors: AtomicU64,
+    timeouts: AtomicU64,
+    tls_errors: AtomicU64,
+    dns_errors: AtomicU64,
+    connect_errors: AtomicU64,
 }
 #[derive(Clone, Copy)]
 pub enum RequestKind {
@@ -202,7 +206,7 @@ pub enum RequestKind {
     Public,
 }
 impl RequestMetrics {
-    fn snapshot(&self) -> [u64; 9] {
+    fn snapshot(&self) -> [u64; 13] {
         [
             &self.requests,
             &self.wait_ms,
@@ -213,6 +217,10 @@ impl RequestMetrics {
             &self.server_errors,
             &self.transport_errors,
             &self.client_errors,
+            &self.timeouts,
+            &self.tls_errors,
+            &self.dns_errors,
+            &self.connect_errors,
         ]
         .map(|counter| counter.load(Ordering::Relaxed))
     }
@@ -230,10 +238,10 @@ impl MetadataHttp {
             authored_origin: None,
         }
     }
-    pub fn classified_metrics(&self) -> [[u64; 9]; 2] {
+    pub fn classified_metrics(&self) -> [[u64; 13]; 2] {
         self.classified.each_ref().map(|metrics| metrics.snapshot())
     }
-    pub fn classified_since(&self, before: [[u64; 9]; 2]) -> serde_json::Value {
+    pub fn classified_since(&self, before: [[u64; 13]; 2]) -> serde_json::Value {
         let after = self.classified_metrics();
         let names = [
             "requests",
@@ -245,6 +253,10 @@ impl MetadataHttp {
             "serverErrors",
             "transportErrors",
             "clientErrors",
+            "timeouts",
+            "tlsErrors",
+            "dnsErrors",
+            "connectErrors",
         ];
         let mut result = serde_json::Map::new();
         for (i, label) in ["content", "public"].iter().enumerate() {
@@ -344,12 +356,21 @@ impl MetadataHttp {
             }
             let sent = request.send().await;
             let response_ms = started.elapsed().as_millis() as u64;
+            let cause = sent.as_ref().err().map(crate::support_trace::network_cause);
             self.record(kind, |metrics| {
                 metrics
                     .response_ms
                     .fetch_add(response_ms, Ordering::Relaxed);
-                if sent.is_err() {
+                if let Some(cause) = cause {
                     metrics.transport_errors.fetch_add(1, Ordering::Relaxed);
+                    match cause {
+                        "timeout" => Some(&metrics.timeouts),
+                        "tls" => Some(&metrics.tls_errors),
+                        "dns" => Some(&metrics.dns_errors),
+                        "connect" => Some(&metrics.connect_errors),
+                        _ => None,
+                    }
+                    .map(|counter| counter.fetch_add(1, Ordering::Relaxed));
                 }
             });
             let response = match sent {
@@ -626,7 +647,7 @@ mod tests {
             .unwrap();
         assert_eq!((status, body.as_str()), (StatusCode::OK, "{}"));
         server.await.unwrap();
-        let metrics = transport.classified_since([[0; 9]; 2]);
+        let metrics = transport.classified_since([[0; 13]; 2]);
         assert_eq!(metrics["public"]["requests"], 2);
         assert_eq!(metrics["public"]["retries"], 1);
         assert_eq!(metrics["public"]["transportErrors"], 1);
@@ -739,7 +760,7 @@ mod tests {
                 }
             }
             let metrics = transport.metrics();
-            let by_kind = transport.classified_since([[0; 9]; 2]);
+            let by_kind = transport.classified_since([[0; 13]; 2]);
             assert_eq!(by_kind["content"]["requests"], 4);
             assert_eq!(by_kind["public"]["requests"], 4);
             assert_eq!(by_kind["content"]["retries"], 0);
@@ -788,7 +809,7 @@ mod tests {
             .await
             .unwrap();
         server.await.unwrap();
-        let metrics = transport.classified_since([[0; 9]; 2]);
+        let metrics = transport.classified_since([[0; 13]; 2]);
         assert_eq!(metrics["public"]["requests"], 3);
         assert_eq!(metrics["public"]["retries"], 2);
         assert_eq!(metrics["public"]["serverErrors"], 2);

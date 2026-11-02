@@ -133,7 +133,7 @@ impl MetadataHttp {
                 Ok(r) => r,
                 Err(error) => {
                     let code = transport_code(&error);
-                    crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { code });
+                    crate::support_trace::transport(&url, crate::support_trace::network_cause(&error));
                     if code == "UNSAFE_REDIRECT" { crate::support_trace::redirect_rejected(&url); }
                     if code == "NETWORK_UNAVAILABLE" && attempt + 1 < ATTEMPTS {
                         let wait = Duration::from_secs(2u64.pow(attempt + 1));
@@ -208,7 +208,7 @@ impl MetadataHttp {
                     }
                     Ok(None) => break false,
                     Err(error) => {
-                        crate::support_trace::transport(&url, if error.is_timeout() { "NETWORK_TIMEOUT" } else { "NETWORK_UNAVAILABLE" });
+                        crate::support_trace::transport(&url, crate::support_trace::network_cause(&error));
                         break true;
                     }
                 }
