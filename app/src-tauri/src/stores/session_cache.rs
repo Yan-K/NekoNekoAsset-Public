@@ -77,18 +77,8 @@ mod platform {
         match provider {
             StoreProvider::Booth => domain == "booth.pm" || domain.ends_with(".booth.pm"),
             StoreProvider::Gumroad => domain == "gumroad.com" || domain.ends_with(".gumroad.com"),
-            StoreProvider::Jinxxy => matches!(
-                domain.as_str(),
-                "jinxxy.com"
-                    | "www.jinxxy.com"
-                    | "api.jinxxy.com"
-                    | "ja.jinxxy.com"
-                    | "de.jinxxy.com"
-                    | "es.jinxxy.com"
-                    | "fr.jinxxy.com"
-                    | "zh.jinxxy.com"
-                    | "ko.jinxxy.com"
-            ),
+            // Matches session::cookie_host, which selects the cookies saved here.
+            StoreProvider::Jinxxy => domain == "jinxxy.com" || domain.ends_with(".jinxxy.com"),
         }
     }
 

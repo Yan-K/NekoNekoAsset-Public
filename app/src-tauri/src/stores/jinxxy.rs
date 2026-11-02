@@ -21,53 +21,10 @@ use url::Url;
 
 const LIMIT: usize = 16 * 1024 * 1024;
 const MARKER: &str = "(window[Symbol.for(\"ApolloSSRDataTransport\")]";
-const FILE_HOST: &str = "jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com";
-fn public_download_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(ip) => {
-            let octets = ip.octets();
-            !ip.is_private()
-                && !ip.is_loopback()
-                && !ip.is_link_local()
-                && !ip.is_broadcast()
-                && !ip.is_documentation()
-                && octets[0] != 0
-                && octets[0] < 224
-                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
-                && !(octets[0] == 198 && matches!(octets[1], 18 | 19))
-                && !(octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        }
-        std::net::IpAddr::V6(ip) => {
-            if let Some(mapped) = ip.to_ipv4_mapped() {
-                return public_download_ip(mapped.into());
-            }
-            let segments = ip.segments();
-            // Native public unicast only; exclude documentation and transition ranges.
-            segments[0] & 0xe000 == 0x2000
-                && !(segments[0] == 0x2001 && segments[1] <= 0x1ff)
-                && !(segments[0] == 0x2001 && segments[1] == 0xdb8)
-                && segments[0] != 0x2002
-        }
-    }
-}
 fn compiled_destination(url: &Url) -> bool {
-    url.scheme() == "https"
+    super::http::public_https(url)
         && url.port_or_known_default() == Some(443)
-        && url.username().is_empty()
-        && url.password().is_none()
         && url.fragment().is_none()
-        && match url.host() {
-            Some(url::Host::Ipv4(ip)) => public_download_ip(ip.into()),
-            Some(url::Host::Ipv6(ip)) => public_download_ip(ip.into()),
-            Some(url::Host::Domain(host)) => {
-                host.contains('.')
-                    && !host.ends_with('.')
-                    && !host.ends_with(".localhost")
-                    && !host.ends_with(".local")
-                    && !host.ends_with(".internal")
-            }
-            None => false,
-        }
 }
 // No Debug/Serialize: this capability is consumed once and never enters records or IPC.
 struct CompiledCapability {
@@ -141,7 +98,7 @@ impl CompiledCapability {
             !addresses.is_empty()
                 && addresses
                     .iter()
-                    .all(|address| public_download_ip(address.ip())),
+                    .all(|address| super::http::public_ip(address.ip())),
             "UNSAFE_DOWNLOAD_URL"
         );
         let mut headers = reqwest::header::HeaderMap::new();
@@ -165,23 +122,21 @@ impl CompiledCapability {
         })
     }
 }
-fn file_destination(url: &Url) -> bool {
-    url.scheme() == "https"
-        && url.host_str() == Some(FILE_HOST)
-        && url.port_or_known_default() == Some(443)
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.fragment().is_none()
-        && url.path() != "/"
-}
-fn resolved_location(status: reqwest::StatusCode, location: Option<&str>) -> Result<Url> {
-    ensure!(
-        status == reqwest::StatusCode::FOUND,
-        "JINXXY_DOWNLOAD_UNAVAILABLE"
-    );
-    let url = Url::parse(location.ok_or_else(|| anyhow::anyhow!("JINXXY_DOWNLOAD_UNPROVEN"))?)
+/// The first-party file endpoint redirects to a signed location on whichever public
+/// HTTPS host stores the file; that capability is kept unchanged for one later GET.
+fn resolved_location(
+    endpoint: &Url,
+    status: reqwest::StatusCode,
+    location: Option<&str>,
+) -> Result<Url> {
+    ensure!(status.is_redirection(), "JINXXY_DOWNLOAD_UNAVAILABLE");
+    let url = endpoint
+        .join(location.ok_or_else(|| anyhow::anyhow!("JINXXY_DOWNLOAD_UNPROVEN"))?)
         .map_err(|_| anyhow::anyhow!("JINXXY_DOWNLOAD_UNPROVEN"))?;
-    ensure!(file_destination(&url), "UNSAFE_DOWNLOAD_URL");
+    ensure!(
+        super::http::download_destination(StoreProvider::Jinxxy, &url),
+        "UNSAFE_DOWNLOAD_URL"
+    );
     Ok(url)
 }
 
@@ -659,7 +614,7 @@ pub fn protected_profile_route(html: &str) -> Result<Url> {
         ensure!(
             route.scheme() == "https"
                 && route.port_or_known_default() == Some(443)
-                && matches!(route.host_str(), Some("jinxxy.com" | "zh.jinxxy.com"))
+                && route.host_str().is_some_and(session::jinxxy_host)
                 && route.username().is_empty()
                 && route.password().is_none()
                 && route.query().is_none()
@@ -704,20 +659,54 @@ pub fn profile_identity(data: &[Value], profile: &Url) -> Result<String> {
 
 type PreparedInventory = (InventoryDetail, Option<DateTime<Utc>>, Option<OrderPayment>);
 
-fn validate_selected_inventory(job: &Value, products: &BTreeSet<String>) -> Result<()> {
-    if job["type"] == "jinxxyUpdate" {
-        ensure!(
-            job["productIds"]
-                .as_array()
-                .is_some_and(|ids| !ids.is_empty()
-                    && ids.iter().all(|id| id
-                        .as_str()
-                        .and_then(|id| id.strip_prefix("jinxxy:"))
-                        .is_some_and(|id| products.contains(id)))),
-            "JINXXY_PRODUCT_BINDING_UNPROVEN"
-        );
+/// Selected products absent from the inventory listing are left as they were. Nothing is
+/// retired: an unreadable grant without a product binding may be one of them.
+fn missing_selected(job: &Value, products: &BTreeSet<String>) -> Result<BTreeSet<String>> {
+    if job["type"] != "jinxxyUpdate" {
+        return Ok(BTreeSet::new());
     }
-    Ok(())
+    let ids = job["productIds"]
+        .as_array()
+        .filter(|ids| !ids.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
+    let mut missing = BTreeSet::new();
+    for id in ids {
+        let id = id
+            .as_str()
+            .and_then(|id| id.strip_prefix("jinxxy:"))
+            .ok_or_else(|| anyhow::anyhow!("JINXXY_PRODUCT_BINDING_UNPROVEN"))?;
+        if !products.contains(id) {
+            missing.insert(id.to_owned());
+        }
+    }
+    Ok(missing)
+}
+
+/// Distinct assets left as they were. A selected update counts its selected products
+/// missing from the listing; an unbound unreadable grant matters to it only as one of those.
+fn incomplete_assets(
+    job: &Value,
+    incomplete_products: &BTreeSet<String>,
+    unbound_inventory: &BTreeSet<String>,
+    missing: &BTreeSet<String>,
+) -> usize {
+    incomplete_products.union(missing).count()
+        + if job["type"] == "jinxxyUpdate" {
+            0
+        } else {
+            unbound_inventory.len()
+        }
+}
+
+/// Grant membership of a listing page and its page count. Order and the seller-editable
+/// names, prices, descriptions and images never count as a change.
+fn membership_signature(page: &InventoryPage) -> String {
+    let members: BTreeSet<_> = page
+        .items
+        .iter()
+        .map(|entry| (entry.inventory_id.as_str(), entry.product_id.as_deref()))
+        .collect();
+    hex::encode(Sha256::digest(json!([page.pages, members]).to_string().as_bytes()))
 }
 
 fn stage_observed_group(
@@ -966,7 +955,7 @@ fn sync_detail(
     entry: &InventoryEntry,
     incomplete_products: &mut BTreeSet<String>,
     unresolved_inventory: &mut BTreeSet<String>,
-    unbound_inventory: &mut bool,
+    unbound_inventory: &mut BTreeSet<String>,
 ) -> Option<InventoryDetail> {
     // This catches only parsing of one already scoped inventory response.
     // Account verification and authenticated HTTP errors remain outside it.
@@ -978,17 +967,45 @@ fn sync_detail(
     match detail {
         Ok(detail) => Some(detail),
         Err(_) => {
-            unresolved_inventory.insert(entry.inventory_id.clone());
-            if let Some(product) = &entry.product_id {
-                incomplete_products.insert(product.clone());
-            } else {
-                // Without a product binding, no product membership can safely
-                // be certified from this traversal. Healthy facts still publish.
-                *unbound_inventory = true;
-            }
+            unresolved_detail(entry, incomplete_products, unresolved_inventory, unbound_inventory);
             None
         }
     }
+}
+
+/// The asset keeps its previous snapshot and stays uncertified; nothing is staged for it.
+fn unresolved_detail(
+    entry: &InventoryEntry,
+    incomplete_products: &mut BTreeSet<String>,
+    unresolved_inventory: &mut BTreeSet<String>,
+    unbound_inventory: &mut BTreeSet<String>,
+) {
+    unresolved_inventory.insert(entry.inventory_id.clone());
+    if let Some(product) = &entry.product_id {
+        incomplete_products.insert(product.clone());
+    } else {
+        // Without a product binding, no product membership can safely
+        // be certified from this traversal. Healthy facts still publish.
+        unbound_inventory.insert(entry.inventory_id.clone());
+    }
+}
+
+/// Jinxxy answered definitively about one asset's page: a 4xx other than 429, a sign-in
+/// page, a redirect that cannot be followed, or a page too large or unreadable. Transport
+/// failures, 5xx and 429 after retries are no answer and still fail the job.
+fn asset_answer(error: &anyhow::Error) -> bool {
+    matches!(
+        fixed_error(error).as_str(),
+        "AUTH_REQUIRED"
+            | "PERMISSION_DENIED"
+            | "UNSAFE_REDIRECT"
+            | "JINXXY_SOURCE_UNAVAILABLE"
+            | "METADATA_TOO_LARGE"
+            | "METADATA_ENCODING"
+            | "JINXXY_METADATA_TOO_LARGE"
+            | "JINXXY_TRANSPORT_UNSUPPORTED"
+            | "JINXXY_SOURCE_UNSUPPORTED"
+    )
 }
 
 /// The stable first-party endpoint is reconstructed on demand, never a signed asset URL.
@@ -1196,11 +1213,6 @@ fn native_origin(url: &Url) -> Option<Url> {
     super::http::metadata_destination(StoreProvider::Jinxxy, url)
         .then(|| Url::parse(&url.origin().ascii_serialization()).ok())
         .flatten()
-}
-fn english_origin(url: &Url) -> Result<Url> {
-    native_origin(url)
-        .filter(|origin| origin.host_str() == Some("jinxxy.com"))
-        .ok_or_else(|| anyhow::anyhow!("JINXXY_SOURCE_UNSUPPORTED"))
 }
 impl JinxxyService {
     pub fn new(catalogue: Catalogue) -> Result<Self> {
@@ -1543,13 +1555,8 @@ impl JinxxyService {
         )
     }
     fn finish_job(&self, job: &mut Value, state: &str, error: Option<&str>) -> Result<()> {
-        if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
-            session::forget(
-                &self.inner.catalogue.device_dir(),
-                StoreProvider::Jinxxy,
-                &account_arg(job)?,
-            )?;
-        }
+        // A sign-in signal keeps the protected session. Only logout, deletion, a failed
+        // first login and a replacing login clear it; a later successful sync reconnects.
         let id = job["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("INVALID_JOB"))?
@@ -1591,9 +1598,7 @@ impl JinxxyService {
                         "incomplete"
                     });
                     account["lastSyncErrorCode"] = json!(error);
-                    if error == Some("AUTH_REQUIRED")
-                        && self.inner.catalogue.library_root().is_none()
-                    {
+                    if error == Some("AUTH_REQUIRED") {
                         account["state"] = json!("expired");
                         account["status"] = json!("expired");
                     }
@@ -1716,6 +1721,32 @@ impl JinxxyService {
         ensure!(status.is_success(), "JINXXY_SOURCE_UNAVAILABLE");
         buyer_data(&body)
     }
+    /// One asset's buyer detail. Jinxxy's definitive answer about it leaves it unresolved.
+    async fn asset_detail(
+        &self,
+        client: &reqwest::Client,
+        origin: &Url,
+        entry: &InventoryEntry,
+        incomplete_products: &mut BTreeSet<String>,
+        unresolved_inventory: &mut BTreeSet<String>,
+        unbound_inventory: &mut BTreeSet<String>,
+    ) -> Result<Option<InventoryDetail>> {
+        let url = origin.join(&format!("/my/inventory/{}", entry.inventory_id))?;
+        match self.page(client, url).await {
+            Ok(data) => Ok(sync_detail(
+                &data,
+                entry,
+                incomplete_products,
+                unresolved_inventory,
+                unbound_inventory,
+            )),
+            Err(error) if asset_answer(&error) => {
+                unresolved_detail(entry, incomplete_products, unresolved_inventory, unbound_inventory);
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
     async fn verify(
         &self,
         app: &AppHandle,
@@ -1768,7 +1799,9 @@ impl JinxxyService {
                 .get_with_url(&client, inventory_page_url(1))
                 .await?;
             ensure!(status.is_success(), "JINXXY_SOURCE_UNAVAILABLE");
-            origin = english_origin(&final_url)?;
+            // Any Jinxxy host may answer; the profile link below needs the English page.
+            origin = native_origin(&final_url)
+                .ok_or_else(|| anyhow::anyhow!("JINXXY_SOURCE_UNSUPPORTED"))?;
             html = english_html;
             data = buyer_data(&html)?;
             parse_inventory(&data, 1)?;
@@ -2130,22 +2163,22 @@ impl JinxxyService {
         let (client, first, _, origin) = self.verify(app, &account, true, None).await?;
         let checkpoint_id = format!("jinxxy:{account}:inventory");
         let mut page = parse_inventory(&first, 1)?;
-        let pages = page.pages;
+        let mut pages = page.pages;
         let page_limit = crate::verification::source_page_limit().map(|v| v as u64);
-        let observed_pages = page_limit.map_or(pages, |limit| pages.min(limit));
+        let mut observed_pages = page_limit.map_or(pages, |limit| pages.min(limit));
         if let Some(limit) = page_limit {
             job["verification"] =
                 json!({"pageLimit":limit,"sourcePages":{"inventory":0},"capped":false});
         }
-        let first_signature = hex::encode(Sha256::digest(
-            last(&first, "inventory_items")?.to_string().as_bytes(),
-        ));
+        // Seller edits and order never restart the listing; a membership change restarts it once.
+        let mut first_signature = membership_signature(&page);
+        let mut restarted = false;
         let mut observed = BTreeSet::new();
         let mut product_keys = BTreeSet::new();
         let mut completed_products = BTreeSet::new();
         let mut incomplete_products = BTreeSet::new();
         let mut unresolved_inventory = BTreeSet::new();
-        let mut unbound_inventory = false;
+        let mut unbound_inventory = BTreeSet::new();
         job["unresolvedInventoryIds"] = json!([]);
         let mut finished: BTreeSet<String> = self
             .inner
@@ -2180,19 +2213,22 @@ impl JinxxyService {
             });
             self.save_job(app, job, "running", None)?;
             'items: for entry in page.items {
-                ensure!(
-                    observed.insert(entry.inventory_id.clone()),
-                    "JINXXY_DUPLICATE_INVENTORY"
-                );
+                // A grant already seen this pass moved with the listing order.
+                if !observed.insert(entry.inventory_id.clone()) {
+                    continue;
+                }
                 self.check_cancelled(&id)?;
                 let ready_detail = if entry.product_id.is_none() {
-                    let data = self
-                        .page(
+                    let detail = self
+                        .asset_detail(
                             &client,
-                            origin.join(&format!("/my/inventory/{}", entry.inventory_id))?,
+                            &origin,
+                            &entry,
+                            &mut incomplete_products,
+                            &mut unresolved_inventory,
+                            &mut unbound_inventory,
                         )
                         .await?;
-                    let detail = sync_detail(&data, &entry, &mut incomplete_products, &mut unresolved_inventory, &mut unbound_inventory);
                     if detail.is_none() {
                         job["unresolvedInventoryIds"] = json!(unresolved_inventory);
                         metadata_completed += 1;
@@ -2238,13 +2274,17 @@ impl JinxxyService {
                     let detail = if let Some(detail) = ready_detail {
                         detail
                     } else {
-                        let data = self
-                            .page(
+                        let Some(detail) = self
+                            .asset_detail(
                                 &client,
-                                origin.join(&format!("/my/inventory/{}", entry.inventory_id))?,
+                                &origin,
+                                &entry,
+                                &mut incomplete_products,
+                                &mut unresolved_inventory,
+                                &mut unbound_inventory,
                             )
-                            .await?;
-                        let Some(detail) = sync_detail(&data, &entry, &mut incomplete_products, &mut unresolved_inventory, &mut unbound_inventory) else {
+                            .await?
+                        else {
                             job["unresolvedInventoryIds"] = json!(unresolved_inventory);
                             metadata_completed += 1;
                             continue 'items;
@@ -2313,7 +2353,11 @@ impl JinxxyService {
                             &detail.product_id,
                         )
                         .await
-                        .map_err(|error| fixed_error(&error));
+                        .map_err(|error| match fixed_error(&error).as_str() {
+                            // A cookie-less public page says nothing about the buyer session.
+                            "AUTH_REQUIRED" => "PUBLIC_METADATA_FAILED".to_owned(),
+                            code => code.to_owned(),
+                        });
                         public_presentations.insert(detail.product_id.clone(), presentation);
                     }
                 }
@@ -2437,25 +2481,44 @@ impl JinxxyService {
                 job["progress"]["products"] = json!(count);
                 self.save_job(app, job, "running", None)?;
             }
-            if page.page >= observed_pages {
-                break;
-            }
             self.check_cancelled(&id)?;
-            let next = page.page + 1;
-            let data = self.page(&client, inventory_page_at(&origin, next)).await?;
-            page = parse_inventory(&data, next)?;
-            ensure!(page.pages == pages, "JINXXY_SCOPE_CHANGED");
+            if page.page >= observed_pages {
+                let data = self.page(&client, inventory_page_at(&origin, 1)).await?;
+                page = parse_inventory(&data, 1)?;
+                if membership_signature(&page) == first_signature {
+                    break;
+                }
+            } else {
+                let next = page.page + 1;
+                let data = self.page(&client, inventory_page_at(&origin, next)).await?;
+                let resized = last(&data, "inventory_items")?["page_count"]
+                    .as_u64()
+                    .is_some_and(|total| total != pages);
+                if !resized {
+                    page = parse_inventory(&data, next)?;
+                    continue;
+                }
+                self.check_cancelled(&id)?;
+                let data = self.page(&client, inventory_page_at(&origin, 1)).await?;
+                page = parse_inventory(&data, 1)?;
+            }
+            // Grant membership changed during the pass: read the whole listing once more.
+            // Published grants stay finished; everything else is observed again.
+            ensure!(!restarted, "JINXXY_SCOPE_CHANGED");
+            restarted = true;
+            first_signature = membership_signature(&page);
+            pages = page.pages;
+            observed_pages = page_limit.map_or(pages, |limit| pages.min(limit));
+            observed.clear();
+            product_keys.clear();
+            completed_products.clear();
+            incomplete_products.clear();
+            unresolved_inventory.clear();
+            unbound_inventory.clear();
+            job["unresolvedInventoryIds"] = json!([]);
+            count = 0;
+            metadata_completed = 0;
         }
-        self.check_cancelled(&id)?;
-        let final_first = self.page(&client, inventory_page_at(&origin, 1)).await?;
-        ensure!(
-            hex::encode(Sha256::digest(
-                last(&final_first, "inventory_items")?
-                    .to_string()
-                    .as_bytes()
-            )) == first_signature,
-            "JINXXY_SCOPE_CHANGED"
-        );
         if observed_pages != pages {
             // Do not turn a bounded verification into authoritative membership.
             // Every grant on the observed pages has already finished enrichment.
@@ -2463,17 +2526,19 @@ impl JinxxyService {
             self.save_job(app, job, "running", None)?;
             anyhow::bail!("VERIFICATION_PAGE_LIMIT");
         }
-        validate_selected_inventory(job, &product_keys)?;
+        let missing = missing_selected(job, &product_keys)?;
         // Only the verified listing closure certifies whole-product membership.
         // Each product's current owned grants change atomically, with cancellation
         // checked in the same expected-row transaction as the certification.
+        // A grant published before a restart counts only if the closing pass listed it.
+        let listed: BTreeSet<String> = finished.intersection(&observed).cloned().collect();
         for product in &completed_products {
-            if unbound_inventory || incomplete_products.contains(product) { continue; }
+            if !unbound_inventory.is_empty() || incomplete_products.contains(product) { continue; }
             self.certify_product_membership(
                 job,
                 &account,
                 &format!("jinxxy:{product}"),
-                &finished,
+                &listed,
             )?;
             let _ = app.emit(
                 "nna:changed",
@@ -2487,7 +2552,13 @@ impl JinxxyService {
         job["progress"]["stage"] = json!("finalizing");
         self.save_job(app, job, "running", None)?;
         self.check_cancelled(&id)?;
-        ensure!(incomplete_products.is_empty() && !unbound_inventory, "JINXXY_MANIFEST_INCOMPLETE");
+        // Assets Jinxxy answered about individually keep their previous snapshot and
+        // uncertified membership; they do not fail the job.
+        let incomplete =
+            incomplete_assets(job, &incomplete_products, &unbound_inventory, &missing);
+        if incomplete > 0 {
+            job["progress"]["incompleteProducts"] = json!(incomplete);
+        }
         self.save_job(app, job, "completed", None)
     }
     fn certify_product_membership(
@@ -2558,6 +2629,15 @@ impl JinxxyService {
         }
         result
     }
+    /// One file's detail page or download capability answering a sign-in is no account-wide
+    /// evidence; the next ticket verifies the account's inventory again instead.
+    fn file_answer(&self, account: &str, error: anyhow::Error) -> anyhow::Error {
+        if fixed_error(&error) != "AUTH_REQUIRED" {
+            return error;
+        }
+        self.clear_downloads(account, None);
+        anyhow::anyhow!("DOWNLOAD_RESOLVER_FAILED")
+    }
     async fn cached_download_ticket(
         &self,
         app: &AppHandle,
@@ -2603,7 +2683,8 @@ impl JinxxyService {
                         .join(&format!("/my/inventory/{inventory}"))
                         .unwrap(),
                 )
-                .await?;
+                .await
+                .map_err(|error| self.file_answer(account, error))?;
             let detail = parse_detail(&data, &inventory, Some(product))?;
             let record = self.account(account)?;
             ensure!(
@@ -2673,7 +2754,8 @@ impl JinxxyService {
                 .inner
                 .http
                 .post_json(&metadata_client, &session.origin, &request)
-                .await?;
+                .await
+                .map_err(|error| self.file_answer(account, error))?;
             let ticket = compiled_capability(&response)?.ticket().await?;
             ensure!(
                 bound_account(&self.account(account)?) == Some(session.identity.as_str()),
@@ -2692,6 +2774,7 @@ impl JinxxyService {
             )
             .await?;
         let url = resolved_location(
+            response.url(),
             response.status(),
             response
                 .headers()
@@ -2717,15 +2800,16 @@ pub fn validate_download_response(
 ) -> Result<()> {
     ensure!(
         expected_origin.map_or_else(
-            || file_destination(response.url()),
+            || super::http::download_destination(StoreProvider::Jinxxy, response.url()),
             |origin| compiled_destination(response.url())
                 && response.url().origin() == origin.origin()
         ),
         "UNSAFE_DOWNLOAD_URL"
     );
     match response.status().as_u16() {
-        401 => anyhow::bail!("AUTH_REQUIRED"),
-        403 => anyhow::bail!("SIGNED_LINK_EXPIRED"),
+        // A signed file link or compiled-download token belongs to one file, never the
+        // buyer session; a fresh ticket replaces it.
+        401 | 403 => anyhow::bail!("SIGNED_LINK_EXPIRED"),
         404 | 410 => anyhow::bail!("FILE_UNAVAILABLE"),
         429 => anyhow::bail!("RATE_LIMITED"),
         500..=599 => anyhow::bail!("DOWNLOAD_RESOLVER_FAILED"),
@@ -2761,7 +2845,7 @@ mod tests {
         let healthy_data = [json!({"inventory_item":{"id":healthy.inventory_id,"item":{"id":healthy.product_id,"files":[file]}}})];
         let mut incomplete = BTreeSet::new();
         let mut unresolved = BTreeSet::new();
-        let mut unbound = false;
+        let mut unbound = BTreeSet::new();
         assert!(sync_detail(&malformed_data, &malformed, &mut incomplete, &mut unresolved, &mut unbound).is_none());
         let detail = sync_detail(&healthy_data, &healthy, &mut incomplete, &mut unresolved, &mut unbound).unwrap();
         let mut batch = crate::booth::RecordBatch::new(&catalogue);
@@ -2770,14 +2854,121 @@ mod tests {
         assert!(incomplete.contains("1234567890123456711"));
         assert!(!incomplete.contains("1234567890123456712"));
         assert!(unresolved.contains("1234567890123456701"));
-        assert!(!unbound);
+        assert!(unbound.is_empty());
         assert!(catalogue.related("acquisition", "jinxxy:1234567890123456711").unwrap().is_empty());
         assert_eq!(catalogue.related("acquisition", "jinxxy:1234567890123456712").unwrap().len(), 1);
         let unknown = entry("1234567890123456701", None);
         assert!(sync_detail(&malformed_data, &unknown, &mut incomplete, &mut unresolved, &mut unbound).is_none());
-        assert!(unbound); // an unbound failed grant blocks every membership certification
+        // An unbound failed grant blocks every membership certification.
+        assert_eq!(unbound, BTreeSet::from(["1234567890123456701".to_owned()]));
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn one_assets_definitive_answer_leaves_it_unresolved_but_outages_still_fail_the_job() {
+        for code in [
+            "AUTH_REQUIRED",
+            "PERMISSION_DENIED",
+            "UNSAFE_REDIRECT",
+            "JINXXY_SOURCE_UNAVAILABLE",
+            "METADATA_TOO_LARGE",
+            "METADATA_ENCODING",
+            "JINXXY_METADATA_TOO_LARGE",
+            "JINXXY_TRANSPORT_UNSUPPORTED",
+            "JINXXY_SOURCE_UNSUPPORTED",
+        ] {
+            assert!(asset_answer(&anyhow::anyhow!(code)), "{code}");
+        }
+        for code in [
+            "NETWORK_UNAVAILABLE",
+            "RATE_LIMITED",
+            "HTTP_CLIENT_FAILED",
+            "INVALID_METADATA_URL",
+            "CANCELLED",
+            "CONCURRENT_UPDATE",
+        ] {
+            assert!(!asset_answer(&anyhow::anyhow!(code)), "{code}");
+        }
+        let entry = |inventory: &str, product: Option<&str>| InventoryEntry {
+            inventory_id: inventory.into(), product_id: product.map(str::to_owned), order_id: None,
+            title: None, author: None, source_url: None, thumbnail_url: None,
+            imported_from: None, created_at: None, is_gift: false,
+        };
+        let (mut incomplete, mut unresolved, mut unbound) =
+            (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        for (inventory, product) in [
+            ("1234567890123456701", Some("1234567890123456711")),
+            ("1234567890123456702", Some("1234567890123456711")),
+            ("1234567890123456703", None),
+        ] {
+            unresolved_detail(&entry(inventory, product), &mut incomplete, &mut unresolved, &mut unbound);
+        }
+        assert_eq!(unresolved.len(), 3);
+        // Two grants of one product count once; a grant without a known product counts alone.
+        let sync = json!({"type":"jinxxySync"});
+        assert_eq!(incomplete_assets(&sync, &incomplete, &unbound, &BTreeSet::new()), 2);
+        assert_eq!(incomplete_assets(&sync, &BTreeSet::new(), &BTreeSet::new(), &BTreeSet::new()), 0);
+        // A selected update counts its selected products the listing no longer shows.
+        let update = json!({"type":"jinxxyUpdate","productIds":["jinxxy:1234567890123456711","jinxxy:1234567890123456712"]});
+        let missing = missing_selected(&update, &BTreeSet::from(["1234567890123456711".to_owned()])).unwrap();
+        assert_eq!(missing, BTreeSet::from(["1234567890123456712".to_owned()]));
+        assert_eq!(incomplete_assets(&update, &incomplete, &unbound, &missing), 2);
+    }
+
+    #[test]
+    fn listing_change_detection_counts_only_grant_membership() {
+        let listing = |rows: Value, pages: u64| {
+            parse_inventory(&[json!({"inventory_items":{"page":1,"page_count":pages,"payload":rows}})], 1).unwrap()
+        };
+        let first = json!({"id":INVENTORY,"created_at":"2026-01-01T00:00:00Z","item":{"id":PRODUCT,"name":"Authored title","url":"authored","base_price":1000,"currency_code":"USD","description":"Authored description","cover":{"url":"https://jinxxy-c.jinxxy-cdn.com/authored.png"},"user":{"username":"authored-maker"}}});
+        let second = json!({"id":"1234567890123456790","item":{"id":"1234567890123456791"}});
+        let base = membership_signature(&listing(json!([first.clone(), second.clone()]), 2));
+        // Seller edits and a new order are not membership changes.
+        let mut edited = first.clone();
+        edited["item"]["name"] = json!("Renamed by the seller");
+        edited["item"]["url"] = json!("renamed-slug");
+        edited["item"]["base_price"] = json!(2500);
+        edited["item"]["description"] = json!("Rewritten description");
+        edited["item"]["cover"]["url"] = json!("https://jinxxy-c.jinxxy-cdn.com/replaced.png");
+        edited["item"]["user"]["username"] = json!("renamed-maker");
+        assert_eq!(membership_signature(&listing(json!([second.clone(), edited]), 2)), base);
+        // A new or removed grant, a rebound product or a new page count is one.
+        let third = json!({"id":"1234567890123456792","item":{"id":"1234567890123456793"}});
+        assert_ne!(membership_signature(&listing(json!([first.clone(), second.clone(), third]), 2)), base);
+        assert_ne!(membership_signature(&listing(json!([first.clone()]), 2)), base);
+        let mut rebound = second.clone();
+        rebound["item"]["id"] = json!("1234567890123456799");
+        assert_ne!(membership_signature(&listing(json!([first.clone(), rebound]), 2)), base);
+        assert_ne!(membership_signature(&listing(json!([first, second]), 3)), base);
+    }
+
+    #[test]
+    fn sign_in_signal_keeps_the_protected_session_and_only_marks_the_account() {
+        let fixture = WorkerFixture::new();
+        let service = fixture.service();
+        let catalogue = service.inner.catalogue.clone();
+        assert!(catalogue.library_root().is_some());
+        let account = "d0140000-0000-4000-8000-000000000001";
+        let record = json!({"id":account,"store":"Jinxxy","status":"connected","state":"connected","identityVerified":true,"identityHash":"authored-identity"});
+        let snapshot = session::profile_path(&catalogue.device_dir(), StoreProvider::Jinxxy, account)
+            .unwrap()
+            .join("session.bin");
+        std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        std::fs::write(&snapshot, b"authored protected snapshot").unwrap();
+        for kind in ["jinxxySync", "jinxxyUpdate"] {
+            catalogue.put("account", account, record.clone()).unwrap();
+            let mut job = json!({"id":kind,"type":kind,"store":"Jinxxy","accountId":account,"state":"running"});
+            catalogue.put("job", kind, job.clone()).unwrap();
+            service.finish_job(&mut job, "needsAction", Some("AUTH_REQUIRED")).unwrap();
+            assert_eq!(std::fs::read(&snapshot).unwrap(), b"authored protected snapshot");
+            let expired = catalogue.get("account", account).unwrap().unwrap();
+            assert_eq!((&expired["status"], &expired["state"]), (&json!("expired"), &json!("expired")));
+            assert_eq!((&expired["identityHash"], &expired["identityVerified"]), (&record["identityHash"], &json!(true)));
+        }
+        drop(catalogue);
+        drop(service);
+        fixture.finish();
     }
 
     #[test]
@@ -2857,7 +3048,7 @@ mod tests {
         let healthy_inventory = "1234567890123456702";
         let partial_product = "1234567890123456711";
         let healthy_product = "1234567890123456712";
-        catalogue.put("account", account, json!({"id":account,"store":"Jinxxy"})).unwrap();
+        catalogue.put("account", account, json!({"id":account,"store":"Jinxxy","status":"connected","state":"connected"})).unwrap();
         let partial_entitlement = format!("jinxxy:{account}:{partial_inventory}");
         catalogue.put("entitlement", &partial_entitlement, json!({"id":partial_entitlement,"accountId":account,"productId":format!("jinxxy:{partial_product}"),"inventoryId":partial_inventory,"source":"library","fileIds":["retained-file"],"manifestComplete":false})).unwrap();
         let partial = parse_detail(&[json!({"inventory_item":{"id":partial_inventory,"item":{"id":partial_product,"name":"Authored incomplete","files":[]}}})], partial_inventory, Some(partial_product)).unwrap();
@@ -2875,10 +3066,21 @@ mod tests {
         service.certify_product_membership(&job, account, &format!("jinxxy:{healthy_product}"), &BTreeSet::from([healthy_inventory.to_owned()])).unwrap();
         assert_eq!(catalogue.get("entitlement", &format!("jinxxy:{account}:{healthy_inventory}")).unwrap().unwrap()["manifestComplete"], true);
         assert_eq!(catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap()["manifestComplete"], false);
-        service.finish_job(&mut job, "needsAction", Some("JINXXY_MANIFEST_INCOMPLETE")).unwrap();
-        assert_eq!(job["state"], "needsAction");
+        // The partial grant no longer holds every sync at needs-action; the job completes and counts it.
+        let incomplete = incomplete_assets(&job, &BTreeSet::from([partial_product.to_owned()]), &BTreeSet::new(), &BTreeSet::new());
+        job["progress"] = json!({"stage":"finalizing","incompleteProducts":incomplete});
+        service.finish_job(&mut job, "completed", None).unwrap();
+        assert_eq!((&job["state"], &job["errorCode"]), (&json!("completed"), &Value::Null));
+        assert_eq!(job["progress"]["incompleteProducts"], 1);
+        let stored = catalogue.get("job", "authored-partial-job").unwrap().unwrap();
+        assert_eq!((&stored["state"], &stored["progress"]["incompleteProducts"]), (&json!("completed"), &json!(1)));
+        let account_row = catalogue.get("account", account).unwrap().unwrap();
+        assert_eq!((&account_row["status"], &account_row["syncState"]), (&json!("connected"), &json!("complete")));
+        let partial_grant = catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap();
+        assert_eq!((&partial_grant["manifestComplete"], &partial_grant["fileIds"]), (&json!(false), &json!(["retained-file"])));
         assert_eq!(catalogue.related("acquisition", &format!("jinxxy:{healthy_product}")).unwrap().len(), 1);
-        assert_eq!(catalogue.get("source_coverage", &format!("jinxxy:{account}:inventory")).unwrap().unwrap()["coverageComplete"], false);
+        // The listing closed, so its coverage completes; the asset itself stays uncertified.
+        assert_eq!(catalogue.get("source_coverage", &format!("jinxxy:{account}:inventory")).unwrap().unwrap()["coverageComplete"], true);
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();
@@ -3217,6 +3419,16 @@ mod tests {
             "<nav><a href='https://other.example/authored_buyer'>个人资料</a></nav>"
         )
         .is_err());
+        // Any Jinxxy host may carry the link; the route is always read from the apex.
+        for host in ["ja.jinxxy.com", "www.jinxxy.com", "app.jinxxy.com"] {
+            assert_eq!(
+                protected_profile_route(&format!(
+                    "<nav><a href='https://{host}/authored_buyer'>Profile</a></nav>"
+                ))
+                .unwrap(),
+                profile
+            );
+        }
         assert!(!serde_json::to_string(&data)
             .unwrap()
             .contains("AUTHORED_PRIVATE"));
@@ -3231,7 +3443,7 @@ mod tests {
         for href in [
             "https://other.example/authored_buyer",
             "https://zh.jinxxy.com.example/authored_buyer",
-            "https://ja.jinxxy.com/authored_buyer",
+            "https://evil-jinxxy.com/authored_buyer",
             "https://127.0.0.1/authored_buyer",
             "http://zh.jinxxy.com/authored_buyer",
             "https://zh.jinxxy.com:444/authored_buyer",
@@ -3264,6 +3476,7 @@ mod tests {
             inventory_page_at(&localized, 2).as_str(),
             "https://zh.jinxxy.com/my/inventory?page=2"
         );
+        // The English page may be served from any Jinxxy host, not only the apex.
         for host in [
             "jinxxy.com",
             "www.jinxxy.com",
@@ -3273,15 +3486,14 @@ mod tests {
             "fr.jinxxy.com",
             "zh.jinxxy.com",
             "ko.jinxxy.com",
+            "other.jinxxy.com",
         ] {
             let page = Url::parse(&format!("https://{host}/my/inventory?page=1")).unwrap();
             assert_eq!(native_origin(&page).unwrap().host_str(), Some(host));
-            assert_eq!(english_origin(&page).is_ok(), host == "jinxxy.com");
         }
-        assert_eq!(english_origin(&inventory_page_at(&apex, 1)).unwrap(), apex);
+        assert_eq!(native_origin(&inventory_page_at(&apex, 1)).unwrap(), apex);
         for invalid in [
-            "https://other.jinxxy.com/",
-            "https://api.jinxxy.com/",
+            "https://evil-jinxxy.com/",
             "https://zh.jinxxy.com.example/",
             "https://127.0.0.1/",
             "http://zh.jinxxy.com/",
@@ -3289,7 +3501,6 @@ mod tests {
             "https://zh.jinxxy.com:444/",
         ] {
             assert!(native_origin(&Url::parse(invalid).unwrap()).is_none());
-            assert!(english_origin(&Url::parse(invalid).unwrap()).is_err());
         }
         use reqwest::cookie::CookieStore;
         let jar = reqwest::cookie::Jar::default();
@@ -3364,21 +3575,95 @@ mod tests {
         assert!(!serialized.contains("paidPrice"));
     }
     #[test]
-    fn head_resolution_retains_get_capability_only_for_proven_exact_file_host() {
-        let location =
-            format!("https://{FILE_HOST}/authored/file.zip?X-Amz-Signature=authored-only");
-        let url = resolved_location(reqwest::StatusCode::FOUND, Some(&location)).unwrap();
-        assert_eq!(url.host_str(), Some(FILE_HOST));
-        assert!(url.query().is_some());
-        assert!(resolved_location(reqwest::StatusCode::FORBIDDEN, Some(&location)).is_err());
+    fn head_resolution_keeps_the_signed_location_on_any_public_https_host() {
+        let endpoint = inventory_file_endpoint(INVENTORY, FILE).unwrap();
+        let found = reqwest::StatusCode::FOUND;
         for location in [
-            format!("https://other.r2.cloudflarestorage.com/file.zip"),
-            format!("https://{FILE_HOST}.example/file.zip"),
-            format!("http://{FILE_HOST}/file.zip"),
-            format!("https://user@{FILE_HOST}/file.zip"),
+            "https://jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com/authored/file.zip?X-Amz-Signature=authored-only",
+            "https://other.r2.cloudflarestorage.com/file.zip?X-Amz-Signature=authored-only",
+            "https://authored-cdn.example/file.zip?signature=authored-only",
         ] {
-            assert!(resolved_location(reqwest::StatusCode::FOUND, Some(&location)).is_err());
+            let url = resolved_location(&endpoint, found, Some(location)).unwrap();
+            assert_eq!(url.as_str(), location);
         }
+        for status in [301, 303, 307, 308] {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            assert!(resolved_location(&endpoint, status, Some("https://authored-cdn.example/file.zip")).is_ok());
+        }
+        assert!(resolved_location(&endpoint, reqwest::StatusCode::FORBIDDEN, Some("https://authored-cdn.example/file.zip")).is_err());
+        assert!(resolved_location(&endpoint, reqwest::StatusCode::OK, None).is_err());
+        assert!(resolved_location(&endpoint, found, None).is_err());
+        for location in [
+            "http://authored-cdn.example/file.zip",
+            "https://user@authored-cdn.example/file.zip",
+            "https://127.0.0.1/file.zip",
+            "https://10.0.0.1/file.zip",
+            "https://localhost/file.zip",
+            "https://jinxxy.com/login?redirect=%2Fmy%2Finventory",
+            "/login",
+        ] {
+            assert!(resolved_location(&endpoint, found, Some(location)).is_err(), "{location}");
+        }
+    }
+    #[test]
+    fn one_files_sign_in_answer_or_expired_link_is_not_account_expiry() {
+        let path = std::env::temp_dir().join(format!("nna-jinxxy-file-answer-{}", uuid::Uuid::new_v4()));
+        let catalogue = Catalogue::open(&path).unwrap();
+        let service = JinxxyService::new(catalogue.clone()).unwrap();
+        let account = "d0140000-0000-4000-8000-000000000001";
+        service.inner.downloads.lock().unwrap().insert(
+            account.into(),
+            DownloadSession {
+                client: reqwest::Client::new(),
+                jar: Arc::new(reqwest::cookie::Jar::default()),
+                origin: Url::parse("https://jinxxy.com/").unwrap(),
+                identity: "authored-binding".into(),
+                verified_at: Instant::now(),
+                manifests: BTreeMap::new(),
+            },
+        );
+        let kept = service.file_answer(account, anyhow::anyhow!("NETWORK_UNAVAILABLE"));
+        assert_eq!(kept.to_string(), "NETWORK_UNAVAILABLE");
+        assert!(service.inner.downloads.lock().unwrap().contains_key(account));
+        let mapped = service.file_answer(account, anyhow::anyhow!("AUTH_REQUIRED"));
+        assert_eq!(mapped.to_string(), "DOWNLOAD_RESOLVER_FAILED");
+        // The next ticket verifies the account's inventory again, the account-wide evidence.
+        assert!(!service.inner.downloads.lock().unwrap().contains_key(account));
+        use reqwest::ResponseBuilderExt;
+        let response = |url: &str, status: u16| {
+            reqwest::Response::from(
+                tauri::http::Response::builder()
+                    .status(status)
+                    .url(Url::parse(url).unwrap())
+                    .body(Vec::<u8>::new())
+                    .unwrap(),
+            )
+        };
+        let signed = "https://authored-cdn.example/authored.zip?signature=authored-only";
+        assert!(validate_download_response(&response(signed, 200), None).is_ok());
+        for status in [401, 403] {
+            assert_eq!(
+                validate_download_response(&response(signed, status), None).unwrap_err().to_string(),
+                "SIGNED_LINK_EXPIRED"
+            );
+        }
+        for url in [
+            "https://jinxxy.com/login?redirect=%2Fmy%2Finventory",
+            "https://127.0.0.1/authored.zip",
+            "http://authored-cdn.example/authored.zip",
+        ] {
+            assert_eq!(
+                validate_download_response(&response(url, 200), None).unwrap_err().to_string(),
+                "UNSAFE_DOWNLOAD_URL"
+            );
+        }
+        // The compiled flow stays bound to the origin its token was issued for.
+        let issued = Url::parse("https://download.example/").unwrap();
+        assert!(validate_download_response(&response("https://download.example/compiled", 200), Some(&issued)).is_ok());
+        assert!(validate_download_response(&response(signed, 200), Some(&issued)).is_err());
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn flight_receipt_uses_unique_bound_product_gross_and_acquisition_precedence() {
@@ -3693,9 +3978,9 @@ mod tests {
             "fe80::1",
             "::ffff:127.0.0.1",
         ] {
-            assert!(!public_download_ip(address.parse().unwrap()));
+            assert!(!super::super::http::public_ip(address.parse().unwrap()));
         }
-        assert!(public_download_ip("8.8.8.8".parse().unwrap()));
+        assert!(super::super::http::public_ip("8.8.8.8".parse().unwrap()));
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -3999,17 +4284,23 @@ mod tests {
         // second grant. Prepared rows never change the prior visible snapshot.
         let prior_product = catalogue.get("product", &product_id).unwrap();
         let selected = json!({"type":"jinxxyUpdate","productIds":[product_id]});
-        assert!(validate_selected_inventory(&selected, &BTreeSet::new()).is_err());
-        assert!(
-            validate_selected_inventory(&selected, &BTreeSet::from([PRODUCT.to_owned()])).is_ok()
+        assert_eq!(
+            missing_selected(&selected, &BTreeSet::new()).unwrap(),
+            BTreeSet::from([PRODUCT.to_owned()])
         );
+        assert!(missing_selected(&selected, &BTreeSet::from([PRODUCT.to_owned()]))
+            .unwrap()
+            .is_empty());
         let mixed_selected =
             json!({"type":"jinxxyUpdate","productIds":[product_id,"jinxxy:1234567890123456791"]});
-        assert!(validate_selected_inventory(
-            &mixed_selected,
-            &BTreeSet::from([PRODUCT.to_owned()])
-        )
-        .is_err());
+        assert_eq!(
+            missing_selected(&mixed_selected, &BTreeSet::from([PRODUCT.to_owned()])).unwrap(),
+            BTreeSet::from(["1234567890123456791".to_owned()])
+        );
+        for malformed in [json!([]), json!(null), json!(["booth:1"]), json!([1])] {
+            let job = json!({"type":"jinxxyUpdate","productIds":malformed});
+            assert!(missing_selected(&job, &BTreeSet::new()).is_err());
+        }
         let second_inventory = "1234567890123456790";
         let first_row = json!({"inventory_item":{"id":INVENTORY,"item":{"id":PRODUCT,"name":"New grouped title","files":[{"id":FILE,"file_name":"one.txt","size":1}]}}});
         let second_row =

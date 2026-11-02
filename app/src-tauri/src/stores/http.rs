@@ -26,6 +26,63 @@ pub fn metadata_destination(provider: StoreProvider, url: &Url) -> bool {
         })
 }
 
+/// Any public HTTPS host. Stores move pages, files and downloads between hosts and CDNs
+/// without notice; local and private addresses stay excluded. Store cookies still reach
+/// only the store's own domains (the jar matches by domain), and reqwest drops Cookie and
+/// Authorization headers on a cross-host redirect.
+pub fn public_https(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && match url.host() {
+            Some(url::Host::Ipv4(ip)) => public_ip(ip.into()),
+            Some(url::Host::Ipv6(ip)) => public_ip(ip.into()),
+            Some(url::Host::Domain(host)) => {
+                host.contains('.')
+                    && !host.ends_with('.')
+                    && !host.ends_with(".localhost")
+                    && !host.ends_with(".local")
+                    && !host.ends_with(".internal")
+            }
+            None => false,
+        }
+}
+
+pub fn public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            !ip.is_private()
+                && !ip.is_loopback()
+                && !ip.is_link_local()
+                && !ip.is_broadcast()
+                && !ip.is_documentation()
+                && octets[0] != 0
+                && octets[0] < 224
+                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
+                && !(octets[0] == 198 && matches!(octets[1], 18 | 19))
+                && !(octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return public_ip(mapped.into());
+            }
+            let segments = ip.segments();
+            // Native public unicast only; exclude documentation and transition ranges.
+            segments[0] & 0xe000 == 0x2000
+                && !(segments[0] == 0x2001 && segments[1] <= 0x1ff)
+                && !(segments[0] == 0x2001 && segments[1] == 0xdb8)
+                && segments[0] != 0x2002
+        }
+    }
+}
+
+/// A file reached from the store's own file link may sit on any public HTTPS host,
+/// but the store's sign-in page is never a file.
+pub fn download_destination(provider: StoreProvider, url: &Url) -> bool {
+    public_https(url) && !(metadata_destination(provider, url) && login_path(url))
+}
+
 fn login_path(url: &Url) -> bool {
     matches!(url.path(), "/login" | "/two-factor" | "/sign_in")
 }
@@ -77,26 +134,11 @@ fn build_provider_client(
         .redirect(if head {
             reqwest::redirect::Policy::none()
         } else {
-            reqwest::redirect::Policy::custom(move |attempt| {
+            // Session and download requests may follow any public HTTPS hop.
+            reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 8 {
-                    return attempt.error("REDIRECT_LIMIT");
-                }
-                let start = attempt.previous().first();
-                let download = start.is_some_and(|url| {
-                    !metadata_destination(provider, url)
-                        || (provider == StoreProvider::Gumroad
-                            && (url.path().starts_with("/r/")
-                                || url.host_str() == Some("files.gumroad.com")))
-                });
-                if if download {
-                    if provider == StoreProvider::Gumroad {
-                        gumroad_file_destination(attempt.url())
-                    } else {
-                        resolver_destination(provider, attempt.url())
-                    }
-                } else {
-                    metadata_destination(provider, attempt.url())
-                } {
+                    attempt.error("REDIRECT_LIMIT")
+                } else if public_https(attempt.url()) {
                     attempt.follow()
                 } else {
                     attempt.error("UNSAFE_REDIRECT")
@@ -114,57 +156,9 @@ fn build_provider_client(
         .map_err(|_| anyhow::anyhow!("HTTP_CLIENT_FAILED"))
 }
 
-/// This exact first-party file host is the observed destination of bound Gumroad controls.
+/// Gumroad's bound file controls and their redirects; see download_destination.
 pub fn gumroad_file_destination(url: &Url) -> bool {
-    url.scheme() == "https"
-        && url.host_str() == Some("files.gumroad.com")
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.port_or_known_default() == Some(443)
-        && url.fragment().is_none()
-        && url.path() != "/"
-}
-
-pub fn resolver_destination(provider: StoreProvider, url: &Url) -> bool {
-    if metadata_destination(provider, url) {
-        return true;
-    }
-    if provider == StoreProvider::Jinxxy
-        && url.scheme() == "https"
-        && url.host_str()
-            == Some("jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com")
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.port_or_known_default() == Some(443)
-        && url.fragment().is_none()
-        && url.path() != "/"
-    {
-        return true;
-    }
-    if provider != StoreProvider::Jinxxy
-        || url.scheme() != "https"
-        || url.host_str() != Some("api.jinxxy.com")
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port_or_known_default() != Some(443)
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return false;
-    }
-    let parts: Vec<_> = url.path().split('/').collect();
-    let id = |value: &str| {
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    };
-    parts.len() == 7
-        && parts[1..4] == ["v1", "downloads", "inventory"]
-        && parts[5] == "files"
-        && id(parts[4])
-        && id(parts[6])
+    download_destination(StoreProvider::Gumroad, url)
 }
 
 fn jinxxy_graphql_url(origin: &Url) -> Result<Url> {
@@ -329,11 +323,7 @@ impl MetadataHttp {
             {
                 return true;
             }
-            if resolver {
-                resolver_destination(self.provider, url)
-            } else {
-                metadata_destination(self.provider, url)
-            }
+            metadata_destination(self.provider, url)
         };
         ensure!(destination(&url), "INVALID_METADATA_URL");
         for attempt in 0..ATTEMPTS {
@@ -382,14 +372,17 @@ impl MetadataHttp {
                     metrics.client_errors.fetch_add(1, Ordering::Relaxed);
                 }
             });
-            ensure!(destination(response.url()), "UNSAFE_REDIRECT");
-            if login_path(response.url())
+            let store = destination(response.url());
+            ensure!(store || public_https(response.url()), "UNSAFE_REDIRECT");
+            // Only the store's own answer can say that its session is signed out.
+            if (store
+                && (login_path(response.url())
+                    || (!resolver && response.status() == StatusCode::UNAUTHORIZED)))
                 || (resolver && resolver_login_redirect(self.provider, &response))
-                || (!resolver && response.status() == StatusCode::UNAUTHORIZED)
             {
                 bail!("AUTH_REQUIRED");
             }
-            if response.status() == StatusCode::UNAUTHORIZED {
+            if resolver && response.status() == StatusCode::UNAUTHORIZED {
                 // A single file capability can be denied independently of the
                 // buyer session. Only account metadata/login evidence expires it.
                 bail!("DOWNLOAD_RESOLVER_FAILED");
@@ -540,13 +533,7 @@ impl MetadataHttp {
 
     /// Header-only capability resolution uses the same provider request-start spacing.
     pub async fn resolve_head(&self, client: &Client, url: Url) -> Result<Response> {
-        ensure!(
-            metadata_destination(self.provider, &url)
-                || (self.provider == StoreProvider::Jinxxy
-                    && url.host_str() == Some("api.jinxxy.com")
-                    && resolver_destination(self.provider, &url)),
-            "INVALID_METADATA_URL"
-        );
+        ensure!(metadata_destination(self.provider, &url), "INVALID_METADATA_URL");
         let _permit = self
             .metadata
             .acquire()
@@ -818,11 +805,11 @@ mod tests {
             StoreProvider::Gumroad,
             &url("https://authored.gumroad.com/l/fixture.json")
         ));
-        assert!(metadata_destination(
-            StoreProvider::Jinxxy,
-            &url("https://zh.jinxxy.com/my/inventory")
-        ));
-        for host in super::super::session::JINXXY_HOSTS {
+        for host in super::super::session::JINXXY_HOSTS
+            .iter()
+            .copied()
+            .chain(["other.jinxxy.com", "api.jinxxy.com"])
+        {
             assert!(metadata_destination(
                 StoreProvider::Jinxxy,
                 &Url::parse(&format!("https://{host}/my/inventory")).unwrap()
@@ -833,7 +820,7 @@ mod tests {
             url("https://zh.jinxxy.com/graphql")
         );
         for value in [
-            "https://other.jinxxy.com/",
+            "https://evil-jinxxy.com/",
             "https://gumroad.com/",
             "https://zh.jinxxy.com/my/inventory",
             "https://zh.jinxxy.com/?redirect=authored",
@@ -842,7 +829,7 @@ mod tests {
         }
         for value in [
             "https://zh.jinxxy.com.evil.test/my/inventory",
-            "https://other.jinxxy.com/my/inventory",
+            "https://evil-jinxxy.com/my/inventory",
             "http://zh.jinxxy.com/login",
             "https://secret@zh.jinxxy.com/login",
             "https://zh.jinxxy.com:8443/login",
@@ -861,25 +848,51 @@ mod tests {
         ] {
             assert!(!metadata_destination(StoreProvider::Gumroad, &url(value)));
         }
-        let signed = url("https://jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com/authored.zip?authored-signature=value");
-        assert!(gumroad_file_destination(&url(
-            "https://files.gumroad.com/authored/file.html?authored-capability=value"
-        )));
+    }
+    #[test]
+    fn redirects_and_files_reach_any_public_https_host_but_not_local_or_sign_in_pages() {
+        let url = |value| Url::parse(value).unwrap();
         for value in [
-            "https://gumroad.com/authored.zip",
-            "https://other.gumroad.com/authored.zip",
-            "https://files.gumroad.com.evil.test/authored.zip",
-            "http://files.gumroad.com/authored.zip",
-            "https://files.gumroad.com/",
-            "https://secret@files.gumroad.com/authored.zip",
+            "https://files.gumroad.com/authored/file.html?authored-capability=value",
+            "https://jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com/authored.zip?authored-signature=value",
+            "https://authored-cdn.example/",
+            "https://authored-cdn.example:8443/authored.zip",
+            "https://8.8.8.8/authored.zip",
+            "https://[2606:4700::1]/authored.zip",
         ] {
-            assert!(!gumroad_file_destination(&url(value)));
+            assert!(public_https(&url(value)), "{value}");
+            assert!(gumroad_file_destination(&url(value)), "{value}");
+            assert!(download_destination(StoreProvider::Jinxxy, &url(value)), "{value}");
         }
-        assert!(resolver_destination(StoreProvider::Jinxxy, &signed));
-        assert!(!metadata_destination(StoreProvider::Jinxxy, &signed));
-        assert!(!resolver_destination(StoreProvider::Gumroad, &signed));
-        for value in ["http://jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com/authored.zip", "https://other.r2.cloudflarestorage.com/authored.zip", "https://jinxxy-products.62bb56dad0a3633d04ee066263e8507d.r2.cloudflarestorage.com.evil.test/authored.zip"] {
-            assert!(!resolver_destination(StoreProvider::Jinxxy, &url(value)));
+        for value in [
+            "http://files.gumroad.com/authored.zip",
+            "ftp://authored-cdn.example/authored.zip",
+            "https://secret@files.gumroad.com/authored.zip",
+            "https://user:secret@authored-cdn.example/authored.zip",
+            "https://localhost/authored.zip",
+            "https://authored.localhost/authored.zip",
+            "https://nas.local/authored.zip",
+            "https://metadata.internal/authored.zip",
+            "https://intranet/authored.zip",
+            "https://127.0.0.1/authored.zip",
+            "https://10.0.0.1/authored.zip",
+            "https://192.168.1.1/authored.zip",
+            "https://169.254.169.254/authored.zip",
+            "https://[::1]/authored.zip",
+            "https://[fc00::1]/authored.zip",
+            "https://[::ffff:127.0.0.1]/authored.zip",
+        ] {
+            assert!(!public_https(&url(value)), "{value}");
+            assert!(!gumroad_file_destination(&url(value)), "{value}");
+            assert!(!download_destination(StoreProvider::Jinxxy, &url(value)), "{value}");
         }
+        // A redirect may pass through any public page, but a file is never the store's sign-in.
+        assert!(public_https(&url("https://gumroad.com/login")));
+        assert!(!gumroad_file_destination(&url("https://gumroad.com/login?next=%2Flibrary")));
+        assert!(!download_destination(
+            StoreProvider::Jinxxy,
+            &url("https://jinxxy.com/login?redirect=%2Fmy%2Finventory")
+        ));
+        assert!(!download_destination(StoreProvider::Jinxxy, &url("https://zh.jinxxy.com/sign_in")));
     }
 }

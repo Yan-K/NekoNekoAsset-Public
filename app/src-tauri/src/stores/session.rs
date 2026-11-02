@@ -24,8 +24,9 @@ pub const JINXXY_HOSTS: &[&str] = &[
     "ko.jinxxy.com",
 ];
 
+/// Jinxxy may add or move subdomains; its pages and cookies stay within jinxxy.com.
 pub fn jinxxy_host(host: &str) -> bool {
-    JINXXY_HOSTS.contains(&host)
+    host == "jinxxy.com" || host.ends_with(".jinxxy.com")
 }
 
 fn account_id(account: &str) -> Result<String> {
@@ -45,7 +46,7 @@ fn cookie_host(provider: StoreProvider, host: &str) -> bool {
     match provider {
         StoreProvider::Booth => host == "booth.pm" || host.ends_with(".booth.pm"),
         StoreProvider::Gumroad => host == "gumroad.com" || host.ends_with(".gumroad.com"),
-        StoreProvider::Jinxxy => jinxxy_host(host) || host == "api.jinxxy.com",
+        StoreProvider::Jinxxy => jinxxy_host(host),
     }
 }
 
@@ -360,26 +361,45 @@ const JINXXY_ENGLISH_PREFERENCE: &str =
 /// Change the documented language preference in this profile; auth cookies keep their scope.
 pub async fn jinxxy_english(window: WebviewWindow) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
-        let current = window
-            .url()
-            .map_err(|_| anyhow::anyhow!("AUTH_WINDOW_FAILED"))?;
-        ensure!(
-            secure(&current) && current.host_str().is_some_and(jinxxy_host),
-            "AUTH_REQUIRED"
-        );
-        // Use the site's own document.cookie mechanism: the Windows native
-        // Cookie::domain conversion strips the leading dot of parent domains.
-        window
-            .eval(&format!(
-                "document.cookie = {};",
-                serde_json::to_string(JINXXY_ENGLISH_PREFERENCE).unwrap()
-            ))
-            .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?;
+        let inventory = Url::parse("https://jinxxy.com/my/inventory").unwrap();
+        let jinxxy_page = || -> Result<Option<Url>> {
+            let url = window
+                .url()
+                .map_err(|_| anyhow::anyhow!("AUTH_WINDOW_FAILED"))?;
+            Ok((secure(&url) && url.host_str().is_some_and(jinxxy_host)).then_some(url))
+        };
+        let mut current = jinxxy_page()?;
+        if current.is_none() {
+            // A hidden window may still be loading or show another page, which says
+            // nothing about the session. Open the inventory and set the preference there.
+            window
+                .navigate(inventory.clone())
+                .map_err(|_| anyhow::anyhow!("AUTH_WINDOW_FAILED"))?;
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                current = jinxxy_page()?;
+                if current.is_some() {
+                    break;
+                }
+            }
+        }
+        let current = current.ok_or_else(|| anyhow::anyhow!("JINXXY_SOURCE_UNSUPPORTED"))?;
         let apex = Url::parse("https://jinxxy.com/").unwrap();
         let mut applied = false;
-        // eval dispatch is asynchronous; confirm only this public preference
-        // before snapshotting the jar. Never inspect or alter auth-cookie values.
-        for _ in 0..10 {
+        // Use the site's own document.cookie mechanism: the Windows native
+        // Cookie::domain conversion strips the leading dot of parent domains.
+        // eval dispatch is asynchronous and a page still loading can drop it, so it is
+        // repeated; confirm only this public preference before snapshotting the jar.
+        // Never inspect or alter auth-cookie values.
+        for attempt in 0..20 {
+            if attempt % 5 == 0 {
+                window
+                    .eval(&format!(
+                        "document.cookie = {};",
+                        serde_json::to_string(JINXXY_ENGLISH_PREFERENCE).unwrap()
+                    ))
+                    .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?;
+            }
             let cookies = window
                 .cookies_for_url(apex.clone())
                 .map_err(|_| anyhow::anyhow!("COOKIE_ACCESS_FAILED"))?;
@@ -396,7 +416,7 @@ pub async fn jinxxy_english(window: WebviewWindow) -> Result<()> {
         ensure!(applied, "JINXXY_SOURCE_UNSUPPORTED");
         if current.host_str() != Some("jinxxy.com") {
             window
-                .navigate(Url::parse("https://jinxxy.com/my/inventory").unwrap())
+                .navigate(inventory)
                 .map_err(|_| anyhow::anyhow!("AUTH_WINDOW_FAILED"))?;
         }
         Ok(())
@@ -466,20 +486,26 @@ mod tests {
     }
 
     #[test]
-    fn jinxxy_languages_use_exact_hosts_and_only_the_language_preference() {
-        for host in JINXXY_HOSTS {
+    fn jinxxy_hosts_cover_its_subdomains_and_set_only_the_language_preference() {
+        for host in JINXXY_HOSTS
+            .iter()
+            .copied()
+            .chain(["other.jinxxy.com", "jx.jinxxy.com"])
+        {
             assert!(navigation_allowed(
                 StoreProvider::Jinxxy,
                 &Url::parse(&format!("https://{host}/my/inventory")).unwrap()
             ));
-            assert!(cookie_host(StoreProvider::Jinxxy, host));
+            assert!(jinxxy_host(host) && cookie_host(StoreProvider::Jinxxy, host));
         }
+        assert!(cookie_host(StoreProvider::Jinxxy, "api.jinxxy.com"));
         for host in [
-            "other.jinxxy.com",
             "ja.jinxxy.com.evil.test",
-            "jx.jinxxy.com",
+            "evil-jinxxy.com",
+            "jinxxy.co",
+            "discord.com",
         ] {
-            assert!(!jinxxy_host(host));
+            assert!(!jinxxy_host(host) && !cookie_host(StoreProvider::Jinxxy, host));
         }
         let cookie = tauri::webview::Cookie::parse(JINXXY_ENGLISH_PREFERENCE).unwrap();
         assert_eq!((cookie.name(), cookie.value()), ("jx_locale", "en"));
