@@ -49,29 +49,19 @@ fn cookie_host(provider: StoreProvider, host: &str) -> bool {
     }
 }
 
-/// Proven login origins permit human authentication only; cookie extraction remains first-party.
+/// Sign-in may pass through any HTTPS provider, and providers add or rename their own hops
+/// (Google's accounts.youtube.com and country-domain cookie hops, X's api.x.com), so no provider
+/// host list is kept. The window has no IPC, refuses downloads and only the store's own cookies
+/// are read; the store's checkout, cart, download and receipt pages stay closed in it.
 pub fn navigation_allowed(provider: StoreProvider, url: &Url) -> bool {
-    if provider == StoreProvider::Jinxxy && url.host_str() == Some("api.jinxxy.com") {
+    let Some(url::Host::Domain(host)) = url.host().filter(|_| secure(url)) else {
         return false;
-    }
-    if !secure(url)
-        || !url.host_str().is_some_and(|host| {
-            cookie_host(provider, host)
-                || match provider {
-                    StoreProvider::Gumroad => matches!(
-                        host,
-                        "accounts.google.com" | "api.twitter.com" | "connect.stripe.com"
-                    ),
-                    StoreProvider::Jinxxy => host == "discord.com",
-                    StoreProvider::Booth => false,
-                }
-        })
-    {
-        return false;
-    }
-    !["/checkout", "/cart", "/download", "/r/", "/d/"]
-        .iter()
-        .any(|path| url.path().contains(path))
+    };
+    !cookie_host(provider, host)
+        || (!(provider == StoreProvider::Jinxxy && host == "api.jinxxy.com")
+            && !["/checkout", "/cart", "/download", "/r/", "/d/"]
+                .iter()
+                .any(|path| url.path().contains(path)))
 }
 
 pub fn profile_path(data_dir: &Path, provider: StoreProvider, account: &str) -> Result<PathBuf> {
@@ -216,7 +206,13 @@ pub async fn window(
         provider != StoreProvider::Booth,
         "LEGACY_BOOTH_SESSION_REQUIRED"
     );
-    ensure!(navigation_allowed(provider, &entry), "INVALID_AUTH_URL");
+    ensure!(
+        navigation_allowed(provider, &entry)
+            && entry
+                .host_str()
+                .is_some_and(|host| cookie_host(provider, host)),
+        "INVALID_AUTH_URL"
+    );
     let id = account_id(account)?;
     let label = format!("{}-auth-{id}", provider.key());
     if let Some(window) = app.get_webview_window(&label) {
@@ -504,82 +500,59 @@ mod tests {
     }
 
     #[test]
-    fn native_navigation_rejects_other_store_credentials_checkout_and_downloads() {
-        let url = |value| Url::parse(value).unwrap();
-        assert!(navigation_allowed(
-            StoreProvider::Gumroad,
-            &url("https://gumroad.com/library")
-        ));
-        assert!(navigation_allowed(
-            StoreProvider::Jinxxy,
-            &url("https://zh.jinxxy.com/login")
-        ));
-        assert!(cookie_host(StoreProvider::Jinxxy, "zh.jinxxy.com"));
-        assert!(!navigation_allowed(
-            StoreProvider::Gumroad,
-            &url("https://zh.jinxxy.com/login")
-        ));
-        for (provider, entry) in [
-            (
-                StoreProvider::Gumroad,
-                "https://accounts.google.com/o/oauth2/auth",
-            ),
-            (
-                StoreProvider::Gumroad,
-                "https://api.twitter.com/oauth/authenticate",
-            ),
-            (
-                StoreProvider::Gumroad,
-                "https://connect.stripe.com/oauth/authorize",
-            ),
-            (
-                StoreProvider::Jinxxy,
-                "https://discord.com/oauth2/authorize",
-            ),
+    fn native_sign_in_follows_provider_hops_but_not_store_purchases_or_downloads() {
+        let allowed = |provider, value| navigation_allowed(provider, &Url::parse(value).unwrap());
+        // The stores' provider choices and the hops they were observed or reported to take.
+        for value in [
+            "https://gumroad.com/login",
+            "https://accounts.google.com/v3/signin/identifier",
+            "https://accounts.youtube.com/accounts/SetSID",
+            "https://accounts.google.co.jp/accounts/SetSID",
+            "https://api.x.com/oauth/authenticate",
+            "https://connect.stripe.com/oauth/v2/authorize",
+            "https://gumroad.com/users/auth/google_oauth2/callback",
         ] {
-            let entry = url(entry);
-            assert!(navigation_allowed(provider, &entry));
-            assert!(!cookie_host(provider, entry.host_str().unwrap()));
-            assert!(!navigation_allowed(StoreProvider::Booth, &entry));
-            let other = if provider == StoreProvider::Gumroad {
-                StoreProvider::Jinxxy
-            } else {
-                StoreProvider::Gumroad
-            };
-            assert!(!navigation_allowed(other, &entry));
+            assert!(allowed(StoreProvider::Gumroad, value), "{value}");
         }
         for value in [
-            "https://jinxxy.com/my/lists",
-            "https://gumroad.com.evil.test/login",
+            "https://zh.jinxxy.com/login",
+            "https://discord.com/oauth2/authorize",
+            "https://jinxxy.com/connect/discord/callback",
+        ] {
+            assert!(allowed(StoreProvider::Jinxxy, value), "{value}");
+        }
+        // Only the store's own cookies are ever read from its window.
+        for host in ["accounts.google.com", "api.x.com", "zh.jinxxy.com"] {
+            assert!(!cookie_host(StoreProvider::Gumroad, host), "{host}");
+        }
+        for host in ["discord.com", "gumroad.com"] {
+            assert!(!cookie_host(StoreProvider::Jinxxy, host), "{host}");
+        }
+        for value in [
             "http://gumroad.com/login",
             "https://user:secret@gumroad.com/login",
             "https://gumroad.com:8443/login",
             "https://gumroad.com/checkout",
             "https://gumroad.com/r/authored-token",
-            "https://accounts.google.com.evil.test/o/oauth2/auth",
-            "https://unproved.accounts.google.com/o/oauth2/auth",
-            "https://user:secret@accounts.google.com/o/oauth2/auth",
+            "https://gumroad.com/d/authored-capability",
+            "https://app.gumroad.com/download/fixture.zip",
             "http://accounts.google.com/o/oauth2/auth",
+            "https://user:secret@accounts.google.com/o/oauth2/auth",
             "https://accounts.google.com:8443/o/oauth2/auth",
-            "https://accounts.google.com/download/fixture.zip",
             "https://127.0.0.1/login",
             "https://10.0.0.1/login",
         ] {
-            assert!(!navigation_allowed(StoreProvider::Gumroad, &url(value)));
+            assert!(!allowed(StoreProvider::Gumroad, value), "{value}");
         }
         for value in [
-            "https://discord.com.evil.test/oauth2/authorize",
-            "https://unproved.discord.com/login",
             "https://api.jinxxy.com/login",
-            "https://discord.com/download/fixture.zip",
-            "https://zh.jinxxy.com.evil.test/login",
-            "https://other.jinxxy.com/login",
+            "https://zh.jinxxy.com/download/fixture.zip",
             "https://secret@zh.jinxxy.com/login",
             "http://zh.jinxxy.com/login",
             "https://zh.jinxxy.com:8443/login",
-            "https://zh.jinxxy.com/download/fixture.zip",
+            "discord://-/channels/@me",
         ] {
-            assert!(!navigation_allowed(StoreProvider::Jinxxy, &url(value)));
+            assert!(!allowed(StoreProvider::Jinxxy, value), "{value}");
         }
     }
 }

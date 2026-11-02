@@ -22,13 +22,17 @@ pub fn secure(url: &Url) -> bool {
 pub fn booth_host(host: &str) -> bool {
     host == "booth.pm" || host.ends_with(".booth.pm")
 }
+/// Sign-in passes through pixiv and whichever provider the human picks, and providers add or
+/// rename their own hops (Google's accounts.youtube.com and country-domain cookie hops, X's
+/// api.x.com), so no provider host list is kept. The login window has no IPC, refuses downloads
+/// and only BOOTH cookies are read from it; BOOTH's own item, download, gift and checkout pages
+/// stay closed there.
 pub fn auth_navigation(url: &Url) -> bool {
-    secure(url)
-        && url
-            .host_str()
-            .is_some_and(|h| booth_host(h) || h == "pixiv.net" || h.ends_with(".pixiv.net")
-                || matches!(h, "accounts.google.com" | "appleid.apple.com" | "api.twitter.com"))
-        && ![
+    let Some(url::Host::Domain(host)) = url.host().filter(|_| secure(url)) else {
+        return false;
+    };
+    !booth_host(host)
+        || ![
             "/downloadables/",
             "/gifts/",
             "/items/",
@@ -237,29 +241,43 @@ pub fn short(value: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn observed_social_login_origins_do_not_expand_download_or_metadata_scope() {
+    fn sign_in_follows_provider_hops_without_expanding_download_or_purchase_scope() {
         for value in [
-            "https://accounts.google.com/o/oauth2/v2/auth",
-            "https://accounts.google.com/v3/signin/identifier",
+            "https://accounts.booth.pm/users/sign_in",
+            "https://oauth.secure.pixiv.net/v2/auth/authorize",
+            "https://accounts.pixiv.net/pigya/proxy/authorize",
+            "https://booth.pm/users/auth/pixiv/callback",
+        ] {
+            assert!(auth_navigation(&Url::parse(value).unwrap()), "{value}");
+        }
+        // pixiv's provider choices and the hops they were observed or reported to take.
+        for value in [
             "https://appleid.apple.com/auth/authorize",
-            "https://api.twitter.com/oauth/authorize",
+            "https://accounts.google.com/v3/signin/identifier",
+            "https://accounts.youtube.com/accounts/SetSID",
+            "https://accounts.google.com.tw/accounts/SetSID",
+            "https://www.facebook.com/login.php",
+            "https://api.weibo.com/oauth2/authorize",
+            "https://api.x.com/oauth/authenticate",
         ] {
             let url = Url::parse(value).unwrap();
-            assert!(auth_navigation(&url));
+            assert!(auth_navigation(&url), "{value}");
             assert!(!download_destination(&url));
             assert!(!booth_host(url.host_str().unwrap()));
         }
         for value in [
             "http://accounts.google.com/o/oauth2/v2/auth",
-            "https://accounts.google.com.evil.invalid/o/oauth2/v2/auth",
-            "https://evil.accounts.google.com/o/oauth2/v2/auth",
             "https://accounts.google.com@evil.invalid/o/oauth2/v2/auth",
             "https://accounts.google.com:444/o/oauth2/v2/auth",
-            "https://appleid.apple.com.evil.invalid/auth/authorize",
-            "https://www.appleid.apple.com/auth/authorize",
-            "https://api.twitter.com.evil.invalid/oauth/authorize",
-            "https://x.com/oauth/authorize",
-            "https://accounts.google.com/downloadables/700001",
+            "https://127.0.0.1/login",
+            "https://[::1]/login",
+            "pixiv://account/login",
+            "https://booth.pm/ja/items/900001",
+            "https://synthetic.booth.pm/items/900001",
+            "https://booth.pm/downloadables/700001",
+            "https://accounts.booth.pm/gifts/700001",
+            "https://booth.pm/cart",
+            "https://checkout.booth.pm/checkout",
         ] {
             assert!(!auth_navigation(&Url::parse(value).unwrap()), "{value}");
         }
