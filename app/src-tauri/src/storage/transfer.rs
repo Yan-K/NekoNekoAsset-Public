@@ -101,6 +101,22 @@ fn same_remote_identity(a: &Value, b: &Value) -> bool {
     .all(|key| a[*key] == b[*key])
 }
 
+/// A source path as stored in the managed tree. Each name maps like any other store file
+/// name; empty, `.` and `..` segments are still refused.
+fn managed_source_path(file: &Value) -> Result<String> {
+    let mut parts = Vec::new();
+    for part in io::required_string(file, "sourceRelativePath")?.split(['/', '\\']) {
+        ensure!(
+            !part.is_empty() && part != "." && part != "..",
+            "archive_unsafe_path"
+        );
+        parts.push(io::managed_name(part));
+    }
+    let path = parts.join("/");
+    archive::validate_relative_path(&path)?;
+    Ok(path)
+}
+
 // Jinxxy exposes ordinary leaves as relative filenames in one inventory tree.
 // Jinxxy leaves share a product source tree; BOOTH/Gumroad use file directories.
 fn source_tree_relative(
@@ -111,10 +127,10 @@ fn source_tree_relative(
     if file["provider"] != "jinxxy" || file["sourceRelativePath"].is_null() {
         return Ok(None);
     }
-    let path = archive::validate_relative_path(io::required_string(file, "sourceRelativePath")?)?;
-    let name = io::required_string(file, "name")?;
+    let path = managed_source_path(file)?;
+    let name = io::managed_name(io::required_string(file, "name")?);
     ensure!(
-        path.file_name() == Some(std::ffi::OsStr::new(name)),
+        path.rsplit('/').next() == Some(name.as_str()),
         "archive_unsafe_path"
     );
     let account = io::required_string(file, "accountId")?;
@@ -125,9 +141,7 @@ fn source_tree_relative(
         product_directory,
         &io::key(job_id)[..12],
         &group[..12],
-        path.to_str()
-            .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?
-            .replace('\\', "/")
+        path
     )))
 }
 
@@ -362,13 +376,13 @@ impl StorageService {
         {
             return Ok(None);
         }
-        let Some(source_relative) = current["sourceRelativePath"].as_str() else {
+        if !current["sourceRelativePath"].is_string() {
             return Ok(None);
-        };
+        }
         let Some(prior) = self.catalogue.get("artifact", &artifact_id(current))? else {
             return Ok(None);
         };
-        let suffix = format!("/{}", source_relative.replace('\\', "/"));
+        let suffix = format!("/{}", managed_source_path(current)?);
         if prior["status"] != "ready"
             || prior["rootId"] != root["id"]
             || prior["revision"] != current["revision"]
@@ -425,18 +439,8 @@ impl StorageService {
             if artifact["originalAvailable"] != true && !artifact["extractedPath"].is_string() {
                 return Ok(false);
             }
-            if let Some(source_relative) = file["sourceRelativePath"]
-                .as_str()
-                .filter(|_| artifact["originalAvailable"] == true)
-            {
-                let source = archive::validate_relative_path(source_relative)?;
-                let suffix = format!(
-                    "/{}",
-                    source
-                        .to_str()
-                        .ok_or_else(|| anyhow::anyhow!("archive_unsafe_path"))?
-                        .replace('\\', "/")
-                );
+            if file["sourceRelativePath"].is_string() && artifact["originalAvailable"] == true {
+                let suffix = format!("/{}", managed_source_path(file)?);
                 let stored = io::required_string(&artifact, "relativePath")?.replace('\\', "/");
                 let Some(prefix) = stored.strip_suffix(&suffix) else {
                     return Ok(false);
@@ -811,9 +815,13 @@ impl StorageService {
             }
         }
         let id = format!("pending-{}", io::key(io::required_string(file, "id")?));
-        let name = io::required_string(file, "name")?;
-        let safe_name = archive::validate_relative_path(name)?;
-        ensure!(safe_name.components().count() == 1, "archive_unsafe_path");
+        // The catalogue keeps the store's name; the managed copy gets one Windows can store.
+        let name = io::managed_name(io::required_string(file, "name")?);
+        let name = name.as_str();
+        ensure!(
+            archive::validate_relative_path(name)?.components().count() == 1,
+            "archive_unsafe_path"
+        );
         let product = io::required_string(file, "productId")?;
         let product_source = self
             .catalogue
@@ -2308,6 +2316,35 @@ mod tests {
             .is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn source_tree_maps_names_windows_cannot_store_and_still_refuses_traversal() {
+        let file = json!({"id":"synthetic","provider":"jinxxy","productId":"jinxxy:synthetic","accountId":"synthetic-account","inventoryId":"synthetic-inventory","name":"Read me?.txt","sourceRelativePath":"Docs <v2>/Read me?.txt","revision":"source:r1"});
+        let relative = source_tree_relative(&file, "download:one", "Tool")
+            .unwrap()
+            .unwrap();
+        assert!(
+            relative.ends_with("/Docs ＜v2＞/Read me？.txt"),
+            "{relative}"
+        );
+        archive::validate_relative_path(&relative).unwrap();
+        // Re-downloads land at the same path, and the job no longer fails on the name.
+        assert_eq!(
+            source_tree_relative(&file, "download:one", "Tool")
+                .unwrap()
+                .unwrap(),
+            relative
+        );
+        validate_source_tree_paths(std::slice::from_ref(&file)).unwrap();
+        for unsafe_path in ["../Read me?.txt", "Docs//Read me?.txt", "./Read me?.txt"] {
+            let mut unsafe_file = file.clone();
+            unsafe_file["sourceRelativePath"] = json!(unsafe_path);
+            assert!(
+                source_tree_relative(&unsafe_file, "download:one", "Tool").is_err(),
+                "{unsafe_path}"
+            );
+        }
+    }
+
     #[test]
     fn verified_provider_file_length_cannot_be_overridden_by_response_body_length() {
         use crate::stores::StoreProvider;

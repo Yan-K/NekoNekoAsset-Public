@@ -53,6 +53,34 @@ pub fn readable_component(label: &str, identity: &str) -> String {
     }
     component
 }
+/// A store may name a file in a way Windows cannot store. Its managed copy uses a readable
+/// equivalent: reserved characters become their full-width forms, control characters `_`,
+/// trailing dots and spaces are dropped as Windows itself does, and a device name such as
+/// CON gains a leading `_`. Valid names are unchanged and a name always maps the same way,
+/// so downloads keep their paths; the catalogue keeps the store's own name for display.
+pub fn managed_name(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|c| match c {
+            '<' => '＜',
+            '>' => '＞',
+            ':' => '：',
+            '"' => '＂',
+            '/' => '／',
+            '\\' => '＼',
+            '|' => '｜',
+            '?' => '？',
+            '*' => '＊',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let mut mapped = mapped.trim_end_matches(['.', ' ']).to_owned();
+    if mapped.is_empty() || super::archive::reserved_device(&mapped) {
+        mapped.insert(0, '_');
+    }
+    mapped
+}
 pub fn unused_relative(root: &Path, base: &str) -> Result<String> {
     for index in 0..10_000 {
         let relative = if index == 0 {
@@ -338,6 +366,7 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
         "low_space",
         "auth_required",
         "permission_denied",
+        "storage_source_locked",
         "link_expired",
         "rate_limited",
         "network_failed",

@@ -2185,6 +2185,31 @@ fn readable_managed_paths_are_contained_collision_safe_and_partial_cleanup_is_ow
 }
 
 #[test]
+fn store_names_windows_cannot_store_map_to_stable_readable_names() {
+    for (name, managed) in [
+        ("Outfit.zip", "Outfit.zip"),
+        ("衣装 v1.2.unitypackage", "衣装 v1.2.unitypackage"),
+        ("Outfit: Summer?.zip", "Outfit： Summer？.zip"),
+        ("a<b>c\"d|e*f.txt", "a＜b＞c＂d｜e＊f.txt"),
+        ("../file\\name.zip", "..／file＼name.zip"),
+        ("tab\there.txt", "tab_here.txt"),
+        ("Asset.zip. ", "Asset.zip"),
+        ("CON", "_CON"),
+        ("nul.txt", "_nul.txt"),
+        ("..", "_"),
+    ] {
+        // Valid names are unchanged, so existing downloads keep their paths.
+        assert_eq!(io::managed_name(name), managed, "{name}");
+        let path = archive::validate_relative_path(managed).unwrap();
+        assert_eq!(path.components().count(), 1);
+    }
+    // The extension survives, so a mapped archive is still extracted.
+    assert!(archive::is_supported_archive(Path::new(&io::managed_name(
+        "Outfit: Summer?.zip"
+    ))));
+}
+
+#[test]
 fn manifest_fingerprint_tracks_revalidation_and_file_delta_independent_of_order() {
     let a = json!({"id":"a","revision":"r1"});
     let b = json!({"id":"b","revision":"r2"});

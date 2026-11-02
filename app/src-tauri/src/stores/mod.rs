@@ -541,7 +541,10 @@ impl StoreService {
                     .ok_or_else(|| anyhow::anyhow!("STORE_UNAVAILABLE"))?,
             )?,
         )?;
-        let result = match provider {
+        // A download that answers AUTH_REQUIRED ends needing sign-in, but keeps the
+        // protected session: one refused link is no proof the login expired, and only
+        // logout, deletion, a failed first login or a new login replace it.
+        match provider {
             StoreProvider::Booth => self
                 .booth
                 .download_ticket(app, file_id)
@@ -555,16 +558,7 @@ impl StoreService {
                 }),
             StoreProvider::Gumroad => self.gumroad.download_ticket(app, file_id).await,
             StoreProvider::Jinxxy => self.jinxxy.download_ticket(app, file_id).await,
-        };
-        if self.catalogue.library_root().is_some()
-            && result
-                .as_ref()
-                .err()
-                .is_some_and(|error| error.to_string() == "AUTH_REQUIRED")
-        {
-            session::forget(&self.catalogue.device_dir(), provider, account)?;
         }
-        result
     }
 }
 

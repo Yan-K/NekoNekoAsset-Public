@@ -252,24 +252,28 @@ pub fn validate_relative_path(value: &str) -> Result<PathBuf> {
                 .any(|c| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*')),
             "archive_unsafe_path"
         );
-        let stem = component
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim_end_matches(' ')
-            .to_uppercase();
-        let device = matches!(
-            stem.as_str(),
-            "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
-        ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && matches!(
-                &stem[3..],
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-            ));
-        ensure!(!device, "archive_unsafe_path");
+        ensure!(!reserved_device(component), "archive_unsafe_path");
         result.push(component);
     }
     Ok(result)
+}
+
+/// Win32 device names, with or without an extension (CON, con.txt, COM1 .zip).
+pub(super) fn reserved_device(component: &str) -> bool {
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && matches!(
+            &stem[3..],
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+        ))
 }
 
 fn portable_path(path: &Path) -> Result<String> {
@@ -528,8 +532,122 @@ pub fn parse_listing(listing: &str) -> Result<Vec<ArchiveEntry>> {
         ensure!(entries.len() <= MAX_ENTRIES, "archive_entry_limit");
     }
     ensure!(!entries.is_empty(), "archive_empty");
-    validate_inventory_paths(&entries)?;
     Ok(entries)
+}
+
+/// Windows compares names by simple uppercase; a character whose uppercase form is longer
+/// (such as ß) compares as itself.
+fn fold_case(path: &str) -> String {
+    path.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(single), None) => single,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
+/// Where each listed member lands in the staging tree.
+struct ExtractionPlan {
+    /// Each explicit folder once, then every member file at its own path.
+    outputs: Vec<ArchiveEntry>,
+    /// (written copy, kept file): same size and CRC as a file already at that path.
+    identical: Vec<(String, String)>,
+}
+
+/// Folders that differ only by letter case merge into the first-seen spelling, as Windows
+/// does. Folders are created before extraction, so a file whose path is taken by a folder
+/// or an earlier file is kept too: 7-Zip's -aou writes it as `name_1.ext`, `name_2.ext`…
+/// and never overwrites. This predicts those names so the result can be verified exactly.
+fn plan_extraction(entries: &[ArchiveEntry]) -> ExtractionPlan {
+    let mut folders: BTreeMap<String, String> = BTreeMap::new();
+    let mut spell = |path: &str| {
+        let mut spelling = String::new();
+        for part in path.split('/') {
+            let next = if spelling.is_empty() {
+                part.to_owned()
+            } else {
+                format!("{spelling}/{part}")
+            };
+            spelling = folders.entry(fold_case(&next)).or_insert(next).clone();
+        }
+        spelling
+    };
+    let mut outputs: Vec<ArchiveEntry> = Vec::new();
+    let mut explicit = BTreeSet::new();
+    let mut files = Vec::new();
+    for entry in entries {
+        if entry.is_directory {
+            let path = spell(&entry.relative_path);
+            if explicit.insert(fold_case(&path)) {
+                outputs.push(ArchiveEntry {
+                    relative_path: path,
+                    ..entry.clone()
+                });
+            }
+        } else {
+            let path = match entry.relative_path.rsplit_once('/') {
+                Some((parent, name)) => format!("{}/{name}", spell(parent)),
+                None => entry.relative_path.clone(),
+            };
+            files.push((path, entry));
+        }
+    }
+    let mut taken: BTreeSet<String> = folders.into_keys().collect();
+    // Files that wanted a path, by that path, for recognizing identical copies.
+    let mut wanted: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut identical = Vec::new();
+    for (path, entry) in files {
+        let key = fold_case(&path);
+        let (target, copy_of) = if taken.contains(&key) {
+            let copy_of = wanted.get(&key).and_then(|placed| {
+                placed.iter().copied().find(|&index| {
+                    entry.crc32.is_some()
+                        && outputs[index].crc32 == entry.crc32
+                        && outputs[index].size_bytes == entry.size_bytes
+                })
+            });
+            (auto_rename(&path, &taken), copy_of)
+        } else {
+            (path, None)
+        };
+        taken.insert(fold_case(&target));
+        match copy_of {
+            Some(kept) => identical.push((target.clone(), outputs[kept].relative_path.clone())),
+            None => wanted.entry(key).or_default().push(outputs.len()),
+        }
+        outputs.push(ArchiveEntry {
+            relative_path: target,
+            ..entry.clone()
+        });
+    }
+    ExtractionPlan { outputs, identical }
+}
+
+/// 7-Zip's -aou name: `name_N.ext` (the last dot not leading the name starts the
+/// extension), with N from its binary search over existing names.
+fn auto_rename(path: &str, taken: &BTreeSet<String>) -> String {
+    let (parent, name) = match path.rsplit_once('/') {
+        Some((parent, name)) => (format!("{parent}/"), name),
+        None => (String::new(), path),
+    };
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    let candidate = |n: u32| format!("{parent}{stem}_{n}{extension}");
+    let (mut low, mut high) = (1u32, 1u32 << 30);
+    while low != high {
+        let middle = (low + high) / 2;
+        if taken.contains(&fold_case(&candidate(middle))) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    candidate(high)
 }
 
 fn validate_inventory_paths(entries: &[ArchiveEntry]) -> Result<BTreeMap<String, bool>> {
@@ -537,14 +655,11 @@ fn validate_inventory_paths(entries: &[ArchiveEntry]) -> Result<BTreeMap<String,
     let mut paths: BTreeMap<String, (String, bool)> = BTreeMap::new();
     for entry in entries {
         let path = portable_path(&validate_relative_path(&entry.relative_path)?)?;
-        ensure!(
-            explicit.insert(path.to_uppercase()),
-            "archive_path_collision"
-        );
+        ensure!(explicit.insert(fold_case(&path)), "archive_path_collision");
         let components: Vec<_> = path.split('/').collect();
         for length in 1..=components.len() {
             let spelling = components[..length].join("/");
-            let key = spelling.to_uppercase();
+            let key = fold_case(&spelling);
             let directory = length < components.len() || entry.is_directory;
             if let Some((old_spelling, old_directory)) = paths.get(&key) {
                 ensure!(
@@ -706,7 +821,23 @@ fn classify_process_error(exit: Option<i32>, stdout: &[u8], stderr: &[u8]) -> &'
     }
 }
 
-fn cli_args(operation: &str, archive: &Path) -> Vec<OsString> {
+fn is_zip(archive: &Path) -> bool {
+    let name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    name.ends_with(".zip")
+        || name.rsplit_once('.').is_some_and(|(base, suffix)| {
+            base.ends_with(".zip")
+                && suffix.len() >= 3
+                && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+/// `code_page` decodes ZIP names that carry no UTF-8 marker; 7-Zip honors explicit
+/// UTF-8/Unicode name metadata either way. Listing and extraction use the same one.
+fn cli_args(operation: &str, archive: &Path, code_page: u32) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         OsString::from(operation),
         "-y".into(),
@@ -719,24 +850,39 @@ fn cli_args(operation: &str, archive: &Path) -> Vec<OsString> {
         archive.as_os_str().to_owned(),
     ]
     .into();
-    let name = archive
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let zip = name.ends_with(".zip")
-        || name.rsplit_once('.').is_some_and(|(base, suffix)| {
-            base.ends_with(".zip")
-                && suffix.len() >= 3
-                && suffix.bytes().all(|byte| byte.is_ascii_digit())
-        });
-    if zip {
-        // Unlabelled BOOTH ZIP names intentionally prefer Japanese Windows
-        // encoding. 7-Zip still honors explicit UTF-8/Unicode ZIP name metadata.
-        // Keep listing and extraction on the same decoding policy.
-        args.insert(1, "-mcp=932".into());
+    if is_zip(archive) {
+        args.insert(1, format!("-mcp={code_page}").into());
     }
     args
+}
+
+/// Unmarked ZIP names are read as UTF-8 when every name is valid UTF-8 (macOS and many
+/// tools write them so); otherwise as Japanese Windows names (CP932), as BOOTH archives
+/// made on Windows use. Returns the code page extraction must use with the entries.
+fn list_archive(
+    seven_zip: &Path,
+    first: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(u32, Vec<ArchiveEntry>)> {
+    let list = |code_page| -> Result<Vec<u8>> {
+        let mut args = cli_args("l", first, code_page);
+        args.insert(1, "-slt".into());
+        run_7zip(seven_zip, &args, cancelled, true)
+    };
+    let parse = |listing: &[u8]| {
+        parse_listing(std::str::from_utf8(listing).context("archive_listing_invalid")?)
+    };
+    if is_zip(first) {
+        // A tool failure does not depend on name decoding; a name the listing rejects may.
+        // 7-Zip shows each byte that is not valid UTF-8 as U+EF80..U+EFFF (or U+FFFD).
+        let invalid = |c: char| c == '\u{FFFD}' || ('\u{EF80}'..='\u{EFFF}').contains(&c);
+        if let Ok(entries) = parse(&list(65001)?) {
+            if !entries.iter().any(|e| e.relative_path.contains(invalid)) {
+                return Ok((65001, entries));
+            }
+        }
+    }
+    Ok((932, parse(&list(932)?)?))
 }
 
 fn hash_file(path: &Path, cancelled: &AtomicBool) -> Result<(u64, String, u32)> {
@@ -1046,10 +1192,8 @@ pub fn extract_archive(
         }
         inputs.join(sources[0].file_name().context("archive_invalid_name")?)
     };
-    let mut listing_args = cli_args("l", &first);
-    listing_args.insert(1, "-slt".into());
-    let listing = run_7zip(seven_zip, &listing_args, cancelled, true)?;
-    let entries = parse_listing(std::str::from_utf8(&listing).context("archive_listing_invalid")?)?;
+    let (code_page, entries) = list_archive(seven_zip, &first, cancelled)?;
+    let plan = plan_extraction(&entries);
     let expanded_size = entries.iter().try_fold(0u64, |total, entry| {
         total
             .checked_add(entry.size_bytes)
@@ -1071,23 +1215,29 @@ pub fn extract_archive(
             .open(&member_list)
             .context("storage_write_failed")?,
     );
-    let mut file_count = 0usize;
-    for entry in &entries {
+    // Every folder exists, in its first-seen spelling, before 7-Zip writes a file.
+    for entry in &plan.outputs {
         check_cancel(cancelled)?;
-        if entry.is_directory {
-            fs::create_dir_all(content.join(validate_relative_path(&entry.relative_path)?))
-                .context("storage_write_failed")?;
+        let path = content.join(validate_relative_path(&entry.relative_path)?);
+        let folder = if entry.is_directory {
+            Some(path.as_path())
         } else {
-            // 7-Zip trims unquoted listfile lines. Quotes retain a leading
-            // space in a literal member name; validated paths cannot contain quotes.
-            writeln!(names, "\"{}\"", entry.relative_path).context("storage_write_failed")?;
-            file_count += 1;
-        }
+            path.parent()
+        };
+        fs::create_dir_all(folder.context("archive_unsafe_path")?)
+            .context("storage_write_failed")?;
+    }
+    let mut file_count = 0usize;
+    for entry in entries.iter().filter(|entry| !entry.is_directory) {
+        // 7-Zip trims unquoted listfile lines. Quotes retain a leading
+        // space in a literal member name; validated paths cannot contain quotes.
+        writeln!(names, "\"{}\"", entry.relative_path).context("storage_write_failed")?;
+        file_count += 1;
     }
     names.flush().context("storage_write_failed")?;
     drop(names);
     if file_count > 0 {
-        let mut extraction_args = cli_args("x", &first);
+        let mut extraction_args = cli_args("x", &first, code_page);
         let mut output_arg = OsString::from("-o");
         output_arg.push(&content);
         let mut include_arg = OsString::from("-i@");
@@ -1100,11 +1250,38 @@ pub fn extract_archive(
                 "-spd".into(),
                 "-r-".into(),
                 "-scsUTF-8".into(),
+                // A taken name gets `_1`, `_2`…; nothing is overwritten.
+                "-aou".into(),
             ],
         );
         run_7zip(seven_zip, &extraction_args, cancelled, false)?;
     }
-    let inventory = verify_extracted_inventory(&content, &entries, cancelled)?;
+    let mut inventory = verify_extracted_inventory(&content, &plan.outputs, cancelled)?;
+    // Keep one of identical copies; a CRC match must also be a content match.
+    for (copy, kept) in &plan.identical {
+        let hash = |path: &String| {
+            inventory
+                .iter()
+                .find(|entry| entry.relative_path == *path)
+                .map(|entry| entry.hash.clone())
+        };
+        if hash(copy).is_some() && hash(copy) == hash(kept) {
+            let path = content.join(validate_relative_path(copy)?);
+            // 7-Zip may have restored a read-only flag on this staged copy.
+            #[cfg(windows)]
+            {
+                let mut permissions = fs::metadata(&path)
+                    .context("storage_read_failed")?
+                    .permissions();
+                if permissions.readonly() {
+                    permissions.set_readonly(false);
+                    fs::set_permissions(&path, permissions).context("storage_write_failed")?;
+                }
+            }
+            super::io::retry_busy(|| fs::remove_file(&path)).context("storage_write_failed")?;
+            inventory.retain(|entry| entry.relative_path != *copy);
+        }
+    }
     check_cancel(cancelled)?;
     for (source, state) in sources.iter().zip(source_state) {
         validate_no_links(source)?;
@@ -1301,22 +1478,66 @@ mod tests {
     }
 
     #[test]
-    fn listing_rejects_links_collisions_and_ambiguous_records() {
+    fn listing_rejects_links_and_ambiguous_records() {
         for records in [
             "Path = a\nSize = 0\nSymbolic Link = ../outside",
             "Path = a\nSize = 0\nHard Link = b",
             "Path = a\nSize = 0\nAttributes = A lrwxrwxrwx",
             "Path = a\nSize = 0\nEncrypted = +",
             "Path = a\nSize = 0\nPath = b",
-            "Path = A.txt\nSize = 0\n\nPath = a.txt\nSize = 0",
-            "Path = dir\nSize = 0\n\nPath = dir/file\nSize = 0",
-            "Path = Dir/a\nSize = 0\n\nPath = dir/b\nSize = 0",
         ] {
             assert!(parse_listing(&listing(records)).is_err(), "{records}");
         }
         let entries = parse_listing(&listing("Path = 衣装\nFolder = +\nSize = 0\n\nPath = 衣装/a.unitypackage\nSize = 3\nCRC = 352441C2")).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(!is_supported_archive(Path::new("a.unitypackage")));
+    }
+
+    #[test]
+    fn plan_merges_folder_case_and_keeps_every_clashing_file() {
+        let entries = parse_listing(&listing(
+            "Path = Dir/a.txt\nSize = 1\nCRC = 1\n\n\
+             Path = dir/b.txt\nSize = 1\nCRC = 2\n\n\
+             Path = DIR\nFolder = +\nSize = 0\n\n\
+             Path = b.txt\nSize = 3\nCRC = A\n\n\
+             Path = b.txt\nSize = 3\nCRC = A\n\n\
+             Path = B.txt\nSize = 3\nCRC = B\n\n\
+             Path = b_1.txt\nSize = 4\nCRC = C\n\n\
+             Path = dir\nSize = 5\nCRC = D\n\n\
+             Path = .hidden\nSize = 1\nCRC = E\n\n\
+             Path = .hidden\nSize = 1\nCRC = F\n\n\
+             Path = x.tar.gz\nSize = 1\nCRC = 1\n\n\
+             Path = x.tar.gz\nSize = 2\nCRC = 1",
+        ))
+        .unwrap();
+        let plan = plan_extraction(&entries);
+        let paths: Vec<_> = plan
+            .outputs
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect();
+        // Folders merge into their first spelling and keep their names; a taken file
+        // name gets 7-Zip's `_N` (its search sees `b_1.txt` taken, so `B.txt` is `_2`).
+        assert_eq!(
+            paths,
+            [
+                "Dir",
+                "Dir/a.txt",
+                "Dir/b.txt",
+                "b.txt",
+                "b_1.txt",
+                "B_2.txt",
+                "b_1_1.txt",
+                "dir_1",
+                ".hidden",
+                ".hidden_1",
+                "x.tar.gz",
+                "x.tar_1.gz"
+            ]
+        );
+        // Only the same size and CRC is an identical copy, dropped after extraction.
+        assert_eq!(plan.identical, [("b_1.txt".to_owned(), "b.txt".to_owned())]);
+        validate_inventory_paths(&plan.outputs).unwrap();
     }
 
     #[test]
@@ -1422,55 +1643,50 @@ mod tests {
     fn zip_cli_uses_japanese_legacy_names_for_listing_and_extraction_only() {
         for operation in ["l", "x"] {
             for archive in ["source.zip", "source.ZIP", "source.zip.001"] {
-                assert!(
-                    cli_args(operation, Path::new(archive)).contains(&OsString::from("-mcp=932"))
-                );
+                for code_page in [932, 65001] {
+                    assert!(cli_args(operation, Path::new(archive), code_page)
+                        .contains(&OsString::from(format!("-mcp={code_page}"))));
+                }
             }
             for archive in ["source.7z", "source.rar", "source.7z.001"] {
-                assert!(
-                    !cli_args(operation, Path::new(archive)).contains(&OsString::from("-mcp=932"))
-                );
+                assert!(!cli_args(operation, Path::new(archive), 932)
+                    .iter()
+                    .any(|arg| arg.to_string_lossy().starts_with("-mcp")));
             }
         }
     }
 
+    /// Stored members of an independently authored ZIP; `utf8` sets the UTF-8 name flag.
     #[cfg(windows)]
-    #[test]
-    fn bundled_zip_roundtrip_preserves_cp932_utf8_and_ascii_names() {
-        let executable =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/tools/7zip/7z.exe");
-        let root =
-            std::env::temp_dir().join(format!("nna-authored-zip-names-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(root.join("staging")).unwrap();
-        let names: &[(&[u8], bool)] = &[
-            (b"\x83\x7c.txt", false),
-            (b"\x95\x5c.txt", false),
-            (b"\x83\x5c.txt", false),
-            (b"Readme.txt", false),
-            ("髪.txt".as_bytes(), true),
-        ];
+    fn authored_zip(members: &[(&[u8], bool, &[u8])]) -> Vec<u8> {
+        let crc = |bytes: &[u8]| {
+            !bytes.iter().fold(!0u32, |value, byte| {
+                (value >> 8) ^ CRC_TABLE[((value ^ u32::from(*byte)) & 0xff) as usize]
+            })
+        };
         let mut zip = Vec::new();
         let mut central = Vec::new();
-        for (name, utf8) in names {
+        for (name, utf8, data) in members {
             let offset = zip.len() as u32;
             let flags: u16 = if *utf8 { 0x800 } else { 0 };
+            let (crc, size) = (crc(data), data.len() as u32);
             zip.extend_from_slice(&0x04034b50u32.to_le_bytes());
             for value in [20, flags, 0, 0, 0] {
                 zip.extend_from_slice(&value.to_le_bytes());
             }
-            for value in [0x352441c2u32, 3, 3] {
+            for value in [crc, size, size] {
                 zip.extend_from_slice(&value.to_le_bytes());
             }
             for value in [name.len() as u16, 0] {
                 zip.extend_from_slice(&value.to_le_bytes());
             }
             zip.extend_from_slice(name);
-            zip.extend_from_slice(b"abc");
+            zip.extend_from_slice(data);
             central.extend_from_slice(&0x02014b50u32.to_le_bytes());
             for value in [20, 20, flags, 0, 0, 0] {
                 central.extend_from_slice(&value.to_le_bytes());
             }
-            for value in [0x352441c2u32, 3, 3] {
+            for value in [crc, size, size] {
                 central.extend_from_slice(&value.to_le_bytes());
             }
             for value in [name.len() as u16, 0, 0, 0, 0] {
@@ -1483,14 +1699,24 @@ mod tests {
         let central_offset = zip.len() as u32;
         zip.extend_from_slice(&central);
         zip.extend_from_slice(&0x06054b50u32.to_le_bytes());
-        for value in [0, 0, names.len() as u16, names.len() as u16] {
+        for value in [0, 0, members.len() as u16, members.len() as u16] {
             zip.extend_from_slice(&value.to_le_bytes());
         }
         zip.extend_from_slice(&(central.len() as u32).to_le_bytes());
         zip.extend_from_slice(&central_offset.to_le_bytes());
         zip.extend_from_slice(&0u16.to_le_bytes());
+        zip
+    }
+
+    /// Extracts with the bundled 7-Zip and returns (path, bytes) for every file.
+    #[cfg(windows)]
+    fn bundled_extract(name: &str, zip: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let executable =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/tools/7zip/7z.exe");
+        let root = std::env::temp_dir().join(format!("nna-{name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("staging")).unwrap();
         let archive = root.join("authored.zip");
-        fs::write(&archive, &zip).unwrap();
+        fs::write(&archive, zip).unwrap();
         let extracted = extract_archive(
             &executable,
             &archive,
@@ -1499,17 +1725,102 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert_eq!(extracted.inventory.len(), names.len());
-        for name in ["ポ.txt", "表.txt", "ソ.txt", "Readme.txt", "髪.txt"] {
-            assert!(extracted
-                .inventory
-                .iter()
-                .any(|entry| entry.relative_path == name));
-            assert_eq!(fs::read(extracted.staging_path.join(name)).unwrap(), b"abc");
-        }
-        assert_eq!(fs::read(archive).unwrap(), zip);
+        let files = extracted
+            .inventory
+            .iter()
+            .filter(|entry| !entry.is_directory)
+            .map(|entry| {
+                let bytes = fs::read(extracted.staging_path.join(&entry.relative_path)).unwrap();
+                (entry.relative_path.clone(), bytes)
+            })
+            .collect();
+        assert_eq!(fs::read(&archive).unwrap(), zip);
         drop(extracted);
         fs::remove_dir_all(root).unwrap();
+        files
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_zip_reads_unmarked_utf8_names_as_utf8() {
+        // Read as Japanese Windows names, these bytes held C1 controls and were refused.
+        let files = bundled_extract(
+            "authored-zip-utf8",
+            &authored_zip(&[
+                ("「テスト」.txt".as_bytes(), false, b"bracketed"),
+                ("日本語フォルダ/ファイル.txt".as_bytes(), false, b"nested"),
+                (b"Readme.txt", false, b"ascii"),
+            ]),
+        );
+        let expected = [
+            ("Readme.txt", &b"ascii"[..]),
+            ("「テスト」.txt", b"bracketed"),
+            ("日本語フォルダ/ファイル.txt", b"nested"),
+        ];
+        assert_eq!(files.len(), expected.len());
+        for (path, bytes) in expected {
+            assert!(files.contains(&(path.to_owned(), bytes.to_vec())), "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_zip_merges_folder_case_and_keeps_clashing_members() {
+        let files = bundled_extract(
+            "authored-zip-clashes",
+            &authored_zip(&[
+                (b"Dir/a.txt", false, b"a"),
+                (b"dir/b.txt", false, b"b"),
+                (b"DIR/sub/c.txt", false, b"c"),
+                (b"same.txt", false, b"identical"),
+                (b"same.txt", false, b"identical"),
+                (b"b.txt", false, b"one"),
+                (b"b.txt", false, b"two"),
+                (b"B.txt", false, b"three"),
+                (b"x", false, b"file"),
+                (b"X/inner.txt", false, b"inner"),
+            ]),
+        );
+        // What 7-Zip actually wrote matches the plan; one identical copy remains.
+        let expected: Vec<_> = [
+            ("B_2.txt", &b"three"[..]),
+            ("Dir/a.txt", b"a"),
+            ("Dir/b.txt", b"b"),
+            ("Dir/sub/c.txt", b"c"),
+            ("X/inner.txt", b"inner"),
+            ("b.txt", b"one"),
+            ("b_1.txt", b"two"),
+            ("same.txt", b"identical"),
+            ("x_1", b"file"),
+        ]
+        .into_iter()
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+        .collect();
+        assert_eq!(files, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_zip_roundtrip_preserves_cp932_utf8_and_ascii_names() {
+        let names: &[(&[u8], bool)] = &[
+            (b"\x83\x7c.txt", false),
+            (b"\x95\x5c.txt", false),
+            (b"\x83\x5c.txt", false),
+            (b"Readme.txt", false),
+            ("髪.txt".as_bytes(), true),
+        ];
+        let members: Vec<(&[u8], bool, &[u8])> = names
+            .iter()
+            .map(|(name, utf8)| (*name, *utf8, &b"abc"[..]))
+            .collect();
+        let files = bundled_extract("authored-zip-names", &authored_zip(&members));
+        assert_eq!(files.len(), names.len());
+        for name in ["ポ.txt", "表.txt", "ソ.txt", "Readme.txt", "髪.txt"] {
+            assert!(
+                files.contains(&(name.to_owned(), b"abc".to_vec())),
+                "{name}"
+            );
+        }
     }
 
     #[test]

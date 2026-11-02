@@ -40,14 +40,37 @@ struct LocalPlan {
     metadata: Value,
 }
 
-fn signature(path: &Path) -> Result<(u64, u128)> {
-    archive::validate_no_links(path)?;
-    io::ensure_regular(path)?;
+/// Selections often sit below redirected or junctioned folders (OneDrive moves Desktop and
+/// Documents) and may hold cloud placeholders. Only a symbolic link or junction inside the
+/// selection could lead out of it, so the selected items and their contents are checked
+/// for those, never the folders above them.
+fn reject_source_link(path: &Path) -> Result<()> {
+    ensure!(
+        !fs::symlink_metadata(path)?.file_type().is_symlink(),
+        "unsafe_link"
+    );
+    Ok(())
+}
+/// `relative` places the file in its selection, so its parents up to the selected item are
+/// checked again before the file is read.
+fn signature(path: &Path, relative: &str) -> Result<(u64, u128)> {
+    for item in path.ancestors().take(relative.split('/').count()) {
+        reject_source_link(item)?;
+    }
     let meta = fs::metadata(path)?;
+    ensure!(meta.is_file(), "file_missing");
     Ok((
         meta.len(),
         meta.modified()?.duration_since(UNIX_EPOCH)?.as_nanos(),
     ))
+}
+/// Another program holding the user's file open is theirs to resolve; say so.
+fn source_error(error: std::io::Error) -> anyhow::Error {
+    if cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)) {
+        anyhow::anyhow!("storage_source_locked")
+    } else {
+        error.into()
+    }
 }
 fn path_name(path: &Path) -> Result<String> {
     let name = path
@@ -58,7 +81,8 @@ fn path_name(path: &Path) -> Result<String> {
     Ok(name.to_owned())
 }
 fn enumerate(path: &Path, relative: &str, group: &mut LocalGroup) -> Result<()> {
-    archive::validate_no_links(path)?;
+    // Parents inside the selection were checked on the way down.
+    reject_source_link(path)?;
     archive::validate_relative_path(relative)?;
     ensure!(
         group.files.len() + group.directories.len() < ENTRY_LIMIT,
@@ -74,7 +98,7 @@ fn enumerate(path: &Path, relative: &str, group: &mut LocalGroup) -> Result<()> 
             enumerate(&child, &format!("{relative}/{}", path_name(&child)?), group)?;
         }
     } else {
-        let (size, modified) = signature(path)?;
+        let (size, modified) = signature(path, relative)?;
         group.files.push(LocalFile {
             source: path.to_owned(),
             relative: relative.to_owned(),
@@ -346,6 +370,109 @@ mod tests {
         );
         assert!(automatic_overlay.get("category").is_none());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_import_reads_through_junctioned_parents_but_refuses_links_inside_the_selection() {
+        use std::os::windows::process::CommandExt;
+        let junction = |link: &Path, target: &Path| {
+            let output = std::process::Command::new("cmd")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let (path, service) = fixture();
+        let documents = path.join("redirected-documents");
+        fs::create_dir_all(documents.join("Outfit")).unwrap();
+        fs::write(
+            documents.join("Outfit/model.unitypackage"),
+            b"authored outfit",
+        )
+        .unwrap();
+        // Like a Documents folder redirected elsewhere.
+        let link = path.join("Documents");
+        junction(&link, &documents);
+        let args = |sources: Value| json!({"draftId":uuid::Uuid::new_v4(),"sources":sources,"name":"Outfit","rootId":"authored-root"});
+        let queued = service
+            .prepare_local_import(&args(json!([link.join("Outfit")])))
+            .unwrap();
+        let mut job = service
+            .catalogue
+            .get("job", queued["jobId"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        service
+            .run_local_import(&mut job, Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        let id = queued["productIds"][0].as_str().unwrap();
+        assert_eq!(
+            service.catalogue.related("artifact", id).unwrap()[0]["status"],
+            "ready"
+        );
+        // A link inside the selection, or a selected link itself, could lead out of it.
+        let outside = path.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("private.txt"), b"never selected").unwrap();
+        let escape = documents.join("Outfit").join("escape");
+        junction(&escape, &outside);
+        for sources in [json!([link.join("Outfit")]), json!([link])] {
+            let error = service.prepare_local_import(&args(sources)).unwrap_err();
+            assert_eq!(local_error(&error), "unsafe_link");
+        }
+        fs::remove_dir(&escape).unwrap();
+        fs::remove_dir(&link).unwrap();
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_import_waits_out_a_brief_source_lock_and_names_a_lasting_one() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (path, service) = fixture();
+        let source = path.join("held.unitypackage");
+        fs::write(&source, b"authored held payload").unwrap();
+        let queued = service.prepare_local_import(&json!({"draftId":uuid::Uuid::new_v4(),"sources":[source],"name":"Held","rootId":"authored-root"})).unwrap();
+        let mut job = service
+            .catalogue
+            .get("job", queued["jobId"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        // As a program still writing the file does: an open handle that shares nothing.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&source)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        service
+            .run_local_import(&mut job, Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        release.join().unwrap();
+        let id = queued["productIds"][0].as_str().unwrap();
+        assert_eq!(
+            service.catalogue.related("artifact", id).unwrap()[0]["status"],
+            "ready"
+        );
+        // A lock that outlasts the wait is named, not a generic failure.
+        for code in [32, 33] {
+            let lasting = source_error(std::io::Error::from_raw_os_error(code));
+            assert_eq!(local_error(&lasting), "storage_source_locked");
+        }
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
 }
 fn checkpoint_id(draft: &str, group: &LocalGroup, file: &LocalFile) -> String {
     format!(
@@ -574,7 +701,7 @@ impl StorageService {
         for source in additions {
             let path = PathBuf::from(source);
             ensure!(path.is_absolute(), "root_not_absolute");
-            archive::validate_no_links(&path)?;
+            reject_source_link(&path)?;
             let path = path.canonicalize()?;
             ensure!(
                 !(path.is_dir() && path_contains(&path, &root_path)),
@@ -707,7 +834,7 @@ impl StorageService {
         for value in raw {
             let source = PathBuf::from(value.as_str().unwrap());
             ensure!(source.is_absolute(), "root_not_absolute");
-            archive::validate_no_links(&source)?;
+            reject_source_link(&source)?;
             let source = source.canonicalize()?;
             ensure!(
                 !(source.is_dir() && path_contains(&source, &root_path)),
@@ -1033,7 +1160,7 @@ impl StorageService {
             }
         }
         ensure!(
-            signature(&file.source)? == (file.size, file.modified),
+            signature(&file.source, &file.relative)? == (file.size, file.modified),
             "local_source_changed"
         );
         io::space(root, file.size)?;
@@ -1050,7 +1177,8 @@ impl StorageService {
             io::ensure_regular(&partial)?;
             fs::remove_file(&partial)?;
         }
-        let mut input = fs::File::open(&file.source)?;
+        // A scanner or the program that just wrote the file may hold it briefly.
+        let mut input = io::retry_busy(|| fs::File::open(&file.source)).map_err(source_error)?;
         let mut output = fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -1061,7 +1189,7 @@ impl StorageService {
             let mut buffer = [0u8; 128 * 1024];
             loop {
                 io::check_cancel(cancel)?;
-                let count = input.read(&mut buffer)?;
+                let count = input.read(&mut buffer).map_err(source_error)?;
                 if count == 0 {
                     break;
                 }
@@ -1071,7 +1199,8 @@ impl StorageService {
             }
             output.sync_all()?;
             ensure!(
-                size == file.size && signature(&file.source)? == (file.size, file.modified),
+                size == file.size
+                    && signature(&file.source, &file.relative)? == (file.size, file.modified),
                 "local_source_changed"
             );
             let hash = hex::encode(hash.finalize());
@@ -1096,15 +1225,15 @@ impl StorageService {
         if target.exists() {
             // Crash between publishing a copy and recording its checkpoint.
             io::verify(&target, &hash, size)?;
-            fs::remove_file(&partial)?;
         } else {
             // Hard-link is exclusive and publishes the already flushed file without overwriting.
             if fs::hard_link(&partial, &target).is_err() {
                 // Managed roots on filesystems without hard links retain the exclusive copy path.
                 io::copy_new_verified(&partial, &target, &hash, size, cancel)?;
             }
-            fs::remove_file(&partial)?;
         }
+        // A scanner may still hold the copy it just watched being written.
+        io::retry_busy(|| fs::remove_file(&partial))?;
         let record = json!({"id":checkpoint,"kind":"localImportCopy","relativePath":relative,"hash":hash,"sizeBytes":size});
         self.catalogue
             .put("checkpoint", &checkpoint, record.clone())?;
