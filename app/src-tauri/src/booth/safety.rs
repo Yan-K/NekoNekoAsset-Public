@@ -42,9 +42,11 @@ pub fn auth_navigation(url: &Url) -> bool {
         .iter()
         .any(|p| url.path().contains(p))
 }
-/// Any HTTPS domain: no IP literal, credentials or other port.
+/// Any public HTTPS domain: no IP literal, credentials, other port or local name.
 pub fn secure_domain(url: &Url) -> bool {
-    secure(url) && matches!(url.host(), Some(url::Host::Domain(_)))
+    secure(url)
+        && matches!(url.host(), Some(url::Host::Domain(_)))
+        && crate::stores::http::public_https(url)
 }
 /// BOOTH's own download start may hand the file to any HTTPS host, as its CDN and signing
 /// hosts change. The request jar sends BOOTH cookies only to BOOTH.
@@ -448,6 +450,9 @@ mod tests {
             "https://authored-cdn.example:8443/file.zip",
             "https://192.0.2.1/file.zip",
             "https://[2001:db8::1]/file.zip",
+            "https://localhost/file.zip",
+            "https://nas.local/file.zip",
+            "https://intranet/file.zip",
         ] {
             assert!(
                 !download_destination(&Url::parse(value).unwrap()),
