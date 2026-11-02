@@ -186,10 +186,70 @@ fn library_url(page: u64, archived: bool) -> Url {
         .append_pair("page", &page.to_string());
     url
 }
+/// Mid-run change detection compares membership only: the tab's purchase count and owned
+/// bundles. Order, other counts and seller-editable fields are not membership.
 fn signature(page: &LibraryPage) -> String {
     fingerprint(
-        &json!({"count":page.count,"pages":page.pages,"archivedCount":page.archived_count,"unarchivedCount":page.unarchived_count,"purchaseIds":page.purchases.iter().map(|row| &row.purchase_id).collect::<Vec<_>>(),"bundleIds":page.bundles.iter().map(|row| &row.product_id).collect::<Vec<_>>()}),
+        &json!({"count":page.count,"bundleIds":page.bundles.iter().map(|row| &row.product_id).collect::<BTreeSet<_>>()}),
     )
+}
+/// A fresh first page keeps membership when its signature is unchanged and it lists no
+/// purchase that the pass has not read.
+fn membership_kept(head: &LibraryPage, expected: &str, read: impl Fn(&str) -> bool) -> bool {
+    signature(head) == expected && head.purchases.iter().all(|row| read(&row.purchase_id))
+}
+/// These failures are not one asset's own answer and stop the job. Any other failure of a
+/// content, member or file page leaves only that asset as it was.
+fn job_level(code: &str) -> bool {
+    matches!(
+        code,
+        "NETWORK_UNAVAILABLE"
+            | "RATE_LIMITED"
+            | "HTTP_CLIENT_FAILED"
+            | "CANCELLED"
+            | "ACCOUNT_IDENTITY_MISMATCH"
+    )
+}
+/// Only the account's library answer is sign-in evidence. A page that answers for one
+/// asset turns its sign-in answer into that asset's own failure.
+fn asset_failure(error: anyhow::Error, code: &str) -> anyhow::Error {
+    if safe_code(&error) == "AUTH_REQUIRED" {
+        anyhow::anyhow!("{code}")
+    } else {
+        error
+    }
+}
+/// A `/d/` page answers only for its own purchase.
+fn content_page(response: Result<(reqwest::StatusCode, String)>) -> Result<Value> {
+    response
+        .and_then(|(status, html)| {
+            ensure!(status.is_success(), "GUMROAD_CONTENT_UNAVAILABLE");
+            let page = gumroad::inertia_page(&html)?;
+            ensure!(
+                page["component"] == "UrlRedirects/DownloadPage",
+                "GUMROAD_CONTENT_UNAVAILABLE"
+            );
+            Ok(page)
+        })
+        .map_err(|error| asset_failure(error, "PERMISSION_DENIED"))
+}
+/// The asset a purchase belongs to: its known product, otherwise the purchase itself.
+fn purchase_asset(known_purchases: &BTreeMap<String, String>, purchase: &str) -> String {
+    known_purchases
+        .get(purchase)
+        .cloned()
+        .unwrap_or_else(|| format!("purchase:{purchase}"))
+}
+/// Assets that their own answers left as they were stay uncertified; the job still
+/// completes and counts them.
+fn record_incomplete(job: &mut Value, incomplete: &BTreeSet<String>) {
+    if incomplete.is_empty() {
+        if let Some(progress) = job["progress"].as_object_mut() {
+            progress.remove("incompleteProducts");
+        }
+    } else {
+        job["progress"]["incompleteProducts"] = json!(incomplete.len());
+    }
 }
 
 async fn enumerate_bundle_members<'a>(
@@ -204,7 +264,10 @@ async fn enumerate_bundle_members<'a>(
         complete: true,
     };
     let mut seen = BTreeSet::new();
-    for (tab, archived) in [false, true].into_iter().enumerate() {
+    let mut restarted = false;
+    let mut tab = 0;
+    'tabs: while tab < 2 {
+        let archived = tab == 1;
         let first = fetch(1, archived).await?;
         let count = first.count;
         let pages = first.pages;
@@ -219,19 +282,25 @@ async fn enumerate_bundle_members<'a>(
                 fetch(index, archived).await?
             };
             ensure!(page.buyer_identity == buyer, "ACCOUNT_IDENTITY_MISMATCH");
-            ensure!(
-                page.pages == pages && page.count == count,
-                "GUMROAD_LIBRARY_CHANGED"
-            );
             members.pages += 1;
+            if page.count != count {
+                // Membership changed while it was listed: list it once more.
+                ensure!(!restarted, "GUMROAD_LIBRARY_CHANGED");
+                restarted = true;
+                tab = 0;
+                seen.clear();
+                members.purchases.clear();
+                members.complete = true;
+                continue 'tabs;
+            }
             for row in page.purchases {
-                ensure!(
-                    seen.insert(row.purchase_id.clone()),
-                    "GUMROAD_PURCHASE_AMBIGUOUS"
-                );
-                members.purchases.push(row);
+                // A purchase that moved to a later page is listed once.
+                if seen.insert(row.purchase_id.clone()) {
+                    members.purchases.push(row);
+                }
             }
         }
+        tab += 1;
     }
     Ok(members)
 }
@@ -752,13 +821,9 @@ impl GumroadService {
     }
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
         let id = field(job, "id")?;
-        if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
-            session::forget(
-                &self.inner.catalogue.device_dir(),
-                StoreProvider::Gumroad,
-                field(job, "accountId")?,
-            )?;
-        }
+        // A sign-in answer keeps the protected session and only marks the account expired;
+        // a later successful sync or sign-in reconnects it. Only logout, deletion, a failed
+        // first login or a new login replace the session.
         for _ in 0..3 {
             let mut batch = RecordBatch::new(&self.inner.catalogue);
             let current = batch
@@ -811,7 +876,7 @@ impl GumroadService {
                     }
                 }
             }
-            if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_none() {
+            if error == Some("AUTH_REQUIRED") {
                 let account_id = field(job, "accountId")?;
                 if let Some(mut account) = batch.get("account", account_id)? {
                     account["state"] = json!("expired");
@@ -836,6 +901,7 @@ impl GumroadService {
         account: &str,
         checkpoint: &mut Value,
         known_purchases: &BTreeMap<String, String>,
+        unlisted: &BTreeSet<String>,
     ) -> Result<()> {
         let (groups, blocked, unbound) = grouped_journals(
             &self.inner.catalogue,
@@ -846,7 +912,7 @@ impl GumroadService {
         )?;
         let total = groups.len();
         for (product, records) in groups {
-            if unbound || blocked.contains(&product) {
+            if unbound || blocked.contains(&product) || unlisted.contains(&product) {
                 continue;
             }
             self.cancelled(job)?;
@@ -1032,7 +1098,9 @@ impl GumroadService {
             .inner
             .http
             .get_classified(client, url, http::RequestKind::Public)
-            .await?;
+            .await
+            // A cookie-less public page cannot speak for the account's sign-in.
+            .map_err(|error| asset_failure(error, "GUMROAD_PUBLIC_METADATA_UNAVAILABLE"))?;
         if matches!(status.as_u16(), 404 | 410) {
             return Ok(None);
         }
@@ -1078,17 +1146,12 @@ impl GumroadService {
             .ok_or_else(|| anyhow::anyhow!("GUMROAD_CONTENT_UNAVAILABLE"))?
             .url()
             .clone();
-        let (status, html) = self
-            .inner
-            .http
-            .get_classified(client, url.clone(), http::RequestKind::Content)
-            .await?;
-        ensure!(status.is_success(), "GUMROAD_CONTENT_UNAVAILABLE");
-        let page = gumroad::inertia_page(&html)?;
-        ensure!(
-            page["component"] == "UrlRedirects/DownloadPage",
-            "GUMROAD_CONTENT_UNAVAILABLE"
-        );
+        let page = content_page(
+            self.inner
+                .http
+                .get_classified(client, url.clone(), http::RequestKind::Content)
+                .await,
+        )?;
         gumroad::parse_content_props(&page["props"], &url, &row.purchase_id, expected_product)
     }
     /// A bundle remains one product unit. Member identity is established by its parent listing
@@ -1117,17 +1180,12 @@ impl GumroadService {
             };
             let url = route.url().clone();
             let result = async {
-                let (status, html) = self
-                    .inner
-                    .http
-                    .get_classified(client, url.clone(), http::RequestKind::Content)
-                    .await?;
-                ensure!(status.is_success(), "GUMROAD_CONTENT_UNAVAILABLE");
-                let page = gumroad::inertia_page(&html)?;
-                ensure!(
-                    page["component"] == "UrlRedirects/DownloadPage",
-                    "GUMROAD_CONTENT_UNAVAILABLE"
-                );
+                let page = content_page(
+                    self.inner
+                        .http
+                        .get_classified(client, url.clone(), http::RequestKind::Content)
+                        .await,
+                )?;
                 let purchase = field(&page["props"]["purchase"], "id")?;
                 gumroad::parse_content_props(
                     &page["props"],
@@ -1147,14 +1205,7 @@ impl GumroadService {
                     }
                     merge_member_files(&mut parent, child.files);
                 }
-                Err(error)
-                    if matches!(
-                        safe_code(&error).as_str(),
-                        "AUTH_REQUIRED" | "PERMISSION_DENIED" | "RATE_LIMITED"
-                    ) =>
-                {
-                    return Err(error)
-                }
+                Err(error) if job_level(&safe_code(&error)) => return Err(error),
                 Err(_) => {} // Preserve parent financial facts and previously verified files.
             }
         }
@@ -1248,10 +1299,36 @@ impl GumroadService {
         client: &reqwest::Client,
         bundle: &gumroad::LibraryBundle,
         buyer: &str,
-        members: BundleMembers,
+        mut members: BundleMembers,
         reuse: &mut BTreeMap<String, Option<ContentObservation>>,
         job: Option<&Value>,
     ) -> Result<(LibraryPurchase, ContentObservation, u64)> {
+        let mut pages = members.pages;
+        let mut restarted = false;
+        while !self
+            .read_bundle(client, bundle, buyer, &members, reuse, job)
+            .await?
+        {
+            // Membership changed while members were read: list the bundle once more.
+            ensure!(!restarted, "GUMROAD_LIBRARY_CHANGED");
+            restarted = true;
+            members = self.bundle_members(client, bundle, buyer, job).await?;
+            pages += members.pages;
+        }
+        let (card, parent) = assemble_observed_bundle(bundle, &members, reuse);
+        Ok((card, parent, pages))
+    }
+    /// Reads unread member content, then reports whether a single fresh scoped head check
+    /// per tab still shows the listed membership.
+    async fn read_bundle(
+        &self,
+        client: &reqwest::Client,
+        bundle: &gumroad::LibraryBundle,
+        buyer: &str,
+        members: &BundleMembers,
+        reuse: &mut BTreeMap<String, Option<ContentObservation>>,
+        job: Option<&Value>,
+    ) -> Result<bool> {
         let missing: Vec<_> = members
             .purchases
             .iter()
@@ -1274,23 +1351,18 @@ impl GumroadService {
                 Ok(child) => {
                     reuse.insert(purchase, Some(child));
                 }
-                Err(error)
-                    if matches!(
-                        safe_code(&error).as_str(),
-                        "AUTH_REQUIRED"
-                            | "PERMISSION_DENIED"
-                            | "RATE_LIMITED"
-                            | "ACCOUNT_IDENTITY_MISMATCH"
-                    ) =>
-                {
-                    return Err(error)
-                }
+                Err(error) if job_level(&safe_code(&error)) => return Err(error),
                 Err(_) => {
                     reuse.insert(purchase, None);
                 }
             }
         }
         // A single fresh scoped head check per tab, after all member content.
+        let listed: BTreeSet<_> = members
+            .purchases
+            .iter()
+            .map(|row| row.purchase_id.as_str())
+            .collect();
         for (tab, archived) in [false, true].into_iter().enumerate() {
             if let Some(job) = job {
                 self.cancelled(job)?;
@@ -1299,13 +1371,13 @@ impl GumroadService {
                 .library_scope(client, 1, archived, Some(&bundle.product_id))
                 .await?;
             ensure!(head.buyer_identity == buyer, "ACCOUNT_IDENTITY_MISMATCH");
-            ensure!(
-                signature(&head) == members.head_signatures[tab],
-                "GUMROAD_LIBRARY_CHANGED"
-            );
+            if !membership_kept(&head, &members.head_signatures[tab], |id| {
+                listed.contains(id)
+            }) {
+                return Ok(false);
+            }
         }
-        let (card, parent) = assemble_observed_bundle(bundle, &members, reuse);
-        Ok((card, parent, members.pages))
+        Ok(true)
     }
     async fn bundle_content(
         &self,
@@ -1414,19 +1486,20 @@ impl GumroadService {
             heads[1].buyer_identity == buyer_identity,
             "ACCOUNT_IDENTITY_MISMATCH"
         );
-        let signatures = [signature(&heads[0]), signature(&heads[1])];
+        let mut signatures = [signature(&heads[0]), signature(&heads[1])];
         let mut owned_bundles = BTreeMap::new();
         for bundle in heads.iter().flat_map(|head| &head.bundles) {
             owned_bundles
                 .entry(bundle.product_id.clone())
                 .or_insert_with(|| bundle.clone());
         }
-        ensure!(
-            selected_bundles
-                .iter()
-                .all(|id| owned_bundles.contains_key(id)),
-            "GUMROAD_BUNDLE_OWNERSHIP_UNPROVEN"
-        );
+        // Distinct assets that their own definitive answer left as they were. A selected
+        // bundle the library no longer lists is one of them.
+        let mut incomplete: BTreeSet<String> = selected_bundles
+            .iter()
+            .filter(|id| !owned_bundles.contains_key(*id))
+            .map(|id| format!("gumroad:{id}"))
+            .collect();
         let checkpoint_id = if selected.is_some() {
             format!("gumroad:{account}:selected:{}", field(job, "id")?)
         } else {
@@ -1520,7 +1593,15 @@ impl GumroadService {
             let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
         }
         selected_purchases.retain(|id| !bundled_purchases.contains(id));
-        for (tab, head) in heads.into_iter().enumerate() {
+        // Mid-run change detection compares membership only. The first change restarts the
+        // listing pass from its first pages; purchases already read are not read again.
+        let mut restarted = checkpoint["listingRestarted"] == true;
+        let mut membership_changed = false;
+        // Purchases the current pass listed, and the product each observed purchase bound.
+        let mut listed = BTreeSet::new();
+        let mut observed = BTreeMap::new();
+        let mut pending: VecDeque<_> = heads.into_iter().enumerate().collect();
+        while let Some((tab, head)) = pending.pop_front() {
             let archived = tab == 1;
             let pages = head.pages;
             let observed_pages = page_limit.map_or(pages, |limit| pages.min(limit));
@@ -1539,13 +1620,15 @@ impl GumroadService {
                 self.save_running_job(job)?;
                 let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
                 ensure!(
-                    page.pages == pages && page.count == count,
-                    "GUMROAD_LIBRARY_CHANGED"
-                );
-                ensure!(
                     page.buyer_identity == buyer_identity,
                     "ACCOUNT_IDENTITY_MISMATCH"
                 );
+                if page.count != count {
+                    // The tab's membership changed: this pass cannot close.
+                    membership_changed = true;
+                    pending.clear();
+                    break;
+                }
                 let mut observations = Vec::new();
                 let mut page_unresolved = 0;
                 let mut journal = Vec::new();
@@ -1555,10 +1638,11 @@ impl GumroadService {
                 // only stages finished results, retaining page order and grant grouping.
                 let mut eligible = Vec::new();
                 for row in page.purchases {
-                    ensure!(
-                        seen.insert(row.purchase_id.clone()),
-                        "GUMROAD_PURCHASE_AMBIGUOUS"
-                    );
+                    listed.insert(row.purchase_id.clone());
+                    // A purchase already read on an earlier page or pass is read once.
+                    if !seen.insert(row.purchase_id.clone()) {
+                        continue;
+                    }
                     if !parentless_purchase(&row, &bundled_purchases) {
                         page_processed += 1;
                         continue;
@@ -1650,7 +1734,9 @@ impl GumroadService {
                             let complete = observation.inventory_complete;
                             if !complete {
                                 page_unresolved += 1;
+                                incomplete.insert(id.clone());
                             }
+                            observed.insert(row.purchase_id.clone(), id.clone());
                             products.insert(id.clone());
                             journal.push(json!({"purchaseId":row.purchase_id,"productId":id,"complete":complete,"errorCode":public_errors.get(&observation.product_id).filter(|_|needs_public_quote(&observation)).cloned().or_else(|| (!observation.inventory_complete).then(|| "GUMROAD_INVENTORY_UNPROVEN".into()))}));
                             // Publish this complete acquisition while other content
@@ -1682,13 +1768,12 @@ impl GumroadService {
                         }
                         Err(error) => {
                             let code = safe_code(&error);
-                            if matches!(
-                                code.as_str(),
-                                "AUTH_REQUIRED" | "PERMISSION_DENIED" | "RATE_LIMITED"
-                            ) {
+                            if job_level(&code) {
                                 return Err(error);
                             }
+                            // This purchase's own answer: it stays as it was.
                             page_unresolved += 1;
+                            incomplete.insert(purchase_asset(&known_purchases, &row.purchase_id));
                             journal.push(json!({"purchaseId":row.purchase_id,"complete":false,"errorCode":code}));
                         }
                     }
@@ -1712,8 +1797,12 @@ impl GumroadService {
                         [if archived { "archived" } else { "unarchived" }] = json!(page_index);
                 }
                 checkpoint["updatedAt"] = json!(now());
-                let journal_id =
-                    format!("gumroad:{account}:{}:{tab}:{page_index}", field(job, "id")?);
+                // A restarted pass keeps the first pass's page journals.
+                let journal_id = format!(
+                    "gumroad:{account}:{}:{}{tab}:{page_index}",
+                    field(job, "id")?,
+                    if restarted { "restart:" } else { "" }
+                );
                 append_journal(&mut checkpoint, &journal_id)?;
                 let mut committed = false;
                 for _ in 0..3 {
@@ -1764,6 +1853,59 @@ impl GumroadService {
                 self.save_running_job(job)?;
                 let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
             }
+            if !pending.is_empty() {
+                continue;
+            }
+            ensure!(
+                !(membership_changed && restarted),
+                "GUMROAD_LIBRARY_CHANGED"
+            );
+            let current = [
+                self.library(client, 1, false).await?,
+                self.library(client, 1, true).await?,
+            ];
+            ensure!(
+                current
+                    .iter()
+                    .all(|head| head.buyer_identity == buyer_identity),
+                "ACCOUNT_IDENTITY_MISMATCH"
+            );
+            if !membership_changed
+                && current
+                    .iter()
+                    .zip(&signatures)
+                    .all(|(head, expected)| membership_kept(head, expected, |id| seen.contains(id)))
+            {
+                continue;
+            }
+            ensure!(!restarted, "GUMROAD_LIBRARY_CHANGED");
+            restarted = true;
+            membership_changed = false;
+            listed.clear();
+            // A bundle bought during the pass lists its members before the pass restarts.
+            for bundle in current.iter().flat_map(|head| &head.bundles) {
+                if owned_bundles.contains_key(&bundle.product_id)
+                    || (selected.is_some() && !selected_bundles.contains(&bundle.product_id))
+                {
+                    continue;
+                }
+                let members = self
+                    .bundle_members(client, bundle, &buyer_identity, Some(job))
+                    .await?;
+                verification_capped |= !members.complete;
+                bundled_purchases
+                    .extend(members.purchases.iter().map(|row| row.purchase_id.clone()));
+                checkpoint["pages"] =
+                    json!(checkpoint["pages"].as_u64().unwrap_or(0) + members.pages);
+                bundle_memberships.insert(bundle.product_id.clone(), members);
+                owned_bundles.insert(bundle.product_id.clone(), bundle.clone());
+            }
+            signatures = [signature(&current[0]), signature(&current[1])];
+            checkpoint["headSignatures"] = json!(signatures);
+            checkpoint["listingRestarted"] = json!(true);
+            checkpoint["bundlePurchaseIds"] = json!(bundled_purchases);
+            checkpoint["nextPages"] = json!([1, 1]);
+            pending.extend(current.into_iter().enumerate());
         }
         let mut reused_children = BTreeMap::new();
         for bundle in owned_bundles
@@ -1776,7 +1918,7 @@ impl GumroadService {
             let members = bundle_memberships
                 .remove(&bundle.product_id)
                 .ok_or_else(|| anyhow::anyhow!("GUMROAD_BUNDLE_OWNERSHIP_UNPROVEN"))?;
-            let (card, observation, pages) = self
+            let assembled = self
                 .assemble_bundle(
                     client,
                     bundle,
@@ -1785,11 +1927,23 @@ impl GumroadService {
                     &mut reused_children,
                     Some(job),
                 )
-                .await?;
+                .await;
+            let (card, observation, pages) = match assembled {
+                // A bundle the library stopped listing stays as it was.
+                Err(error) if safe_code(&error) == "GUMROAD_BUNDLE_OWNERSHIP_UNPROVEN" => {
+                    unresolved += 1;
+                    incomplete.insert(format!("gumroad:{}", bundle.product_id));
+                    continue;
+                }
+                assembled => assembled?,
+            };
             let id = observation.catalogue_product_id();
             bundled_purchases.extend(observation.member_purchase_ids.iter().cloned());
             products.insert(id.clone());
             unresolved += u64::from(!observation.inventory_complete);
+            if !observation.inventory_complete {
+                incomplete.insert(id.clone());
+            }
             bundle_completed.insert(bundle.product_id.clone());
             checkpoint["completedBundles"] = json!(bundle_completed);
             checkpoint["bundlePurchaseIds"] = json!(bundled_purchases);
@@ -1826,15 +1980,11 @@ impl GumroadService {
             self.save_running_job(job)?;
             let _ = app.emit("nna:changed", json!({"scope":"jobs","jobId":job["id"]}));
         }
-        if selected.is_some() {
-            ensure!(selected_purchases.is_subset(&found), "SYNC_INCOMPLETE");
+        // A selected purchase the library no longer lists stays as it was.
+        for id in selected_purchases.difference(&found) {
+            incomplete.insert(purchase_asset(&known_purchases, id));
         }
-        for (tab, expected) in signatures.iter().enumerate() {
-            ensure!(
-                &signature(&self.library(client, 1, tab == 1).await?) == expected,
-                "GUMROAD_LIBRARY_CHANGED"
-            );
-        }
+        record_incomplete(job, &incomplete);
         self.set_collection_metrics(job, metrics_before, classified_before);
         if verification_capped {
             // Observed complete grants were already published additively. A
@@ -1843,9 +1993,21 @@ impl GumroadService {
             self.save_running_job(job)?;
             bail!("VERIFICATION_PAGE_LIMIT");
         }
-        self.publish_journals(app, job, account, &mut checkpoint, &known_purchases)?;
+        // Only products whose purchases the closing pass listed are certified.
+        let unlisted: BTreeSet<String> = observed
+            .into_iter()
+            .filter(|(purchase, _)| !listed.contains(purchase))
+            .map(|(_, product)| product)
+            .collect();
+        self.publish_journals(
+            app,
+            job,
+            account,
+            &mut checkpoint,
+            &known_purchases,
+            &unlisted,
+        )?;
         if selected.is_some() {
-            ensure!(unresolved == 0, "SYNC_INCOMPLETE");
             return Ok(());
         }
         let coverage_id = format!("gumroad:{account}:library");
@@ -1866,7 +2028,6 @@ impl GumroadService {
             }
         }
         ensure!(finalized, "CONCURRENT_UPDATE");
-        ensure!(unresolved == 0, "SYNC_INCOMPLETE");
         Ok(())
     }
     fn set_collection_metrics(
@@ -2221,13 +2382,20 @@ impl GumroadService {
                 .ok_or_else(|| anyhow::anyhow!("DOWNLOAD_LINK_UNAVAILABLE"))?
                 .url()
                 .clone();
-            let response = self.inner.http.resolve_head(&head_client, url).await?;
+            // A file resolver answers only for its file.
+            let response = self
+                .inner
+                .http
+                .resolve_head(&head_client, url)
+                .await
+                .map_err(|error| asset_failure(error, "DOWNLOAD_RESOLVER_FAILED"))?;
             match response.status().as_u16() {
                 401 => bail!("DOWNLOAD_RESOLVER_FAILED"),
                 403 => bail!("SIGNED_LINK_EXPIRED"),
                 404 | 410 => bail!("FILE_UNAVAILABLE"),
+                // Any redirect with a usable Location resolves the file, not only 302.
                 _ => ensure!(
-                    response.status() == reqwest::StatusCode::FOUND,
+                    response.status().is_redirection(),
                     "DOWNLOAD_LINK_UNAVAILABLE"
                 ),
             }
@@ -2276,9 +2444,11 @@ impl GumroadService {
         }
         .await;
         if let Err(error) = &result {
+            // A refused page or file link re-verifies the account on the next ticket.
             match safe_code(error).as_str() {
                 "AUTH_REQUIRED"
                 | "PERMISSION_DENIED"
+                | "DOWNLOAD_RESOLVER_FAILED"
                 | "ACCOUNT_IDENTITY_MISMATCH"
                 | "STORE_IDENTITY_CHANGED" => self.clear_downloads(account, None),
                 _ => self.clear_downloads(account, Some(product)),
@@ -2705,8 +2875,8 @@ pub fn validate_download_response(response: &reqwest::Response) -> Result<()> {
         "UNSAFE_DOWNLOAD_URL"
     );
     match response.status().as_u16() {
-        401 => bail!("AUTH_REQUIRED"),
-        403 => bail!("SIGNED_LINK_EXPIRED"),
+        // A signed file URL answers only for that file, never for the account's sign-in.
+        401 | 403 => bail!("SIGNED_LINK_EXPIRED"),
         404 | 410 => bail!("FILE_UNAVAILABLE"),
         429 => bail!("RATE_LIMITED"),
         _ => ensure!(response.status().is_success(), "DOWNLOAD_RESOLVER_FAILED"),
@@ -3655,8 +3825,6 @@ mod tests {
                         buyer_identity: "authored-buyer".into(),
                         pages: if archived { 1 } else { pages },
                         count: if archived { 1 } else { pages },
-                        archived_count: 1,
-                        unarchived_count: pages,
                         purchases: vec![LibraryPurchase {
                             purchase_id: format!("authored-{archived}-{page}"),
                             title: None,
@@ -4115,5 +4283,289 @@ mod tests {
         }
         drop(catalogue);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sign_in_answer_keeps_the_protected_session_and_only_marks_the_account() {
+        use tauri::webview::Cookie;
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!(
+                "nna-authored-gumroad-session-{}",
+                uuid::Uuid::new_v4()
+            ));
+        let library = base.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let catalogue = Catalogue::open_bound(&library, &base.join("device")).unwrap();
+        let service = GumroadService::new(catalogue.clone()).unwrap();
+        let account_id = uuid::Uuid::new_v4().to_string();
+        let account = json!({"id":account_id,"store":"Gumroad","state":"connected","status":"connected","identityVerified":true,"identityHash":"authored-buyer-hash","disconnected":false});
+        let profile =
+            session::profile_path(&catalogue.device_dir(), StoreProvider::Gumroad, &account_id)
+                .unwrap();
+        let cookie = Cookie::build(("authored_session", "AUTHORED_COOKIE_VALUE"))
+            .domain("gumroad.com")
+            .path("/")
+            .secure(true)
+            .build();
+        super::super::session_cache::save(
+            &profile,
+            StoreProvider::Gumroad,
+            &account_id,
+            vec![cookie],
+        )
+        .unwrap();
+        for kind in ["gumroadSync", "gumroadUpdate"] {
+            catalogue
+                .put("account", &account_id, account.clone())
+                .unwrap();
+            let job = json!({"id":"authored-auth-job","type":kind,"store":"Gumroad","accountId":account_id,"state":"running","progress":{"stage":"collecting"}});
+            catalogue
+                .put("job", "authored-auth-job", job.clone())
+                .unwrap();
+            service.finish_job(&job, Some("AUTH_REQUIRED")).unwrap();
+            let terminal = catalogue.get("job", "authored-auth-job").unwrap().unwrap();
+            assert_eq!(terminal["state"], "needsAction");
+            assert_eq!(terminal["errorCode"], "AUTH_REQUIRED");
+            let stored = catalogue.get("account", &account_id).unwrap().unwrap();
+            assert!(super::super::has_local_session(&catalogue, &stored));
+            assert_eq!(
+                (&stored["state"], &stored["status"]),
+                (&json!("expired"), &json!("expired"))
+            );
+            for field in ["identityVerified", "identityHash", "disconnected"] {
+                assert_eq!(stored[field], account[field]);
+            }
+        }
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn one_page_sign_in_answer_fails_only_its_asset_while_outages_stop_the_job() {
+        use reqwest::{ResponseBuilderExt, StatusCode};
+        let page = |component: &str| {
+            let payload = serde_json::to_string(&json!({"component":component,"url":"/d/authored","props":{"purchase":{"id":"authored-purchase"}}}))
+                .unwrap()
+                .replace('&', "&amp;")
+                .replace('"', "&quot;");
+            (
+                StatusCode::OK,
+                format!("<div data-page=\"{payload}\"></div>"),
+            )
+        };
+        // A content page's 401 or login route, rendered login page or 403 denies that asset.
+        for response in [
+            Err(anyhow::anyhow!("AUTH_REQUIRED")),
+            Ok(page("Logins/New")),
+            Err(anyhow::anyhow!("PERMISSION_DENIED")),
+        ] {
+            let code = safe_code(&content_page(response).unwrap_err());
+            assert_eq!(code, "PERMISSION_DENIED");
+            assert!(!job_level(&code));
+        }
+        for response in [
+            Ok((StatusCode::NOT_FOUND, String::new())),
+            Ok(page("Unknown/Page")),
+            Ok((StatusCode::OK, "<html></html>".into())),
+            Err(anyhow::anyhow!("UNSAFE_REDIRECT")),
+        ] {
+            assert!(!job_level(&safe_code(&content_page(response).unwrap_err())));
+        }
+        assert_eq!(
+            content_page(Ok(page("UrlRedirects/DownloadPage"))).unwrap()["props"]["purchase"]["id"],
+            "authored-purchase"
+        );
+        // Transport failures, 5xx and 429 after their retries still stop the job.
+        for code in ["NETWORK_UNAVAILABLE", "RATE_LIMITED"] {
+            let error = content_page(Err(anyhow::anyhow!(code))).unwrap_err();
+            assert!(job_level(&safe_code(&error)));
+        }
+        // Cookie-less public pages, file resolvers and signed file URLs never claim sign-in.
+        for code in [
+            "GUMROAD_PUBLIC_METADATA_UNAVAILABLE",
+            "DOWNLOAD_RESOLVER_FAILED",
+        ] {
+            assert_eq!(
+                asset_failure(anyhow::anyhow!("AUTH_REQUIRED"), code).to_string(),
+                code
+            );
+            assert_eq!(
+                asset_failure(anyhow::anyhow!("NETWORK_UNAVAILABLE"), code).to_string(),
+                "NETWORK_UNAVAILABLE"
+            );
+        }
+        for status in [401, 403] {
+            let response = reqwest::Response::from(
+                tauri::http::response::Builder::new()
+                    .status(status)
+                    .url(Url::parse("https://files.gumroad.com/authored/file.zip").unwrap())
+                    .body("")
+                    .unwrap(),
+            );
+            assert_eq!(
+                validate_download_response(&response)
+                    .unwrap_err()
+                    .to_string(),
+                "SIGNED_LINK_EXPIRED"
+            );
+        }
+    }
+
+    #[test]
+    fn product_local_failures_complete_the_job_and_count_distinct_assets() {
+        let path =
+            std::env::temp_dir().join(format!("nna-gumroad-incomplete-{}", uuid::Uuid::new_v4()));
+        let catalogue = Catalogue::open(&path).unwrap();
+        let service = GumroadService::new(catalogue.clone()).unwrap();
+        let account_id = "22222222-2222-4222-8222-222222222222";
+        catalogue.put("account", account_id, json!({"id":account_id,"store":"Gumroad","state":"connected","status":"connected","identityVerified":true,"identityHash":"authored-buyer-hash","disconnected":false})).unwrap();
+        let known = BTreeMap::from([
+            (
+                "authored-first-grant".to_owned(),
+                "gumroad:authored-known".to_owned(),
+            ),
+            (
+                "authored-second-grant".to_owned(),
+                "gumroad:authored-known".to_owned(),
+            ),
+        ]);
+        // Two failed grants of one product, a purchase new to the catalogue and a partial
+        // inventory are three assets.
+        let mut incomplete = BTreeSet::from(["gumroad:authored-partial".to_owned()]);
+        for purchase in [
+            "authored-first-grant",
+            "authored-second-grant",
+            "authored-new-purchase",
+        ] {
+            incomplete.insert(purchase_asset(&known, purchase));
+        }
+        assert_eq!(incomplete.len(), 3);
+        // Their failures keep the known product blocked and membership unbound, so no
+        // authoritative publication certifies around them.
+        let job = json!({"id":"authored-incomplete-job","type":"gumroadSync","store":"Gumroad","accountId":account_id,"state":"running","progress":{"stage":"finalizing","incompleteProducts":9}});
+        catalogue
+            .put("job", "authored-incomplete-job", job.clone())
+            .unwrap();
+        catalogue.put("checkpoint", "authored-failed-page", json!({"id":"authored-failed-page","store":"Gumroad","accountId":account_id,"runId":job["id"],"observations":[{"purchaseId":"authored-first-grant","complete":false,"errorCode":"PERMISSION_DENIED"},{"purchaseId":"authored-new-purchase","complete":false,"errorCode":"GUMROAD_CONTENT_UNAVAILABLE"}],"records":[]})).unwrap();
+        let checkpoint = json!({"id":"authored-checkpoint","journalIds":["authored-failed-page"]});
+        let (_, blocked, unbound) =
+            grouped_journals(&catalogue, &job, account_id, &checkpoint, &known).unwrap();
+        assert!(blocked.contains("gumroad:authored-known") && unbound);
+        let mut completed = job.clone();
+        record_incomplete(&mut completed, &incomplete);
+        service.finish_job(&completed, None).unwrap();
+        let terminal = catalogue
+            .get("job", "authored-incomplete-job")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal["state"], "completed");
+        assert!(terminal["errorCode"].is_null());
+        assert_eq!(terminal["progress"]["incompleteProducts"], 3);
+        assert_eq!(
+            catalogue.get("account", account_id).unwrap().unwrap()["state"],
+            "connected"
+        );
+        let mut clean = job;
+        record_incomplete(&mut clean, &BTreeSet::new());
+        assert!(clean["progress"].get("incompleteProducts").is_none());
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn membership_change_restarts_the_listing_once_and_order_never_fails_it() {
+        fn page(count: u64, pages: u64, ids: &[&str]) -> LibraryPage {
+            LibraryPage {
+                buyer_identity: "authored-buyer".into(),
+                pages,
+                count,
+                purchases: ids
+                    .iter()
+                    .map(|id| LibraryPurchase {
+                        purchase_id: (*id).into(),
+                        title: None,
+                        author: None,
+                        thumbnail_url: None,
+                        native_type: Some("digital".into()),
+                        variant_name: None,
+                        archived: false,
+                        content_route: None,
+                    })
+                    .collect(),
+                bundles: vec![],
+            }
+        }
+        let ids = |members: &BundleMembers| {
+            members
+                .purchases
+                .iter()
+                .map(|row| row.purchase_id.clone())
+                .collect::<Vec<_>>()
+        };
+        // A purchase that moved onto the next page is listed once; nothing fails.
+        let reordered = enumerate_bundle_members("authored-buyer", None, |index, archived| {
+            async move {
+                Ok(match (archived, index) {
+                    (true, _) => page(0, 1, &[]),
+                    (false, 1) => page(3, 2, &["first", "second"]),
+                    _ => page(3, 2, &["second", "third"]),
+                })
+            }
+            .boxed()
+        })
+        .await
+        .unwrap();
+        assert_eq!(ids(&reordered), ["first", "second", "third"]);
+        // A purchase that arrives mid-listing restarts it once from its first page.
+        let calls = Arc::new(Mutex::new(0));
+        let restarted = enumerate_bundle_members("authored-buyer", None, |index, archived| {
+            let calls = calls.clone();
+            async move {
+                let call = {
+                    let mut calls = calls.lock().unwrap();
+                    *calls += 1;
+                    *calls
+                };
+                Ok(match (archived, index) {
+                    (true, _) => page(0, 1, &[]),
+                    (false, 1) if call == 1 => page(3, 2, &["first", "second"]),
+                    (false, 1) => page(4, 2, &["new", "first"]),
+                    _ => page(4, 2, &["second", "third"]),
+                })
+            }
+            .boxed()
+        })
+        .await
+        .unwrap();
+        assert_eq!(ids(&restarted), ["new", "first", "second", "third"]);
+        assert_eq!(restarted.pages, 5);
+        // A second change keeps the failure.
+        let changing = enumerate_bundle_members("authored-buyer", None, |index, _| {
+            async move { Ok(page(index + 2, 2, &["first"])) }.boxed()
+        })
+        .await;
+        assert_eq!(
+            changing.err().unwrap().to_string(),
+            "GUMROAD_LIBRARY_CHANGED"
+        );
+        // A fresh first page keeps membership through reordering and pagination changes.
+        let expected = signature(&page(4, 2, &["new", "first"]));
+        let read = |id: &str| ["new", "first", "second", "third"].contains(&id);
+        let reordered_head = page(4, 3, &["third", "new"]);
+        assert!(membership_kept(&reordered_head, &expected, read));
+        let grown_head = page(5, 2, &["new", "first"]);
+        assert!(!membership_kept(&grown_head, &expected, read));
+        let unread_head = page(4, 2, &["unread", "new"]);
+        assert!(!membership_kept(&unread_head, &expected, read));
+        let mut bundled = page(4, 2, &["new", "first"]);
+        bundled.bundles.push(gumroad::LibraryBundle {
+            product_id: "authored-bundle".into(),
+            label: None,
+        });
+        assert!(!membership_kept(&bundled, &expected, read));
     }
 }

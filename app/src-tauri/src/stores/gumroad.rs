@@ -36,13 +36,12 @@ fn transient_route(value: &Value, base: &Url) -> Result<Option<TransientRoute>> 
             if value.is_empty() {
                 return Ok(None);
             }
-            let url = base
+            let mut url = base
                 .join(value)
                 .map_err(|_| anyhow::anyhow!("GUMROAD_ROUTE_UNSUPPORTED"))?;
-            ensure!(
-                trusted_url(&url) && url.fragment().is_none(),
-                "GUMROAD_ROUTE_UNSUPPORTED"
-            );
+            ensure!(trusted_url(&url), "GUMROAD_ROUTE_UNSUPPORTED");
+            // A fragment never reaches the server.
+            url.set_fragment(None);
             Ok(Some(TransientRoute(url)))
         }
         _ => bail!("GUMROAD_ROUTE_UNSUPPORTED"),
@@ -56,16 +55,16 @@ fn file_route(value: &Value, file_id: &str) -> Result<Option<TransientRoute>> {
         let url = route.url();
         let path: Vec<_> = url.path().split('/').collect();
         ensure!(
-            url.host_str() == Some("gumroad.com")
-                && path.len() == 4
-                && path[1] == "r"
-                && !path[2].is_empty()
-                && path[3] == "product_files",
+            path.len() == 4 && path[1] == "r" && !path[2].is_empty() && path[3] == "product_files",
             "GUMROAD_FILE_BINDING_UNPROVEN"
         );
-        let query: Vec<_> = url.query_pairs().collect();
+        // The one requested file ID binds the route; other parameters do not change it.
+        let files: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key == "product_file_ids[]")
+            .collect();
         ensure!(
-            query.len() == 1 && query[0].0 == "product_file_ids[]" && query[0].1 == file_id,
+            files.len() == 1 && files[0].1 == file_id,
             "GUMROAD_FILE_BINDING_UNPROVEN"
         );
     }
@@ -151,10 +150,8 @@ pub fn necessary_page(page: &Value) -> Result<Value> {
     let component = page["component"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("GUMROAD_SOURCE_UNSUPPORTED"))?;
-    ensure!(
-        page["props"].is_object() && page["url"].is_string(),
-        "GUMROAD_SOURCE_UNSUPPORTED"
-    );
+    // The echoed page URL is not needed; the component and its props are.
+    ensure!(page["props"].is_object(), "GUMROAD_SOURCE_UNSUPPORTED");
     // A protected buyer request redirected to the observed login page needs login,
     // while unfamiliar components remain unsupported source shapes.
     ensure!(component != "Logins/New", "AUTH_REQUIRED");
@@ -226,19 +223,14 @@ pub fn inertia_page(html: &str) -> Result<Value> {
     ensure!(html.len() <= LIMIT, "GUMROAD_METADATA_TOO_LARGE");
     let document = Html::parse_document(html);
     let selector = Selector::parse("[data-page]").unwrap();
-    let mut nodes = document.select(&selector);
-    let node = nodes
-        .next()
+    // The app root precedes any element it renders, so the first page payload in
+    // document order is the page; other data-page attributes are not.
+    let page = document
+        .select(&selector)
+        .filter_map(|node| node.value().attr("data-page"))
+        .filter_map(|payload| serde_json::from_str::<Value>(payload).ok())
+        .find(|page| page["props"].is_object() && page["component"].is_string())
         .ok_or_else(|| anyhow::anyhow!("GUMROAD_SOURCE_UNSUPPORTED"))?;
-    ensure!(nodes.next().is_none(), "GUMROAD_SOURCE_AMBIGUOUS");
-    let payload = node.value().attr("data-page").unwrap();
-    ensure!(payload.len() <= LIMIT, "GUMROAD_METADATA_TOO_LARGE");
-    let page: Value =
-        serde_json::from_str(payload).map_err(|_| anyhow::anyhow!("GUMROAD_SOURCE_UNSUPPORTED"))?;
-    ensure!(
-        page["props"].is_object() && page["component"].is_string() && page["url"].is_string(),
-        "GUMROAD_SOURCE_UNSUPPORTED"
-    );
     necessary_page(&page)
 }
 
@@ -267,8 +259,6 @@ pub struct LibraryPage {
     pub buyer_identity: String,
     pub pages: u64,
     pub count: u64,
-    pub archived_count: u64,
-    pub unarchived_count: u64,
     pub purchases: Vec<LibraryPurchase>,
     pub bundles: Vec<LibraryBundle>,
 }
@@ -311,29 +301,23 @@ pub fn parse_library_scope(
         page == expected_page && page >= 1 && pages >= page && pages <= 10000,
         "GUMROAD_PAGINATION_UNPROVEN"
     );
+    // An echoed parameter fails the page only when it shows another tab or a filter.
+    // A missing or renamed echo and the sort order are not needed to read the page.
+    let search = &props["search"];
     ensure!(
-        props["search"]["show_archived_only"].as_bool() == Some(archived),
+        search["show_archived_only"]
+            .as_bool()
+            .is_none_or(|value| value == archived)
+            && search["query"].as_str().is_none_or(str::is_empty)
+            && search["creators"].as_array().is_none_or(Vec::is_empty)
+            && match bundle {
+                None => search["bundles"].as_array().is_none_or(Vec::is_empty),
+                // Only the echo proves that member cards belong to this bundle.
+                Some(bundle) => search["bundles"]
+                    .as_array()
+                    .is_some_and(|ids| ids.len() == 1 && ids[0].as_str() == Some(bundle)),
+            },
         "GUMROAD_SCOPE_CHANGED"
-    );
-    ensure!(
-        props["search"]["query"].as_str() == Some("")
-            && props["search"]["creators"]
-                .as_array()
-                .is_some_and(Vec::is_empty)
-            && props["search"]["bundles"]
-                .as_array()
-                .is_some_and(|ids| match bundle {
-                    None => ids.is_empty(),
-                    Some(bundle) => ids.len() == 1 && ids[0].as_str() == Some(bundle),
-                }),
-        "GUMROAD_SCOPE_CHANGED"
-    );
-    ensure!(
-        matches!(
-            props["search"]["sort"].as_str(),
-            Some("purchase_date" | "recently_updated")
-        ),
-        "GUMROAD_SOURCE_UNSUPPORTED"
     );
     let rows = props["results"]
         .as_array()
@@ -352,18 +336,6 @@ pub fn parse_library_scope(
         },
         "GUMROAD_PAGINATION_UNPROVEN"
     );
-    let archived_count = number(&props["archived_count"])?;
-    let unarchived_count = number(&props["unarchived_count"])?;
-    // Bundle parent purchases may be replaced by member cards; tab totals precede that replacement.
-    ensure!(
-        count
-            <= if archived {
-                archived_count
-            } else {
-                unarchived_count
-            },
-        "GUMROAD_PAGINATION_UNPROVEN"
-    );
     let mut seen = BTreeSet::new();
     let mut purchases = Vec::with_capacity(rows.len());
     for row in rows {
@@ -375,7 +347,9 @@ pub fn parse_library_scope(
             "GUMROAD_PURCHASE_AMBIGUOUS"
         );
         ensure!(
-            purchase["is_archived"].as_bool() == Some(archived),
+            purchase["is_archived"]
+                .as_bool()
+                .is_none_or(|value| value == archived),
             "GUMROAD_SCOPE_CHANGED"
         );
         purchases.push(LibraryPurchase {
@@ -386,7 +360,10 @@ pub fn parse_library_scope(
             thumbnail_url: optional_text(&product["thumbnail_url"]),
             native_type: optional_text(&product["native_type"]),
             variant_name: optional_text(&purchase["variants"]),
-            content_route: transient_route(&purchase["download_url"], base)?,
+            // An unusable route is that purchase's own failure, never the page's.
+            content_route: transient_route(&purchase["download_url"], base)
+                .ok()
+                .flatten(),
         });
     }
     let buyer_identity = identifier(
@@ -415,8 +392,6 @@ pub fn parse_library_scope(
         buyer_identity,
         pages,
         count,
-        archived_count,
-        unarchived_count,
         purchases,
         bundles,
     })
@@ -653,7 +628,8 @@ pub fn parse_content_props(
     Ok(ContentObservation {
         purchase_id,
         product_id,
-        receipt_purchase_id: optional_id(&purchase["receipt_purchase_id"])?,
+        // Unused beyond this observation, so an unreadable value is unknown, not a failure.
+        receipt_purchase_id: identifier(&purchase["receipt_purchase_id"]).ok(),
         variant_id: optional_id(&purchase["variant_id"])?,
         title: optional_text(&purchase["product_name"]),
         acquired_at,
@@ -830,6 +806,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inertia_reads_the_app_root_page_beside_other_data_page_attributes() {
+        let attribute = |page: Value| {
+            serde_json::to_string(&page)
+                .unwrap()
+                .replace('&', "&amp;")
+                .replace('"', "&quot;")
+        };
+        // The echoed page URL is absent; a rendered child carries another payload.
+        let root = attribute(json!({"component":"Library/Index","props":library()}));
+        let child = attribute(json!({"component":"Logins/New","url":"/login","props":{}}));
+        let html = format!(
+            "<meta data-page=\"library\"><div id=\"app\" data-page=\"{root}\"><span data-page=\"{child}\"></span></div>"
+        );
+        let page = inertia_page(&html).unwrap();
+        assert_eq!(page["component"], "Library/Index");
+        assert_eq!(page["props"]["pagination"]["count"], 569);
+    }
+
     fn library() -> Value {
         let results: Vec<Value> = (0..15).map(|index| json!({"product":{"name":"Authored fixture","native_type":"digital"},"purchase":{"id":format!("authored-purchase-{index}"),"is_archived":false,"download_url":"/d/authored-capability","variants":"Standard"}})).collect();
         json!({"results":results,"logged_in_user":{"id":"authored-buyer"},
@@ -935,6 +930,54 @@ mod tests {
             assert!(page.purchases[0].excluded_non_asset());
             assert!(!page.purchases[1].excluded_non_asset());
         }
+    }
+
+    #[test]
+    fn buyer_library_reads_pages_whose_echoes_sort_totals_or_one_card_route_changed() {
+        let base = Url::parse("https://gumroad.com/library?page=1").unwrap();
+        let mut changed = library();
+        changed["search"] = json!({"sort":"authored_new_order"});
+        for key in ["archived_count", "unarchived_count"] {
+            changed.as_object_mut().unwrap().remove(key);
+        }
+        changed["results"][0]["purchase"]
+            .as_object_mut()
+            .unwrap()
+            .remove("is_archived");
+        changed["results"][1]["purchase"]["download_url"] =
+            json!("https://authored.invalid/d/authored-capability");
+        changed["results"][2]["purchase"]["download_url"] = json!(42);
+        let page = parse_library_props(&changed, &base, 1, false).unwrap();
+        assert_eq!(page.purchases.len(), 15);
+        assert!(!page.purchases[0].archived);
+        assert!(page.purchases[1].content_route.is_none());
+        assert!(page.purchases[2].content_route.is_none());
+        assert!(page.purchases[3].content_route.is_some());
+        // An echo or row that shows another tab or a filter still fails the page.
+        for (key, value) in [
+            ("show_archived_only", json!(true)),
+            ("query", json!("authored")),
+            ("creators", json!(["authored-creator"])),
+            ("bundles", json!(["authored-bundle"])),
+        ] {
+            let mut filtered = changed.clone();
+            filtered["search"][key] = value;
+            assert_eq!(
+                parse_library_props(&filtered, &base, 1, false)
+                    .err()
+                    .unwrap()
+                    .to_string(),
+                "GUMROAD_SCOPE_CHANGED"
+            );
+        }
+        let mut other_tab = changed.clone();
+        other_tab["results"][3]["purchase"]["is_archived"] = json!(true);
+        assert!(parse_library_props(&other_tab, &base, 1, false).is_err());
+        // Only the echo proves that member cards belong to the requested bundle.
+        changed["bundles"] = json!([{"id":"authored-bundle"}]);
+        assert!(parse_library_scope(&changed, &base, 1, false, Some("authored-bundle")).is_err());
+        changed["search"]["bundles"] = json!(["authored-bundle"]);
+        assert!(parse_library_scope(&changed, &base, 1, false, Some("authored-bundle")).is_ok());
     }
 
     #[test]
@@ -1118,12 +1161,11 @@ mod tests {
     }
 
     #[test]
-    fn file_controls_require_one_exact_file_identity_on_the_verified_root_route() {
+    fn file_controls_require_one_exact_file_identity_on_the_resolver_route() {
         let base = Url::parse("https://gumroad.com/d/authored-capability").unwrap();
         for route in [
             "/r/authored-capability/product_files?product_file_ids[]=other-file",
             "/r/authored-capability/product_files?product_file_ids[]=authored-file-one&product_file_ids[]=authored-file-two",
-            "/r/authored-capability/product_files?product_file_ids[]=authored-file-one&other=true",
             "/r/authored-capability/product_files",
             "/d/authored-capability/download?product_file_ids[]=authored-file-one",
         ] {
@@ -1133,10 +1175,19 @@ mod tests {
             assert!(parsed.files[0].resolver.is_none());
             assert!(parsed.acquired_at.is_some());
         }
-        let parsed = parse_content_props(&content(), &base, "authored-purchase", None).unwrap();
-        assert_eq!(
-            parsed.files[0].resolver.as_ref().unwrap().url().path(),
-            "/r/authored-capability/product_files"
-        );
+        // Another first-party host, an unrelated parameter or a fragment keeps the binding.
+        for route in [
+            "/r/authored-capability/product_files?product_file_ids[]=authored-file-one",
+            "/r/authored-capability/product_files?product_file_ids[]=authored-file-one&other=true",
+            "https://app.gumroad.com/r/authored-capability/product_files?product_file_ids[]=authored-file-one",
+            "/r/authored-capability/product_files?product_file_ids[]=authored-file-one#files",
+        ] {
+            let mut value = content(); value["content"]["content_items"][0]["children"][0]["download_url"] = json!(route);
+            let parsed = parse_content_props(&value, &base, "authored-purchase", None).unwrap();
+            assert!(parsed.inventory_complete);
+            let resolver = parsed.files[0].resolver.as_ref().unwrap().url();
+            assert_eq!(resolver.path(), "/r/authored-capability/product_files");
+            assert!(resolver.fragment().is_none());
+        }
     }
 }
