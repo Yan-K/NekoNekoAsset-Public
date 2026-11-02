@@ -62,7 +62,7 @@ pub(crate) struct UpdateState {
     installing: Arc<AtomicBool>,
 }
 
-/// The caller also holds the global command and idle-catalogue permits through installer exit.
+/// The caller also holds the global command gate and the catalogue connection through installer exit.
 pub(crate) struct InstallPermit(Arc<AtomicBool>);
 impl Drop for InstallPermit {
     fn drop(&mut self) {
@@ -238,8 +238,12 @@ impl UpdateState {
         })
     }
 
-    /// A signed download never mutates the catalogue. Windows exits only after launching NSIS.
-    pub(crate) async fn install(&self, app: &AppHandle, expected_version: &str) -> Result<()> {
+    /// A signed download never mutates the catalogue, so other work continues meanwhile.
+    pub(crate) async fn download(
+        &self,
+        app: &AppHandle,
+        expected_version: &str,
+    ) -> Result<PreparedInstall> {
         ensure!(self.installing.load(Ordering::Acquire), "updates_busy");
         ensure!(install_supported(app), "updates_portable_unsupported");
         let mut update = self.checked.lock().await.clone().context("updates_stale")?;
@@ -275,11 +279,46 @@ impl UpdateState {
             bytes.len() as u64,
             Some(bytes.len() as u64),
         );
-        crate::window_state::flush_app(app).await;
-        update
-            .install(&bytes)
+        Ok(PreparedInstall { update, bytes })
+    }
+}
+
+pub(crate) struct PreparedInstall {
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+impl PreparedInstall {
+    /// Windows exits this process only after launching NSIS.
+    pub(crate) fn launch(&self) -> Result<()> {
+        self.update
+            .install(&self.bytes)
             .map_err(|_| anyhow::anyhow!("updates_install_failed"))
     }
+}
+
+/// Store sync/update jobs resume from their checkpoints when the updated App starts.
+/// Any other active job names why installation has to wait.
+pub(crate) fn blocking_job(job: &serde_json::Value) -> Option<&'static str> {
+    if !matches!(job["state"].as_str(), Some("queued" | "running")) {
+        return None;
+    }
+    let kind = job["type"].as_str().unwrap_or("");
+    Some(match kind {
+        "boothSync" | "boothUpdate" | "gumroadSync" | "gumroadUpdate" | "jinxxySync"
+        | "jinxxyUpdate" => return None,
+        "boothLogin" | "gumroadLogin" | "jinxxyLogin" => "updates_busy_login",
+        "download" => "updates_busy_download",
+        "storage:import_local" => "updates_busy_import",
+        "storage:migrate_root" => "updates_busy_move",
+        "storage:export_backup" => "updates_busy_backup",
+        "storage:restore_backup" => "updates_busy_restore",
+        "storage:export_zip" => "updates_busy_export",
+        "storage:delete_local_products" => "updates_busy_delete",
+        "unity:import" => "updates_busy_unity",
+        _ if kind.starts_with("ai:") => "updates_busy_ai",
+        _ => "updates_busy_job",
+    })
 }
 
 #[cfg(test)]
@@ -323,6 +362,22 @@ mod tests {
         let mut changed = fixture;
         changed.version = "beta".into();
         assert!(validate_bridge(changed).is_err());
+    }
+    #[test]
+    fn only_active_non_sync_jobs_block_installation() {
+        let job = |kind: &str, state: &str| serde_json::json!({"type":kind,"state":state});
+        for kind in ["boothSync", "boothUpdate", "gumroadSync", "gumroadUpdate", "jinxxySync", "jinxxyUpdate"] {
+            assert_eq!(blocking_job(&job(kind, "running")), None);
+            assert_eq!(blocking_job(&job(kind, "queued")), None);
+        }
+        assert_eq!(blocking_job(&job("download", "queued")), Some("updates_busy_download"));
+        assert_eq!(blocking_job(&job("boothLogin", "running")), Some("updates_busy_login"));
+        assert_eq!(blocking_job(&job("storage:restore_backup", "running")), Some("updates_busy_restore"));
+        assert_eq!(blocking_job(&job("ai:classify", "running")), Some("updates_busy_ai"));
+        assert_eq!(blocking_job(&job("storage:future", "running")), Some("updates_busy_job"));
+        for state in ["completed", "failed", "needsAction", "cancelled"] {
+            assert_eq!(blocking_job(&job("download", state)), None);
+        }
     }
     #[test]
     fn failed_or_finished_install_releases_single_operation_slot() {

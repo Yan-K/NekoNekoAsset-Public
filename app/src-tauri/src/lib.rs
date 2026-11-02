@@ -1484,35 +1484,55 @@ async fn updates_install(
 ) -> Result<(), UiError> {
     trusted_access(&window)?;
     let _install = state.begin_install().map_err(UiError::from_error)?;
-    let _commands = gate.0.clone().try_write_owned().map_err(|_| UiError {
+    update_ready(&host)?;
+    let prepared = state
+        .download(&app, &version)
+        .await
+        .map_err(UiError::from_error)?;
+    // In-flight commands such as thumbnail fetches finish first; new ones are
+    // refused until the installer launches or fails.
+    let _commands = tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        gate.0.clone().write_owned(),
+    )
+    .await
+    .map_err(|_| UiError {
         code: "updates_busy".into(),
     })?;
+    let catalogue = update_ready(&host)?.catalogue;
+    crate::window_state::flush_app(&app).await;
+    // Exit between catalogue transactions; interrupted store syncs resume from
+    // their checkpoints when the updated App starts. The library's OS lock is
+    // held until this process exits.
+    tauri::async_runtime::spawn_blocking(move || {
+        catalogue.between_transactions(|jobs| match jobs.iter().find_map(updates::blocking_job) {
+            Some(code) => Err(anyhow::anyhow!(code)),
+            None => prepared.launch(),
+        })
+    })
+    .await
+    .map_err(|_| UiError {
+        code: "worker_failed".into(),
+    })?
+    .and_then(|launched| launched)
+    .map_err(UiError::from_error)
+}
+
+/// An open library whose active jobs are store syncs only; otherwise the blocking reason.
+fn update_ready(host: &LibraryHost) -> Result<Services, UiError> {
+    let busy = |code: &str| UiError { code: code.into() };
     if host.opening.load(Ordering::Acquire) || host.active_setup()?.is_some() {
-        return Err(UiError {
-            code: "updates_busy".into(),
-        });
+        return Err(busy("updates_busy_library"));
     }
     let services = host.services()?;
     if services.setup_only {
-        return Err(UiError {
-            code: "updates_busy".into(),
-        });
+        return Err(busy("updates_busy_library"));
     }
-    // The catalogue's existing gate atomically rejects live and queued work.
-    // Keep the library's OS lock until updater installation exits this process.
-    let _idle = services.catalogue.begin_restore_work().map_err(|error| {
-        if error.to_string() == "storage_busy" {
-            UiError {
-                code: "updates_busy".into(),
-            }
-        } else {
-            UiError::from_error(error)
-        }
-    })?;
-    state
-        .install(&app, &version)
-        .await
-        .map_err(UiError::from_error)
+    let jobs = services.catalogue.list("job").map_err(UiError::from_error)?;
+    match jobs.iter().find_map(updates::blocking_job) {
+        Some(code) => Err(busy(code)),
+        None => Ok(services),
+    }
 }
 
 pub fn run() {

@@ -1780,6 +1780,15 @@ impl Catalogue {
         );
         Ok(permit)
     }
+    /// Holds the only catalogue connection while `run` sees the current jobs, so no
+    /// transaction is in progress or can begin. Installer launch exits inside `run`.
+    pub(crate) fn between_transactions<T>(&self, run: impl FnOnce(&[Value]) -> T) -> Result<T> {
+        let conn = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?;
+        Ok(run(&rows(&conn, "job")?))
+    }
     pub fn get(&self, kind: &str, id: &str) -> Result<Option<Value>> {
         kind_valid(kind)?;
         raw(

@@ -11,7 +11,8 @@
 .update-progress{display:flex;flex-direction:column;gap:8px;font-size:13px;}
 .update-progress progress{width:100%;}
 .update-progress small{align-self:flex-end;color:var(--muted);}
-.update-body .update-blocked{margin:0;color:var(--warning);}
+.update-modal .update-body .update-blocked{margin:0;color:var(--warning);}
+.update-modal .update-body .update-note{margin:0;color:var(--muted);font-size:12px;}
 .update-modal .modal-footer{gap:6px;}
 .update-modal .modal-footer>button{display:inline-flex;align-items:center;gap:5px;}
 .unity-bridge-download{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:9px;}

@@ -6,9 +6,9 @@ import {checkUpdates,errorCode,installUpdate,openExternal,subscribeUpdateProgres
 import {updateText} from './update-i18n';
 import './update.css';
 
-export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,installBlocked,isInstallBlocked,open,request,onOpenChange,onAvailableChange,onBeforeInstall}:{
- locale:Locale;currentVersion:string;ready:boolean;canPrompt:boolean;installBlocked:boolean;open:boolean;request:number;
- onOpenChange:(open:boolean)=>void;onAvailableChange:(available:boolean)=>void;onBeforeInstall:()=>Promise<void>;isInstallBlocked:()=>boolean;
+export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,installBlocker,currentInstallBlocker,syncActive,open,request,onOpenChange,onAvailableChange,onBeforeInstall}:{
+ locale:Locale;currentVersion:string;ready:boolean;canPrompt:boolean;installBlocker:string;syncActive:boolean;open:boolean;request:number;
+ onOpenChange:(open:boolean)=>void;onAvailableChange:(available:boolean)=>void;onBeforeInstall:()=>Promise<void>;currentInstallBlocker:()=>string;
 }){
  const L=(key:string)=>updateText(locale,key);
  const [result,setResult]=useState<UpdateCheck|null>(null),[checking,setChecking]=useState(false),[installing,setInstalling]=useState(false),[error,setError]=useState(''),[progress,setProgress]=useState<UpdateProgress|null>(null),[pendingPrompt,setPendingPrompt]=useState(false);
@@ -29,10 +29,12 @@ export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,inst
   return()=>{previous?.focus();};
  },[open]);
  useEffect(()=>{if(installing)box.current?.focus();},[installing]);
+ // A reason reported by the native install is shown until the live reason changes.
+ useEffect(()=>{setError(value=>value.startsWith('updates_busy')?'':value);},[installBlocker]);
  async function install(){
-  const available=result?.app.available;if(!available||installBlocked||operation.current)return;
+  const available=result?.app.available;if(!available||installBlocker||operation.current)return;
   operation.current=true;setInstalling(true);setError('');setProgress(null);let stop:(()=>void)|undefined;
-  try{await onBeforeInstall();stop=await subscribeUpdateProgress(value=>{if(mounted.current)setProgress(value);});if(isInstallBlocked())throw new Error('updates_busy');await installUpdate(available.version);}
+  try{await onBeforeInstall();stop=await subscribeUpdateProgress(value=>{if(mounted.current)setProgress(value);});const blocker=currentInstallBlocker();if(blocker)throw new Error(blocker);await installUpdate(available.version);}
   catch(error){if(mounted.current)setError(errorCode(error));}
   finally{stop?.();operation.current=false;if(mounted.current){setInstalling(false);setProgress(null);}}
  }
@@ -44,7 +46,7 @@ export default function UpdatePrompt({locale,currentVersion,ready,canPrompt,inst
   if(event.key==='Tab'){const elements=Array.from(box.current?.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],[tabindex="0"]')??[]).filter(item=>item.getClientRects().length);const first=elements[0],last=elements.at(-1);if(!elements.length){event.preventDefault();}else if(event.shiftKey&&(document.activeElement===first||document.activeElement===box.current)){event.preventDefault();last?.focus();}else if(!event.shiftKey&&(document.activeElement===last||document.activeElement===box.current)){event.preventDefault();first?.focus();}}
  }}><header className="modal-header"><h2 id="app-update-title">{L('title')}</h2><button type="button" disabled={installing} aria-label={L('close')} onClick={close}><X size={15}/></button></header>
  <div className="modal-body update-body"><div className="update-current"><span>{L('current')}</span><strong>v{result?.app.currentVersion??currentVersion}</strong></div>
- {installing?<div className="update-progress" role="status"><span>{L(stage)}</span><progress max={100} value={stage==='downloading'?percent:undefined} aria-label={L(stage)}/>{stage==='downloading'&&percent!==undefined&&<small>{Math.round(percent)}%</small>}</div>:checking?<div className="update-status" role="status"><RefreshCw size={16} className="sync-spinning"/>{L('checking')}</div>:available?<><strong className="update-status">{L('available').replace('{version}',available.version)}</strong>{available.notes&&<div className="update-notes">{available.notes}</div>}<button type="button" className="update-release-link" onClick={()=>void openExternal(available.releaseUrl).catch(error=>setError(errorCode(error)))}>{L('release')}</button>{!result.app.installSupported?<p className="update-blocked">{L('updates_portable_unsupported')}</p>:installBlocked&&<p className="update-blocked">{L('busy')}</p>}</>:result&&!error?<div className="update-status" role="status">{L('latest')}</div>:null}
+ {installing?<div className="update-progress" role="status"><span>{L(stage)}</span><progress max={100} value={stage==='downloading'?percent:undefined} aria-label={L(stage)}/>{stage==='downloading'&&percent!==undefined&&<small>{Math.round(percent)}%</small>}</div>:checking?<div className="update-status" role="status"><RefreshCw size={16} className="sync-spinning"/>{L('checking')}</div>:available?<><strong className="update-status">{L('available').replace('{version}',available.version)}</strong>{available.notes&&<div className="update-notes">{available.notes}</div>}<button type="button" className="update-release-link" onClick={()=>void openExternal(available.releaseUrl).catch(error=>setError(errorCode(error)))}>{L('release')}</button>{!result.app.installSupported?<p className="update-blocked">{L('updates_portable_unsupported')}</p>:installBlocker?installBlocker!==error&&<p className="update-blocked" role="status">{L(installBlocker)}</p>:syncActive&&<p className="update-note">{L('syncResumes')}</p>}</>:result&&!error?<div className="update-status" role="status">{L('latest')}</div>:null}
  {error&&<div className="wf-error" role="alert">{L(error)}</div>}</div>
- <footer className="modal-footer"><button type="button" disabled={installing||checking} onClick={()=>void check()}><RefreshCw size={14}/>{L('check')}</button><span className="spacer"/><button type="button" disabled={installing} onClick={close}>{L(available?'later':'close')}</button>{available&&result?.app.installSupported&&<button type="button" className="primary" disabled={installing||checking||installBlocked} onClick={()=>void install()}><Download size={14}/>{L('install')}</button>}</footer></div></div>;
+ <footer className="modal-footer"><button type="button" disabled={installing||checking} onClick={()=>void check()}><RefreshCw size={14}/>{L('check')}</button><span className="spacer"/><button type="button" disabled={installing} onClick={close}>{L(available?'later':'close')}</button>{available&&result?.app.installSupported&&<button type="button" className="primary" disabled={installing||checking||!!installBlocker} onClick={()=>void install()}><Download size={14}/>{L('install')}</button>}</footer></div></div>;
 }
