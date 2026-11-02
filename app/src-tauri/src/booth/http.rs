@@ -324,6 +324,8 @@ pub fn build_client(jar: Arc<reqwest::cookie::Jar>, download: bool) -> Result<Cl
     let builder = Client::builder()
         .cookie_provider(jar)
         .redirect(policy)
+        // A hop may leave BOOTH; a signed URL must not reach the next host as a Referer.
+        .referer(false)
         .connect_timeout(Duration::from_secs(20))
         .user_agent(concat!(
             "NekoNekoAsset/",

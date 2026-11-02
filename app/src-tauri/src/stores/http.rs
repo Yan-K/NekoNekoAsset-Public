@@ -128,7 +128,9 @@ fn build_provider_client(
             reqwest::header::HeaderValue::from_static("en-US"),
         );
     }
+    // A hop may leave the store; a signed URL must not reach the next host as a Referer.
     let builder = Client::builder()
+        .referer(false)
         .cookie_provider(jar)
         .default_headers(headers)
         .redirect(if head {

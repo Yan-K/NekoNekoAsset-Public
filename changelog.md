@@ -9,7 +9,8 @@
 ### Changed
 
 - Library items are called assets, and store pages are called listings, in all five languages.
-- Update and restart no longer waits for store syncs: they continue where they stopped after the restart. When other work has to finish first, the update prompt names it.
+- Update and restart no longer fails on its first click while other work is briefly busy, and no longer waits for store syncs: they continue where they stopped after the restart. When other work has to finish first, the update prompt names it.
+- Unity Bridge: the import review window gives a column only to what arrived, so packages alone or loose files alone fill the window.
 - One asset a store can't fully provide, for example a removed listing, files that aren't ready yet or a page that answers with an error, no longer fails a sync or leaves it needing action. The sync completes and Activity and the Sync dialog show how many assets weren't fully read; those assets keep what they had.
 
 ### Fixed

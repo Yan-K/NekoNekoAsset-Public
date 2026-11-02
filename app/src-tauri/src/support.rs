@@ -160,7 +160,7 @@ pub(crate) fn reset_attempt(job: &mut Value) {
         for key in ["supportDiagnostics", "supportLastStage", "supportCapture", "requestMetrics"] { object.remove(key); }
     }
     if let Some(progress) = job["progress"].as_object_mut() {
-        for key in ["loginStage", "lastErrorCode"] { progress.remove(key); }
+        for key in ["loginStage", "lastErrorCode", "incompleteProducts"] { progress.remove(key); }
     }
     if matches!(job["type"].as_str(), Some("boothSync" | "boothUpdate" | "boothLogin")) {
         job["supportCapture"] = json!({"version":1,"state":"queued"});

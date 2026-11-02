@@ -103,6 +103,7 @@ pub(crate) fn has_local_session(catalogue: &Catalogue, account: &Value) -> bool 
     };
     session::profile_path(&catalogue.device_dir(), provider, id)
         .ok()
+        .filter(|profile| !session_cache::signed_out(profile))
         .and_then(|profile| session_cache::load(&profile, provider, id).ok())
         .is_some_and(|cookies| !cookies.is_empty())
 }
@@ -537,10 +538,7 @@ impl StoreService {
                     .ok_or_else(|| anyhow::anyhow!("STORE_UNAVAILABLE"))?,
             )?,
         )?;
-        // A download that answers AUTH_REQUIRED ends needing sign-in, but keeps the
-        // protected session: one refused link is no proof the login expired, and only
-        // logout, deletion, a failed first login or a new login replace it.
-        match provider {
+        let result = match provider {
             StoreProvider::Booth => self
                 .booth
                 .download_ticket(app, file_id)
@@ -554,7 +552,17 @@ impl StoreService {
                 }),
             StoreProvider::Gumroad => self.gumroad.download_ticket(app, file_id).await,
             StoreProvider::Jinxxy => self.jinxxy.download_ticket(app, file_id).await,
+        };
+        // Queued downloads for this account wait for sign-in; the session itself is kept.
+        if self.catalogue.library_root().is_some()
+            && result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.to_string() == "AUTH_REQUIRED")
+        {
+            session::mark_signed_out(&self.catalogue.device_dir(), provider, account)?;
         }
+        result
     }
 }
 

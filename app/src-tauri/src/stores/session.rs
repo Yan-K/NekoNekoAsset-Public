@@ -153,6 +153,11 @@ pub fn forget(data_dir: &Path, provider: StoreProvider, account: &str) -> Result
     super::session_cache::clear(&profile_path(data_dir, provider, account)?)
 }
 
+/// What a sync or download does on AUTH_REQUIRED; see session_cache::mark_signed_out.
+pub fn mark_signed_out(data_dir: &Path, provider: StoreProvider, account: &str) -> Result<()> {
+    super::session_cache::mark_signed_out(&profile_path(data_dir, provider, account)?)
+}
+
 /// Only a confirmed discarded draft loses its account-scoped snapshot. Other
 /// libraries' profiles and established accounts are never inferred as obsolete.
 pub(crate) fn discard_unverified_account(catalogue: &crate::catalogue::Catalogue, provider: StoreProvider, account: &str) -> Result<bool> {

@@ -277,13 +277,19 @@ async fn enumerate_bundle_members<'a>(
         members.complete &= observed_pages == pages;
         for index in 1..=observed_pages {
             let page = if index == 1 {
-                first.take().unwrap()
+                Some(first.take().unwrap())
             } else {
-                fetch(index, archived).await?
+                match fetch(index, archived).await {
+                    Ok(page) => Some(page),
+                    Err(error) if page_gone(&error) => None,
+                    Err(error) => return Err(error),
+                }
             };
-            ensure!(page.buyer_identity == buyer, "ACCOUNT_IDENTITY_MISMATCH");
-            members.pages += 1;
-            if page.count != count {
+            if let Some(page) = &page {
+                ensure!(page.buyer_identity == buyer, "ACCOUNT_IDENTITY_MISMATCH");
+                members.pages += 1;
+            }
+            let Some(page) = page.filter(|page| page.count == count) else {
                 // Membership changed while it was listed: list it once more.
                 ensure!(!restarted, "GUMROAD_LIBRARY_CHANGED");
                 restarted = true;
@@ -292,7 +298,7 @@ async fn enumerate_bundle_members<'a>(
                 members.purchases.clear();
                 members.complete = true;
                 continue 'tabs;
-            }
+            };
             for row in page.purchases {
                 // A purchase that moved to a later page is listed once.
                 if seen.insert(row.purchase_id.clone()) {
@@ -303,6 +309,13 @@ async fn enumerate_bundle_members<'a>(
         tab += 1;
     }
     Ok(members)
+}
+/// A later listing page that no longer exists: the list shrank while it was read.
+fn page_gone(error: &anyhow::Error) -> bool {
+    matches!(
+        safe_code(error).as_str(),
+        "GUMROAD_PAGINATION_UNPROVEN" | "GUMROAD_LIBRARY_UNAVAILABLE"
+    )
 }
 fn assemble_observed_bundle(
     bundle: &gumroad::LibraryBundle,
@@ -821,9 +834,15 @@ impl GumroadService {
     }
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
         let id = field(job, "id")?;
-        // A sign-in answer keeps the protected session and only marks the account expired;
-        // a later successful sync or sign-in reconnects it. Only logout, deletion, a failed
-        // first login or a new login replace the session.
+        // A sign-in answer keeps the protected session: only logout, deletion, a failed first
+        // login or a new login replace it. This device waits for a sign-in, which restores it.
+        if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
+            session::mark_signed_out(
+                &self.inner.catalogue.device_dir(),
+                StoreProvider::Gumroad,
+                field(job, "accountId")?,
+            )?;
+        }
         for _ in 0..3 {
             let mut batch = RecordBatch::new(&self.inner.catalogue);
             let current = batch
@@ -876,7 +895,7 @@ impl GumroadService {
                     }
                 }
             }
-            if error == Some("AUTH_REQUIRED") {
+            if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_none() {
                 let account_id = field(job, "accountId")?;
                 if let Some(mut account) = batch.get("account", account_id)? {
                     account["state"] = json!("expired");
@@ -1591,8 +1610,10 @@ impl GumroadService {
         let mut restarted = checkpoint["listingRestarted"] == true;
         let mut membership_changed = false;
         // Purchases the current pass listed, and the product each observed purchase bound.
-        let mut listed = BTreeSet::new();
-        let mut observed = BTreeMap::new();
+        let mut listed: BTreeSet<String> =
+            serde_json::from_value(checkpoint["listedPurchaseIds"].clone()).unwrap_or_default();
+        let mut observed: BTreeMap<String, String> =
+            serde_json::from_value(checkpoint["observedPurchases"].clone()).unwrap_or_default();
         let mut pending: VecDeque<_> = heads.into_iter().enumerate().collect();
         while let Some((tab, head)) = pending.pop_front() {
             let archived = tab == 1;
@@ -1607,7 +1628,15 @@ impl GumroadService {
                     // The initial response has already been validated.
                     first.take().unwrap()
                 } else {
-                    self.library(client, page_index, archived).await?
+                    match self.library(client, page_index, archived).await {
+                        Ok(page) => page,
+                        Err(error) if page_gone(&error) => {
+                            membership_changed = true;
+                            pending.clear();
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    }
                 };
                 job["progress"] = json!({"stage":"collecting","pages":checkpoint["pages"],"products":products.len(),"published":checkpoint["publishedProducts"].as_array().map_or(0,Vec::len),"metadataCompleted":seen.len()+bundle_completed.len(),"metadataTotal":metadata_total,"unresolvedRows":unresolved});
                 self.save_running_job(job)?;
@@ -1782,6 +1811,8 @@ impl GumroadService {
                 unresolved += page_unresolved;
                 checkpoint["nextPages"][tab] = json!(page_index + 1);
                 checkpoint["seenPurchaseIds"] = json!(seen);
+                checkpoint["listedPurchaseIds"] = json!(listed);
+                checkpoint["observedPurchases"] = json!(observed);
                 checkpoint["productIds"] = json!(products);
                 checkpoint["unresolvedRows"] = json!(unresolved);
                 checkpoint["pages"] = json!(checkpoint["pages"].as_u64().unwrap_or(0) + 1);
@@ -1896,6 +1927,7 @@ impl GumroadService {
             signatures = [signature(&current[0]), signature(&current[1])];
             checkpoint["headSignatures"] = json!(signatures);
             checkpoint["listingRestarted"] = json!(true);
+            checkpoint["listedPurchaseIds"] = json!(listed);
             checkpoint["bundlePurchaseIds"] = json!(bundled_purchases);
             checkpoint["nextPages"] = json!([1, 1]);
             pending.extend(current.into_iter().enumerate());
@@ -4321,15 +4353,23 @@ mod tests {
             let terminal = catalogue.get("job", "authored-auth-job").unwrap().unwrap();
             assert_eq!(terminal["state"], "needsAction");
             assert_eq!(terminal["errorCode"], "AUTH_REQUIRED");
+            // The shared record stays as it was for other devices. This device keeps the
+            // snapshot for the next sign-in and shows the account signed out until then.
             let stored = catalogue.get("account", &account_id).unwrap().unwrap();
-            assert!(super::super::has_local_session(&catalogue, &stored));
-            assert_eq!(
-                (&stored["state"], &stored["status"]),
-                (&json!("expired"), &json!("expired"))
-            );
-            for field in ["identityVerified", "identityHash", "disconnected"] {
+            for field in ["state", "status", "identityVerified", "identityHash", "disconnected"] {
                 assert_eq!(stored[field], account[field]);
             }
+            assert!(!super::super::session_cache::load(&profile, StoreProvider::Gumroad, &account_id)
+                .unwrap()
+                .is_empty());
+            assert!(!super::super::has_local_session(&catalogue, &stored));
+            // A sign-in saves the session again and this device is ready.
+            let cookies =
+                super::super::session_cache::load(&profile, StoreProvider::Gumroad, &account_id)
+                    .unwrap();
+            super::super::session_cache::save(&profile, StoreProvider::Gumroad, &account_id, cookies)
+                .unwrap();
+            assert!(super::super::has_local_session(&catalogue, &stored));
         }
         drop(service);
         drop(catalogue);
@@ -4536,6 +4576,41 @@ mod tests {
         .unwrap();
         assert_eq!(ids(&restarted), ["new", "first", "second", "third"]);
         assert_eq!(restarted.pages, 5);
+        // A list that shrank past the page being read restarts it too.
+        let calls = Arc::new(Mutex::new(0));
+        let shrunk = enumerate_bundle_members("authored-buyer", None, |index, archived| {
+            let calls = calls.clone();
+            async move {
+                let call = {
+                    let mut calls = calls.lock().unwrap();
+                    *calls += 1;
+                    *calls
+                };
+                match (archived, index, call) {
+                    (true, _, _) => Ok(page(0, 1, &[])),
+                    (false, 1, 1) => Ok(page(3, 2, &["first", "second"])),
+                    (false, _, 2) => anyhow::bail!("GUMROAD_PAGINATION_UNPROVEN"),
+                    _ => Ok(page(2, 1, &["first", "second"])),
+                }
+            }
+            .boxed()
+        })
+        .await
+        .unwrap();
+        assert_eq!(ids(&shrunk), ["first", "second"]);
+        // Any other failure of a later page still stops the listing.
+        let outage = enumerate_bundle_members("authored-buyer", None, |index, archived| {
+            async move {
+                match (archived, index) {
+                    (true, _) => Ok(page(0, 1, &[])),
+                    (false, 1) => Ok(page(3, 2, &["first", "second"])),
+                    _ => anyhow::bail!("NETWORK_UNAVAILABLE"),
+                }
+            }
+            .boxed()
+        })
+        .await;
+        assert_eq!(outage.err().unwrap().to_string(), "NETWORK_UNAVAILABLE");
         // A second change keeps the failure.
         let changing = enumerate_bundle_members("authored-buyer", None, |index, _| {
             async move { Ok(page(index + 2, 2, &["first"])) }.boxed()

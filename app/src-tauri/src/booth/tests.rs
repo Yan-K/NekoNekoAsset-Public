@@ -1003,11 +1003,19 @@ fn sign_in_signals_keep_the_protected_session_for_a_later_sync() {
             .unwrap();
         assert_eq!(stored["state"], "needsAction");
         assert_eq!(stored["errorCode"], "AUTH_REQUIRED");
+        // The snapshot stays for the next sign-in; this device waits for that sign-in.
+        assert!(!session_cache::load(&profile, StoreProvider::Booth, A)
+            .unwrap()
+            .is_empty());
         assert!(
-            crate::stores::has_local_session(&catalogue, &account),
+            !crate::stores::has_local_session(&catalogue, &account),
             "{kind}"
         );
     }
+    // A sign-in saves the session again and this device is ready.
+    let cookies = session_cache::load(&profile, StoreProvider::Booth, A).unwrap();
+    session_cache::save(&profile, StoreProvider::Booth, A, cookies).unwrap();
+    assert!(crate::stores::has_local_session(&catalogue, &account));
     // The account keeps its needs-sign-in state until a later sync succeeds with that session.
     let mut waiting = account.clone();
     waiting["status"] = json!("needsAction");

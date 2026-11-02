@@ -380,12 +380,39 @@ pub(crate) fn save_scoped(
 ) -> Result<()> {
     #[cfg(windows)]
     {
-        platform::save(profile, provider, account, cookies)
+        platform::save(profile, provider, account, cookies)?;
     }
     #[cfg(not(windows))]
     {
-        let _ = (profile, provider, account, cookies);
-        Ok(())
+        let _ = (provider, account, cookies);
+    }
+    clear_signed_out(profile)
+}
+
+const SIGNED_OUT: &str = "session.signed-out";
+
+/// The store's account page said this device's session is signed out. The snapshot stays, so
+/// the next sign-in restores it and a wrong answer costs one click instead of a password.
+/// Until then this device holds syncs and downloads for the account. It lives here because
+/// the shared library record cannot speak for one device.
+pub fn mark_signed_out(profile: &Path) -> Result<()> {
+    match std::fs::write(profile.join(SIGNED_OUT), b"") {
+        Ok(()) => Ok(()),
+        // No profile folder means no snapshot, which already reads as signed out.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(anyhow!("SESSION_CACHE_UNAVAILABLE")),
+    }
+}
+
+pub fn signed_out(profile: &Path) -> bool {
+    profile.join(SIGNED_OUT).exists()
+}
+
+fn clear_signed_out(profile: &Path) -> Result<()> {
+    match std::fs::remove_file(profile.join(SIGNED_OUT)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(anyhow!("SESSION_CACHE_UNAVAILABLE")),
     }
 }
 
@@ -419,16 +446,17 @@ pub(crate) fn load_scoped(
 pub fn clear(profile: &Path) -> Result<()> {
     #[cfg(windows)]
     {
-        platform::clear(profile)
+        platform::clear(profile)?;
     }
     #[cfg(not(windows))]
     {
         match std::fs::remove_file(profile.join("session.bin")) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(anyhow!("SESSION_CACHE_UNAVAILABLE")),
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(anyhow!("SESSION_CACHE_UNAVAILABLE")),
         }
     }
+    clear_signed_out(profile)
 }
 
 #[cfg(all(test, windows))]

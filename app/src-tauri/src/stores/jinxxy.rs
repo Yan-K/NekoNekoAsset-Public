@@ -1509,6 +1509,8 @@ impl JinxxyService {
         }
         let status = match state {
             "running" => "running",
+            // Assets left as they were keep coverage open, as in the other stores.
+            "complete" | "completed" if job["progress"]["incompleteProducts"].as_u64().unwrap_or(0) > 0 => "incomplete",
             "complete" | "completed" => "complete",
             "cancelled" => "cancelled",
             _ if error == Some("VERIFICATION_PAGE_LIMIT") => "incomplete",
@@ -1555,8 +1557,15 @@ impl JinxxyService {
         )
     }
     fn finish_job(&self, job: &mut Value, state: &str, error: Option<&str>) -> Result<()> {
-        // A sign-in signal keeps the protected session. Only logout, deletion, a failed
-        // first login and a replacing login clear it; a later successful sync reconnects.
+        // A sign-in signal keeps the protected session: only logout, deletion, a failed first
+        // login and a replacing login clear it. This device waits for a sign-in, which restores it.
+        if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
+            session::mark_signed_out(
+                &self.inner.catalogue.device_dir(),
+                StoreProvider::Jinxxy,
+                &account_arg(job)?,
+            )?;
+        }
         let id = job["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("INVALID_JOB"))?
@@ -1598,7 +1607,9 @@ impl JinxxyService {
                         "incomplete"
                     });
                     account["lastSyncErrorCode"] = json!(error);
-                    if error == Some("AUTH_REQUIRED") {
+                    if error == Some("AUTH_REQUIRED")
+                        && self.inner.catalogue.library_root().is_none()
+                    {
                         account["state"] = json!("expired");
                         account["status"] = json!("expired");
                     }
@@ -2962,9 +2973,17 @@ mod tests {
             catalogue.put("job", kind, job.clone()).unwrap();
             service.finish_job(&mut job, "needsAction", Some("AUTH_REQUIRED")).unwrap();
             assert_eq!(std::fs::read(&snapshot).unwrap(), b"authored protected snapshot");
-            let expired = catalogue.get("account", account).unwrap().unwrap();
-            assert_eq!((&expired["status"], &expired["state"]), (&json!("expired"), &json!("expired")));
-            assert_eq!((&expired["identityHash"], &expired["identityVerified"]), (&record["identityHash"], &json!(true)));
+            // The shared record stays as it was for other devices; this device waits for a
+            // sign-in, whose save clears its marker.
+            let stored = catalogue.get("account", account).unwrap().unwrap();
+            for field in ["status", "state", "identityHash", "identityVerified"] {
+                assert_eq!(stored[field], record[field]);
+            }
+            let profile = snapshot.parent().unwrap();
+            assert!(super::super::session_cache::signed_out(profile));
+            super::super::session_cache::clear(profile).unwrap();
+            assert!(!super::super::session_cache::signed_out(profile));
+            std::fs::write(&snapshot, b"authored protected snapshot").unwrap();
         }
         drop(catalogue);
         drop(service);
@@ -3079,8 +3098,9 @@ mod tests {
         let partial_grant = catalogue.get("entitlement", &partial_entitlement).unwrap().unwrap();
         assert_eq!((&partial_grant["manifestComplete"], &partial_grant["fileIds"]), (&json!(false), &json!(["retained-file"])));
         assert_eq!(catalogue.related("acquisition", &format!("jinxxy:{healthy_product}")).unwrap().len(), 1);
-        // The listing closed, so its coverage completes; the asset itself stays uncertified.
-        assert_eq!(catalogue.get("source_coverage", &format!("jinxxy:{account}:inventory")).unwrap().unwrap()["coverageComplete"], true);
+        // An asset left as it was keeps coverage open, as in the other stores.
+        let coverage = catalogue.get("source_coverage", &format!("jinxxy:{account}:inventory")).unwrap().unwrap();
+        assert_eq!((&coverage["status"], &coverage["coverageComplete"]), (&json!("incomplete"), &json!(false)));
         drop(service);
         drop(catalogue);
         std::fs::remove_dir_all(path).unwrap();

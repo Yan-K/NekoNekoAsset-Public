@@ -796,9 +796,18 @@ impl BoothService {
         Ok(job)
     }
     /// A sign-in signal keeps the protected session: only logout, deletion, a failed first
-    /// login or a replacing login clear it, and a later successful sync reconnects.
+    /// login or a replacing login clear it. This device waits for a sign-in, which restores it.
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
         let id = field(job, "id")?;
+        if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
+            if let Some(account) = job["accountId"].as_str() {
+                crate::stores::session::mark_signed_out(
+                    &self.inner.catalogue.device_dir(),
+                    crate::stores::StoreProvider::Booth,
+                    account,
+                )?;
+            }
+        }
         for _ in 0..4 {
             let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
             let current = batch

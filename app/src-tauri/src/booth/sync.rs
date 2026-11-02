@@ -374,6 +374,25 @@ fn unbound_row_count(page: &parser::Page) -> usize {
         rows
     }
 }
+/// Whether what this scan left open still lets the job complete. A listing whose end or pages
+/// could not be proven does not, nor does one where no row binds to an asset: the parser no
+/// longer understands that page. Every other gap is an asset or row the store answered for,
+/// or a listing that moved while it was read (a purchase arrived, a seller edited a file):
+/// what was read is published, membership stays uncertified and the next sync rereads it.
+fn source_gaps_local(
+    checkpoint: &Checkpoint,
+    final_head: &str,
+    terminal_unproven: bool,
+    assets_left: bool,
+    rows: usize,
+) -> bool {
+    let read_to_end =
+        checkpoint.terminal && checkpoint.pending.is_empty() && !checkpoint.head.is_empty();
+    read_to_end
+        && !terminal_unproven
+        && (checkpoint.head != final_head || assets_left || rows > 0)
+        && !(rows > 0 && checkpoint.product_ids.is_empty())
+}
 /// What a source scan left open. Only a listing it could not close keeps the job
 /// incomplete; assets left as they were are counted instead.
 #[derive(Default)]
@@ -2250,13 +2269,20 @@ impl BoothService {
         if let Some(error_code) = enrichment_error {
             bail!(error_code);
         }
-        // A listing whose end, pages or head could not be proven keeps the job incomplete.
-        // Otherwise every gap is an asset (selected or not) or row the store answered for.
-        let gaps_local = closed_traversal
-            && !terminal_unproven_observed
-            && (!incomplete_products.is_empty()
-                || !left_products.is_empty()
-                || unresolved_rows > 0);
+        // A bound row without files is in no manifest but is an asset left as it was too.
+        left_products.extend(
+            incomplete_products
+                .iter()
+                .filter(|product| selected.is_none_or(|ids| ids.contains(*product)))
+                .cloned(),
+        );
+        let gaps_local = source_gaps_local(
+            &checkpoint,
+            &final_head.fingerprint,
+            terminal_unproven_observed,
+            !left_products.is_empty(),
+            unresolved_rows,
+        );
         Ok(SourceScan {
             settled: collection_settled(
                 &checkpoint,
@@ -4545,6 +4571,35 @@ mod tests {
         let failed: Result<Value, String> =
             Err(public_status_code(StatusCode::BAD_GATEWAY).to_owned());
         assert!(retry.settle(request("900002"), failed).is_empty());
+    }
+    #[test]
+    fn a_moved_listing_or_asset_gaps_complete_the_job_but_an_unproven_or_unbound_listing_does_not() {
+        let mut checkpoint = Checkpoint::fresh("authored", "library", "full").unwrap();
+        checkpoint.terminal = true;
+        checkpoint.pending.clear();
+        checkpoint.head = "head".into();
+        checkpoint.product_ids.insert("900001".into());
+        let local = |c: &Checkpoint, head: &str, unproven, assets, rows| {
+            source_gaps_local(c, head, unproven, assets, rows)
+        };
+        // Nothing left open has nothing to excuse.
+        assert!(!local(&checkpoint, "head", false, false, 0));
+        // A purchase arrived while the pass ran, or assets and rows were left as they were.
+        assert!(local(&checkpoint, "moved", false, false, 0));
+        assert!(local(&checkpoint, "head", false, true, 0));
+        assert!(local(&checkpoint, "head", false, false, 2));
+        // The end of the listing was never proven.
+        assert!(!local(&checkpoint, "moved", true, false, 0));
+        let mut open = checkpoint.clone();
+        open.pending.push("/library?page=2".into());
+        assert!(!local(&open, "head", false, true, 0));
+        open = checkpoint.clone();
+        open.terminal = false;
+        assert!(!local(&open, "moved", false, false, 0));
+        // Rows but no row bound to an asset: the parser no longer understands the listing.
+        checkpoint.product_ids.clear();
+        assert!(!local(&checkpoint, "head", false, false, 3));
+        assert!(local(&checkpoint, "moved", false, false, 0));
     }
     #[test]
     fn unreadable_receipt_or_free_item_keeps_membership_open_without_inventing_rows() {
