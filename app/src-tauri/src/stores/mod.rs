@@ -340,21 +340,17 @@ impl StoreService {
                 ensure!(found, "AUTH_REQUIRED");
             }
         }
+        // BOOTH queues an update behind its account's running work and reuses an identical one.
         for job in self
             .catalogue
             .list("job")?
             .into_iter()
             .filter(|row| matches!(row["state"].as_str(), Some("queued" | "running")))
         {
-            let booth_job = matches!(
-                job["type"].as_str(),
-                Some("boothSync" | "boothUpdate" | "boothLogin")
-            );
             ensure!(
-                !(booth_job && groups.contains_key(&StoreProvider::Booth))
-                    && !job["accountId"]
-                        .as_str()
-                        .is_some_and(|id| accounts.contains(id)),
+                !job["accountId"]
+                    .as_str()
+                    .is_some_and(|id| accounts.contains(id)),
                 "ACCOUNT_BUSY"
             );
         }

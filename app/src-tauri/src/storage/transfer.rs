@@ -103,7 +103,7 @@ fn same_remote_identity(a: &Value, b: &Value) -> bool {
 
 /// A source path as stored in the managed tree. Each name maps like any other store file
 /// name; empty, `.` and `..` segments are still refused.
-fn managed_source_path(file: &Value) -> Result<String> {
+pub(super) fn managed_source_path(file: &Value) -> Result<String> {
     let mut parts = Vec::new();
     for part in io::required_string(file, "sourceRelativePath")?.split(['/', '\\']) {
         ensure!(

@@ -1072,15 +1072,8 @@ impl GumroadService {
             false,
         )
         .await?;
-        let jar = match session::jar(window.clone(), StoreProvider::Gumroad).await {
-            Ok(jar) => jar,
-            Err(error) if safe_code(&error) == "AUTH_REQUIRED" => {
-                // A newly reopened hidden WebView may not have loaded its profile yet.
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                session::jar(window, StoreProvider::Gumroad).await?
-            }
-            Err(error) => return Err(error),
-        };
+        // session::jar already waits for a reopened hidden WebView to load its profile.
+        let jar = session::jar(window, StoreProvider::Gumroad).await?;
         Ok((
             http::build_client(StoreProvider::Gumroad, jar.clone())?,
             jar,

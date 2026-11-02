@@ -229,9 +229,18 @@ impl StorageService {
                         .as_str()
                         .or(remote["name"].as_str())
                         .unwrap_or("");
-                    if let Ok(leaf) =
-                        self.unity_leaf(&remote, &artifact, &root, "", name, &artifact)
-                    {
+                    // A store name Windows cannot store was saved under its io::managed_name.
+                    let name = if archive::validate_relative_path(name).is_ok() {
+                        Some(name.to_owned())
+                    } else if remote["sourceRelativePath"].is_string() {
+                        super::transfer::managed_source_path(&remote).ok()
+                    } else {
+                        Some(io::managed_name(name)).filter(|_| !name.is_empty())
+                    };
+                    if let Some(leaf) = name.and_then(|name| {
+                        self.unity_leaf(&remote, &artifact, &root, "", &name, &artifact)
+                            .ok()
+                    }) {
                         result.push(leaf);
                     }
                 }
@@ -651,6 +660,16 @@ mod tests {
             fs::read(root.join(base).join("Models/example.fbx")).unwrap(),
             b"damaged model!"
         );
+    }
+
+    #[tokio::test]
+    async fn unity_inventory_offers_a_file_saved_under_its_windows_name() {
+        let (service, root) = fixture();
+        seed_file(&service, &root, "package", "Outfit: Summer?.unitypackage", b"authored mapped package");
+        let leaves = service.list_unity_inventory(&["local:synthetic".to_owned()]).await.unwrap();
+        let leaf = leaves.iter().find(|leaf| leaf.file_id == "package").unwrap();
+        assert_eq!(leaf.relative_path, "Outfit： Summer？.unitypackage");
+        assert_eq!(leaf.kind, "unitypackage");
     }
 
     #[tokio::test]
