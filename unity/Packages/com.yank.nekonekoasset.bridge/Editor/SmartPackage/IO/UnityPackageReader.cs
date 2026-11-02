@@ -198,12 +198,13 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 
 			bool validMetaGuid = GuidUtility.IsValidGuid(record.MetaGuid);
 			record.IsPathManaged = ProjectPackagePath.IsPathManaged(normalized, validMetaGuid);
+			// Like Unity, an entry without an asset payload is a folder: exported package roots have
+			// only a pathname, and IDE-written folder metas may omit folderAsset.
+			if (!record.HasAssetMember)
+				record.IsFolder = true;
 
 			if (record.IsPathManaged)
 			{
-				if (!record.HasAssetMember && !record.IsFolder)
-					throw new InvalidDataException("Path-managed project entry has no payload and is not a folder: " + normalized);
-
 				// Some package writers preserve the unitypackage member shape by emitting an
 				// asset.meta for project files outside AssetDatabase. These entries have path
 				// identity, not Unity GUID identity, so do not write that placeholder beside
@@ -224,8 +225,6 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 
 			if (!record.HasMetaMember)
 				throw new InvalidDataException("Unity asset entry is missing asset.meta: " + normalized);
-			if (!record.HasAssetMember && !record.IsFolder)
-				throw new InvalidDataException("Unity asset entry has no payload and is not a folder: " + normalized);
 		}
 	}
 

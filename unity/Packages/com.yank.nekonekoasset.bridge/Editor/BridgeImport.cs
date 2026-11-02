@@ -366,6 +366,9 @@ namespace NekoNekoAsset.Bridge
             try
             {
                 AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                // Refresh alone does not register new or changed embedded package manifests.
+                if (request.outputs.Any(output => output.path.StartsWith("Packages/", StringComparison.Ordinal)))
+                    UnityEditor.PackageManager.Client.Resolve();
                 foreach (BridgeOutputCheck output in request.outputs)
                 {
                     string path = BridgeFiles.Under(registry.projectRoot, output.path);

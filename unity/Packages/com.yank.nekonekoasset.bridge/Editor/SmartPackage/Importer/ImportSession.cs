@@ -187,7 +187,12 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                         staged.Add(item.Package, payloads);
                     }
                     if (!payloads.TryGetValue(item.Entry.Guid, out StagedAssetPayload payload))
-                        throw new InvalidDataException("A selected payload is missing from staging.");
+                    {
+                        // A pathname-only folder (an exported package root) has no members to stage.
+                        if (item.Entry.HasAssetMember || item.Entry.HasMetaMember)
+                            throw new InvalidDataException("A selected payload is missing from staging.");
+                        payload = new StagedAssetPayload();
+                    }
                     ValidatePayload(item.Entry, payload);
                     if (!ProjectPackagePath.TryGetAbsolutePath(options.ProjectRoot, item.TargetPath, out string absolute, out string pathError))
                         throw new IOException(pathError);
@@ -201,7 +206,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                         itemResult.OwnNewTarget = !plan.Observations.Paths.TryGetValue(item.TargetPath, out ObservedAsset original)
                             ? !current.Exists : !original.Exists;
                         EnsureParents(item.TargetPath, options.ProjectRoot, live, expected, itemResult.CreatedParents);
-                        WriteEntry(absolute, item.Entry, payload, itemResult.RecoveryBackups);
+                        WriteEntry(absolute, item.Entry, payload, result.StagingDirectory, itemResult.RecoveryBackups);
                         itemResult.Status = ImportItemStatus.Applied;
                         if (item.Action == ImportPlanAction.Overwrite) result.Updated++; else result.Written++;
                     }
@@ -253,9 +258,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 foreach (string backup in item.RecoveryBackups)
                 {
                     string absolute = Path.GetFullPath(backup);
-                    if (!ProjectPackagePath.TryGetAbsolutePath(project, item.TargetPath, out string target, out _)
-                        || (!absolute.StartsWith(target + ".nna-import-", StringComparison.OrdinalIgnoreCase)
-                            && !absolute.StartsWith(target + ".meta.nna-import-", StringComparison.OrdinalIgnoreCase))
+                    if (!absolute.StartsWith(owned + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                         || !absolute.EndsWith(".bak", StringComparison.Ordinal))
                     { errors.Add("Refused cleanup of an unexpected backup."); continue; }
                     try { if (File.Exists(absolute)) File.Delete(absolute); }
@@ -336,7 +339,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 throw new InvalidDataException("The staged meta differs from its reviewed payload.");
             byte[] meta = File.ReadAllBytes(payload.MetaPath);
             if (!string.Equals(GuidUtility.ExtractGuidFromMeta(meta), entry.MetaGuid, StringComparison.OrdinalIgnoreCase)
-                || GuidUtility.MetaDeclaresFolder(meta) != entry.IsFolder)
+                || (GuidUtility.MetaDeclaresFolder(meta) || !entry.HasAssetMember) != entry.IsFolder)
                 throw new InvalidDataException("The staged meta identity or asset shape changed.");
         }
 
@@ -389,7 +392,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
             }
         }
 
-        private static void WriteEntry(string absolute, UnityPackageEntry entry, StagedAssetPayload payload, List<string> recoveryBackups)
+        private static void WriteEntry(string absolute, UnityPackageEntry entry, StagedAssetPayload payload,
+            string stagingDirectory, List<string> recoveryBackups)
         {
             bool createdFolder = false;
             if (entry.IsFolder)
@@ -409,7 +413,7 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 parts.Add(new FilePart { Target = absolute + ".meta", Source = payload.MetaPath, ExpectedHash = entry.MetaHash });
             else if (!entry.PreserveExistingMeta)
                 parts.Add(new FilePart { Target = absolute + ".meta" }); // project-file placeholder removal only
-            try { CommitFileParts(parts, recoveryBackups); }
+            try { CommitFileParts(parts, stagingDirectory, recoveryBackups); }
             catch
             {
                 if (createdFolder && Directory.Exists(absolute) && Directory.GetFileSystemEntries(absolute).Length == 0)
@@ -419,7 +423,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
         }
 
         // Original Smart Package per-pair replacement/rollback, with streamed source files.
-        private static void CommitFileParts(List<FilePart> parts, List<string> recoveryBackups)
+        // Temporary and backup files stay in owned staging on the same volume: names beside a long
+        // target could pass Windows' MAX_PATH where Unity itself still imports the target.
+        private static void CommitFileParts(List<FilePart> parts, string stagingDirectory, List<string> recoveryBackups)
         {
             string operationId = Guid.NewGuid().ToString("N");
             bool committed = false;
@@ -428,8 +434,8 @@ namespace NekoNekoAsset.Bridge.SmartPackage
                 for (int i = 0; i < parts.Count; i++)
                 {
                     FilePart part = parts[i];
-                    part.Staged = part.Target + ".nna-import-" + operationId + "-" + i + ".tmp";
-                    part.Backup = part.Target + ".nna-import-" + operationId + "-" + i + ".bak";
+                    part.Staged = Path.Combine(stagingDirectory, operationId + "-" + i + ".tmp");
+                    part.Backup = Path.Combine(stagingDirectory, operationId + "-" + i + ".bak");
                     part.HadOriginal = File.Exists(part.Target);
                     if (Directory.Exists(part.Target)) throw new IOException("A directory occupies a file/meta target: " + part.Target);
                     if (part.Source == null) continue;

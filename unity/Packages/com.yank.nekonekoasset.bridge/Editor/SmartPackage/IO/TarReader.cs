@@ -60,6 +60,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 			long mtime = string.IsNullOrEmpty(mtimeOctal) ? 0 : ParseOctal(mtimeOctal);
 
 			string fullName = prefix.Length > 0 ? prefix + "/" + name : name;
+			// Packages packed with `tar -C <dir> .` store every member under "./", which Unity accepts.
+			while (fullName.StartsWith("./", StringComparison.Ordinal))
+				fullName = fullName.Substring(2);
 
 			entry = new TarEntry
 			{

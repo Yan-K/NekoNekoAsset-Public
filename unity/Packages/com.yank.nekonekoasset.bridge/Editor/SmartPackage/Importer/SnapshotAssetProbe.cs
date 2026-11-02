@@ -55,7 +55,9 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 
 			foreach (string path in allPaths)
 			{
-				if (string.IsNullOrEmpty(path))
+				// The writer identifies package roots and ProjectSettings by pathname, so review
+				// must not see their meta-less AssetDatabase GUIDs either.
+				if (string.IsNullOrEmpty(path) || ProjectPackagePath.IsPathManaged(path, true))
 					continue;
 				string guid = AssetDatabase.AssetPathToGUID(path);
 				if (string.IsNullOrEmpty(guid))

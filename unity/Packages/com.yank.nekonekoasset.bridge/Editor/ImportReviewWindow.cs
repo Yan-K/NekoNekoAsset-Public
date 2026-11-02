@@ -41,6 +41,7 @@ namespace NekoNekoAsset.Bridge
         private bool destinationInvalid;
         private bool completed;
         private bool confirming;
+        private bool hasPackages;
         private bool hasLooseFiles;
         private int importerCheckVersion;
         private PackageAssetNode importerHighlightNode;
@@ -74,7 +75,8 @@ namespace NekoNekoAsset.Bridge
                 package.Tree.SortChildrenRecursive();
                 package.LeafCount = package.Tree.CountLeaves();
                 window.loadedPackages.Add(package);
-                if (package.IsLooseFiles)
+                if (!package.IsLooseFiles) window.hasPackages = true;
+                else
                 {
                     window.hasLooseFiles = true;
                     window.individualDestinationDrafts[package] = package.LooseDestination ?? "Assets";
@@ -155,19 +157,21 @@ namespace NekoNekoAsset.Bridge
             BeginTreeGUI();
             using (new EditorGUILayout.HorizontalScope())
             {
-                using (new EditorGUILayout.VerticalScope(GUILayout.Width((position.width - 14f) * .5f)))
-                {
-                    GUILayout.Label(".unitypackage", EditorStyles.boldLabel);
-                    importerScroll = EditorGUILayout.BeginScrollView(importerScroll);
-                    foreach (LoadedPackage package in loadedPackages)
-                        if (!package.IsLooseFiles) DrawPackageCard(package);
-                    EditorGUILayout.EndScrollView();
-                }
-                using (new EditorGUILayout.VerticalScope())
-                {
-                    GUILayout.Label(L("looseFiles"), EditorStyles.boldLabel);
-                    if (hasLooseFiles)
+                // Only the kinds that arrived get a column; packages and loose files split the width.
+                if (hasPackages)
+                    using (new EditorGUILayout.VerticalScope(hasLooseFiles
+                        ? GUILayout.Width((position.width - 14f) * .5f) : GUILayout.ExpandWidth(true)))
                     {
+                        GUILayout.Label(".unitypackage", EditorStyles.boldLabel);
+                        importerScroll = EditorGUILayout.BeginScrollView(importerScroll);
+                        foreach (LoadedPackage package in loadedPackages)
+                            if (!package.IsLooseFiles) DrawPackageCard(package);
+                        EditorGUILayout.EndScrollView();
+                    }
+                if (hasLooseFiles)
+                    using (new EditorGUILayout.VerticalScope())
+                    {
+                        GUILayout.Label(L("looseFiles"), EditorStyles.boldLabel);
                         using (new EditorGUILayout.HorizontalScope())
                         {
                             bool unified = GUILayout.Toggle(!individualDestinations, L("unified"), EditorStyles.radioButton);
@@ -176,11 +180,10 @@ namespace NekoNekoAsset.Bridge
                             else if (unified && individualDestinations) { SetDestinationMode(false); GUIUtility.ExitGUI(); }
                         }
                         if (!individualDestinations) DrawDestination();
+                        looseScroll = EditorGUILayout.BeginScrollView(looseScroll);
+                        DrawLooseFiles();
+                        EditorGUILayout.EndScrollView();
                     }
-                    looseScroll = EditorGUILayout.BeginScrollView(looseScroll);
-                    DrawLooseFiles();
-                    EditorGUILayout.EndScrollView();
-                }
             }
             // Keyboard focus changes also commit the window-owned text draft.
             if (destinationEditing && GUI.GetNameOfFocusedControl() != editingDestinationControl)
