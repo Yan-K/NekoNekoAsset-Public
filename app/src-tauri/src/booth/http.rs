@@ -71,12 +71,14 @@ impl MetadataHttp {
                         self.defer(Duration::from_secs(2u64.pow(attempt + 1))).await;
                         continue;
                     }
+                    // One file sent to sign in is refused alone: only an account-level
+                    // listing can say the session is signed out.
                     bail!(
                         "{}",
-                        if code == "NETWORK_UNAVAILABLE" {
-                            "DOWNLOAD_RESOLVER_FAILED"
-                        } else {
-                            code
+                        match code {
+                            "NETWORK_UNAVAILABLE" => "DOWNLOAD_RESOLVER_FAILED",
+                            "AUTH_REQUIRED" => "PERMISSION_DENIED",
+                            code => code,
                         }
                     );
                 }
@@ -139,23 +141,24 @@ impl MetadataHttp {
                         self.defer(wait).await;
                         continue;
                     }
-                    bail!("{}", code);
+                    bail!(
+                        "{}",
+                        if code == "AUTH_REQUIRED" {
+                            signed_out(&url)
+                        } else {
+                            code
+                        }
+                    );
                 }
             };
             crate::support_trace::response(&url, response.status().as_u16());
-            if !safety::secure(response.url())
-                || !response.url().host_str().is_some_and(safety::booth_host)
-            {
+            if !safety::secure_domain(response.url()) {
                 crate::support_trace::redirect_rejected(&url);
                 bail!("UNSAFE_REDIRECT");
             }
-            if response.url().path().contains("sign_in") || response.url().path().contains("login")
-            {
-                bail!("AUTH_REQUIRED");
-            }
             let status = response.status();
-            if status == StatusCode::UNAUTHORIZED {
-                bail!("AUTH_REQUIRED");
+            if status == StatusCode::UNAUTHORIZED || safety::sign_in_page(response.url()) {
+                bail!("{}", signed_out(&url));
             }
             if status == StatusCode::FORBIDDEN {
                 bail!("PERMISSION_DENIED");
@@ -240,9 +243,19 @@ fn listing_url(url: &Url) -> bool {
             "/library" | "/library/gifts" | "/library/free_downloads" | "/orders"
         )
 }
+/// Only an account-level listing can say the session is signed out. Any other page sent
+/// to sign in, including every cookie-less public page, is refused for that page alone.
+fn signed_out(requested: &Url) -> &'static str {
+    if listing_url(requested) {
+        "AUTH_REQUIRED"
+    } else {
+        "PERMISSION_DENIED"
+    }
+}
 fn validate_source_response(requested: &Url, actual: &Url) -> Result<()> {
-    if safety::free_item_id(requested.as_str()).is_some() {
-        if requested != actual {
+    if let Some(id) = safety::free_item_id(requested.as_str()) {
+        // Any HTTPS BOOTH page for the same item: a locale prefix or the shop's own host.
+        if safety::item_id(actual.as_str()).as_deref() != Some(id) {
             bail!("RESPONSE_ROUTE_CHANGED");
         }
         return Ok(());
@@ -283,28 +296,29 @@ fn retry_after(value: Option<&str>, now: std::time::SystemTime) -> Duration {
         .filter(|delay| Instant::now().checked_add(*delay).is_some())
         .unwrap_or(Duration::from_secs(5))
 }
+/// Pages and downloads may move to any HTTPS host; the jar sends BOOTH cookies only to
+/// BOOTH. A hop to pixiv is BOOTH sending the request to sign in.
+fn redirect_error(url: &Url) -> Option<&'static str> {
+    if safety::auth_navigation(url)
+        && url
+            .host_str()
+            .is_some_and(|h| h == "pixiv.net" || h.ends_with(".pixiv.net"))
+    {
+        Some("AUTH_REQUIRED")
+    } else if safety::secure_domain(url) {
+        None
+    } else {
+        Some("UNSAFE_REDIRECT")
+    }
+}
 pub fn build_client(jar: Arc<reqwest::cookie::Jar>, download: bool) -> Result<Client> {
     let policy = reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= 8 {
             return attempt.error("REDIRECT_LIMIT");
         }
-        let valid = if download {
-            safety::download_destination(attempt.url())
-        } else {
-            safety::secure(attempt.url())
-                && attempt.url().host_str().is_some_and(safety::booth_host)
-        };
-        if valid {
-            attempt.follow()
-        } else if safety::auth_navigation(attempt.url())
-            && attempt
-                .url()
-                .host_str()
-                .is_some_and(|h| h == "pixiv.net" || h.ends_with(".pixiv.net"))
-        {
-            attempt.error("AUTH_REQUIRED")
-        } else {
-            attempt.error("UNSAFE_REDIRECT")
+        match redirect_error(attempt.url()) {
+            None => attempt.follow(),
+            Some(code) => attempt.error(code),
         }
     });
     let builder = Client::builder()
@@ -400,15 +414,28 @@ mod tests {
         }
     }
     #[test]
-    fn free_item_response_preserves_exact_public_origin_path_and_identity() {
+    fn free_item_response_accepts_any_https_booth_page_for_the_same_item() {
         let requested = Url::parse("https://booth.pm/ja/items/900001").unwrap();
-        assert!(validate_source_response(&requested, &requested).is_ok());
+        for actual in [
+            "https://booth.pm/ja/items/900001",
+            "https://synthetic.booth.pm/ja/items/900001",
+            "https://synthetic.booth.pm/items/900001",
+            "https://booth.pm/items/900001",
+            "https://booth.pm/en/items/900001",
+            "https://booth.pm/ja/items/900001?x=1",
+        ] {
+            assert!(
+                validate_source_response(&requested, &Url::parse(actual).unwrap()).is_ok(),
+                "{actual}"
+            );
+        }
         for actual in [
             "https://booth.pm/ja/items/900002",
-            "https://synthetic.booth.pm/ja/items/900001",
-            "https://booth.pm/items/900001",
-            "https://booth.pm/ja/items/900001?x=1",
-            "https://booth.pm/ja/items/900001#x",
+            "https://synthetic.booth.pm/items/900002",
+            "http://booth.pm/ja/items/900001",
+            "https://booth.pm.evil.test/ja/items/900001",
+            "https://authored.example/ja/items/900001",
+            "https://booth.pm/ja/items/900001/reviews",
             "https://accounts.booth.pm/library/free_downloads?page=1",
         ] {
             assert_eq!(
@@ -450,6 +477,60 @@ mod tests {
             &Url::parse("https://booth.pm/library?page=1").unwrap()
         )
         .is_err());
+    }
+    #[test]
+    fn redirects_follow_any_https_host_and_keep_pixiv_as_the_sign_in_hop() {
+        for value in [
+            "https://accounts.booth.pm/library?page=1",
+            "https://synthetic.booth.pm/items/900001",
+            "https://booth-download.pximg.net/authored/file.zip",
+            "https://authored-cdn.example/signed/file.zip",
+        ] {
+            assert_eq!(redirect_error(&Url::parse(value).unwrap()), None, "{value}");
+        }
+        for value in [
+            "https://accounts.pixiv.net/login",
+            "https://oauth.secure.pixiv.net/v2/auth/authorize",
+        ] {
+            assert_eq!(
+                redirect_error(&Url::parse(value).unwrap()),
+                Some("AUTH_REQUIRED")
+            );
+        }
+        for value in [
+            "http://authored-cdn.example/file.zip",
+            "https://user@authored-cdn.example/file.zip",
+            "https://authored-cdn.example:8443/file.zip",
+            "https://192.0.2.1/file.zip",
+        ] {
+            assert_eq!(
+                redirect_error(&Url::parse(value).unwrap()),
+                Some("UNSAFE_REDIRECT")
+            );
+        }
+    }
+    #[test]
+    fn only_an_account_listing_can_say_the_session_is_signed_out() {
+        for path in [
+            "/library?page=3",
+            "/library/gifts?page=1",
+            "/library/free_downloads?page=1",
+            "/orders?page=2",
+        ] {
+            let url = Url::parse(&format!("https://accounts.booth.pm{path}")).unwrap();
+            assert_eq!(signed_out(&url), "AUTH_REQUIRED", "{path}");
+        }
+        for value in [
+            "https://accounts.booth.pm/orders/910001",
+            "https://booth.pm/ja/items/900001",
+            "https://booth.pm/ja/items/900001.json",
+        ] {
+            assert_eq!(
+                signed_out(&Url::parse(value).unwrap()),
+                "PERMISSION_DENIED",
+                "{value}"
+            );
+        }
     }
     #[test]
     fn retry_after_obeys_dates_and_bounds() {

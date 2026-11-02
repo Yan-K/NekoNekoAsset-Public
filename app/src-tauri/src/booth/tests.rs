@@ -972,3 +972,258 @@ fn download_route_adds_only_the_bound_variant_and_track_mp3_rendition() {
     assert_eq!(route(Value::Null, json!("mp3")).unwrap(), "https://booth.pm/downloadables/700001?type=mp3");
     assert!(route(json!("800001"), json!("flac")).is_err());
 }
+#[cfg(windows)]
+#[test]
+fn sign_in_signals_keep_the_protected_session_for_a_later_sync() {
+    use crate::stores::{session, session_cache, StoreProvider};
+    let base =
+        std::env::temp_dir().join(format!("nna-booth-kept-session-{}", uuid::Uuid::new_v4()));
+    let library = base.join("library");
+    std::fs::create_dir_all(&library).unwrap();
+    let catalogue = Catalogue::open_bound(&library, &base.join("device")).unwrap();
+    let service = BoothService::new(catalogue.clone()).unwrap();
+    let account = json!({"id":A,"store":"BOOTH","status":"connected","state":"connected","authenticatedAt":"2026-01-01T00:00:00Z"});
+    catalogue.put("account", A, account.clone()).unwrap();
+    let profile = session::profile_path(&catalogue.device_dir(), StoreProvider::Booth, A).unwrap();
+    let cookie = tauri::webview::Cookie::build(("authored_session", "AUTHORED_COOKIE_VALUE"))
+        .domain("booth.pm")
+        .path("/")
+        .secure(true)
+        .build();
+    session_cache::save(&profile, StoreProvider::Booth, A, vec![cookie]).unwrap();
+    for kind in ["boothSync", "boothUpdate"] {
+        let job = json!({"id":"authored-signed-out","type":kind,"accountId":A,"state":"running"});
+        catalogue
+            .put("job", "authored-signed-out", job.clone())
+            .unwrap();
+        service.finish_job(&job, Some("AUTH_REQUIRED")).unwrap();
+        let stored = catalogue
+            .get("job", "authored-signed-out")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["state"], "needsAction");
+        assert_eq!(stored["errorCode"], "AUTH_REQUIRED");
+        assert!(
+            crate::stores::has_local_session(&catalogue, &account),
+            "{kind}"
+        );
+    }
+    // The account keeps its needs-sign-in state until a later sync succeeds with that session.
+    let mut waiting = account.clone();
+    waiting["status"] = json!("needsAction");
+    waiting["state"] = json!("needsAction");
+    catalogue.put("account", A, waiting).unwrap();
+    let job =
+        json!({"id":"authored-later-sync","type":"boothSync","accountId":A,"state":"running"});
+    catalogue
+        .put("job", "authored-later-sync", job.clone())
+        .unwrap();
+    service.finish_job(&job, None).unwrap();
+    assert_eq!(
+        catalogue.get("account", A).unwrap().unwrap()["status"],
+        "connected"
+    );
+    drop(service);
+    drop(catalogue);
+    std::fs::remove_dir_all(base).unwrap();
+}
+#[tokio::test]
+async fn an_empty_cookie_jar_is_retried_for_a_bounded_time_before_it_means_signed_out() {
+    let reads = std::sync::atomic::AtomicUsize::new(0);
+    let read = || {
+        let attempt = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        async move {
+            if attempt < 2 {
+                bail!("AUTH_REQUIRED")
+            }
+            Ok(attempt)
+        }
+    };
+    // A reopened profile that loads its cookies late still yields its session.
+    assert_eq!(
+        loaded_cookies(std::time::Duration::from_secs(10), read)
+            .await
+            .unwrap(),
+        2
+    );
+    // A jar still empty when the limit passes means there is no session.
+    let empty = || async { Err::<(), _>(anyhow::anyhow!("AUTH_REQUIRED")) };
+    let started = std::time::Instant::now();
+    let error = loaded_cookies(std::time::Duration::from_millis(600), empty)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&error), "AUTH_REQUIRED");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(600));
+    // Any other failure is not a missing session and is not waited out.
+    let started = std::time::Instant::now();
+    let failed = || async { Err::<(), _>(anyhow::anyhow!("COOKIE_ACCESS_FAILED")) };
+    let error = loaded_cookies(std::time::Duration::from_secs(10), failed)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&error), "COOKIE_ACCESS_FAILED");
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+}
+fn download_response(url: &str, status: u16, kind: &str) -> reqwest::Response {
+    use reqwest::ResponseBuilderExt;
+    reqwest::Response::from(
+        tauri::http::Response::builder()
+            .status(status)
+            .url(url::Url::parse(url).unwrap())
+            .header("content-type", kind)
+            .body(Vec::<u8>::new())
+            .unwrap(),
+    )
+}
+#[test]
+fn one_file_answering_sign_in_is_refused_alone_and_any_https_host_may_serve_it() {
+    for (url, status, kind) in [
+        ("https://booth.pm/downloadables/700001", 401, "text/html"),
+        ("https://accounts.booth.pm/users/sign_in", 200, "text/html"),
+        (
+            "https://authored-cdn.example/file.zip",
+            401,
+            "application/zip",
+        ),
+    ] {
+        let error = validate_download_response(&download_response(url, status, kind)).unwrap_err();
+        assert_eq!(code(&error), "PERMISSION_DENIED", "{url}");
+    }
+    for url in [
+        "https://booth-download.pximg.net/authored/file.zip",
+        "https://authored-cdn.example/signed/login_bonus.zip",
+    ] {
+        let response = download_response(url, 200, "application/zip");
+        assert!(validate_download_response(&response).is_ok(), "{url}");
+    }
+    for (url, status, expected) in [
+        (
+            "http://authored-cdn.example/file.zip",
+            200,
+            "UNSAFE_DOWNLOAD_URL",
+        ),
+        ("https://192.0.2.1/file.zip", 200, "UNSAFE_DOWNLOAD_URL"),
+        (
+            "https://booth.pm/downloadables/700001",
+            403,
+            "PERMISSION_DENIED",
+        ),
+        (
+            "https://authored-cdn.example/file.zip",
+            403,
+            "SIGNED_LINK_EXPIRED",
+        ),
+        (
+            "https://authored-cdn.example/file.zip",
+            404,
+            "FILE_UNAVAILABLE",
+        ),
+    ] {
+        let response = download_response(url, status, "application/zip");
+        let error = validate_download_response(&response).unwrap_err();
+        assert_eq!(code(&error), expected, "{url}");
+    }
+}
+#[test]
+fn completed_job_keeps_its_incomplete_count_and_the_account_reconnects() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    let account = json!({"id":A,"store":"BOOTH","status":"needsAction","state":"needsAction","authenticatedAt":"2026-01-01T00:00:00Z"});
+    catalogue.put("account", A, account).unwrap();
+    let mut job = json!({"id":"authored-partial","type":"boothSync","accountId":A,"state":"running","progress":{"stage":"publishing","incompleteProducts":7}});
+    catalogue
+        .put("job", "authored-partial", job.clone())
+        .unwrap();
+    job["progress"] = json!({"stage":"finalizing","published":40,"incompleteProducts":3});
+    fixture.service.finish_job(&job, None).unwrap();
+    let stored = catalogue.get("job", "authored-partial").unwrap().unwrap();
+    assert_eq!(stored["state"], "completed");
+    assert!(stored["errorCode"].is_null());
+    assert_eq!(stored["progress"]["incompleteProducts"], 3);
+    let reconnected = catalogue.get("account", A).unwrap().unwrap();
+    assert_eq!(reconnected["status"], "connected");
+    assert_eq!(reconnected["syncState"], "complete");
+    // A later attempt that left nothing behind does not keep an earlier count.
+    job["progress"] = json!({"stage":"finalizing"});
+    catalogue.put("job", "authored-partial", stored).unwrap();
+    fixture.service.finish_job(&job, None).unwrap();
+    let later = catalogue.get("job", "authored-partial").unwrap().unwrap();
+    assert!(later["progress"].get("incompleteProducts").is_none());
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}
+#[tokio::test]
+async fn an_update_waits_for_its_accounts_sync_and_an_identical_update_is_reused() {
+    let fixture = Fixture::new();
+    let catalogue = &fixture.service.inner.catalogue;
+    let key = format!("account:{A}");
+    let other_account = format!("account:{B}");
+    let blocked_by = |active: &[&str], key: &str| {
+        blocked(
+            &active
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<BTreeSet<_>>(),
+            key,
+        )
+    };
+    assert!(blocked_by(&[key.as_str()], key.as_str()));
+    assert!(blocked_by(&["booth-global"], key.as_str()));
+    assert!(blocked_by(&[key.as_str()], "booth-global"));
+    assert!(!blocked_by(&[other_account.as_str()], key.as_str()));
+    assert!(!blocked_by(&[], "booth-global"));
+    let scope = json!({"accountId":A,"productIds":["900001","900002"]});
+    let job = fixture
+        .service
+        .make_job("boothUpdate", scope.clone())
+        .unwrap();
+    assert_eq!(
+        fixture.service.active_update(&scope).unwrap().unwrap()["id"],
+        job["id"]
+    );
+    for other in [
+        json!({"accountId":A,"productIds":["900001"]}),
+        json!({"accountId":B,"productIds":["900001","900002"]}),
+        json!({"productIds":["900001","900002"],"publicOnly":true}),
+    ] {
+        assert!(fixture.service.active_update(&other).unwrap().is_none());
+    }
+    // The update starts once the account's running sync releases it.
+    fixture
+        .service
+        .inner
+        .running
+        .lock()
+        .unwrap()
+        .insert(key.clone());
+    let release = async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        fixture.service.inner.running.lock().unwrap().remove(&key);
+    };
+    let started = std::time::Instant::now();
+    let (turn, ()) = tokio::join!(fixture.service.wait_for_turn(&job, &key), release);
+    assert!(turn.unwrap());
+    assert!(started.elapsed() >= std::time::Duration::from_millis(300));
+    // Cancelling the queued update ends the wait without starting it.
+    fixture
+        .service
+        .inner
+        .running
+        .lock()
+        .unwrap()
+        .insert(key.clone());
+    let mut cancelled = catalogue
+        .get("job", job["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    cancelled["state"] = json!("cancelled");
+    catalogue
+        .put("job", job["id"].as_str().unwrap(), cancelled)
+        .unwrap();
+    assert!(!fixture.service.wait_for_turn(&job, &key).await.unwrap());
+    assert!(fixture.service.active_update(&scope).unwrap().is_none());
+    fixture.service.inner.running.lock().unwrap().remove(&key);
+    let path = fixture.path.clone();
+    drop(fixture);
+    std::fs::remove_dir_all(path).unwrap();
+}

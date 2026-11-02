@@ -72,7 +72,7 @@ struct SupportPages {
 }
 impl SupportPages {
     fn remember(&mut self, evidence: &free_item::Evidence, body: &str) -> Result<()> {
-        // The free adapter has already checked exact canonical/OG/root identity,
+        // The free adapter has already checked same-item canonical/OG/root identity,
         // login/challenge and file controls. Retain only its public support facts.
         if !evidence.manifest_complete
             && evidence.error_code.as_deref() != Some("FREE_OFFER_UNAVAILABLE")
@@ -309,6 +309,94 @@ fn source_local_failure(code: &str) -> bool {
     matches!(code, "COLLECTOR_UNSUPPORTED" | "SOURCE_UNSUPPORTED" | "CHECKPOINT_INVALID"
         | "NO_RECOGNIZED_ROWS" | "SOURCE_MARKER_UNKNOWN" | "DIGITAL_PROOF_UNPROVEN"
         | "SOURCE_TRAVERSAL_LIMIT" | "METADATA_TOO_LARGE")
+}
+/// The store answered definitively about one asset: it refused or moved its page, or sent
+/// one that cannot be read. That asset stays as it was and the job goes on. An outage, a
+/// server error, throttling or a challenge still stops the job.
+fn product_local_failure(code: &str) -> bool {
+    matches!(
+        code,
+        "AUTH_REQUIRED"
+            | "PERMISSION_DENIED"
+            | "RESPONSE_ROUTE_CHANGED"
+            | "UNSAFE_REDIRECT"
+            | "METADATA_TOO_LARGE"
+            | "METADATA_ENCODING"
+            | "PUBLIC_METADATA_INVALID"
+            | "PUBLIC_ID_MISMATCH"
+    )
+}
+/// A public page the store refused is about that product; a server error may pass.
+fn public_status_code(status: reqwest::StatusCode) -> &'static str {
+    if status.is_client_error() {
+        "PUBLIC_METADATA_INVALID"
+    } else {
+        "PUBLIC_METADATA_FAILED"
+    }
+}
+/// A receipt or free item page that could not be read: unresolved and without rows, so its
+/// asset stays as it was and the source keeps its membership uncertified.
+fn unreadable_page(source: &str, route: &str, code: &str) -> Result<parser::Page> {
+    if let Some(id) = safety::free_item_id(route).filter(|_| source == "free") {
+        return free_item::Evidence::unknown(id, code, false).page();
+    }
+    crate::support_trace::source_reason(source, code, 1);
+    Ok(parser::Page {
+        source: source.into(),
+        route: route.into(),
+        rows: vec![],
+        next: vec![],
+        details: vec![],
+        terminal: false,
+        unresolved: 1,
+        fingerprint: safety::hash(format!("unreadable:{route}:{code}")),
+        is_detail: true,
+        ordering: parser::Ordering::Unknown,
+        free_item: None,
+    })
+}
+/// Rows the parser could not tie to an asset. A page with no such row counts its gaps.
+fn unbound_row_count(page: &parser::Page) -> usize {
+    let rows = page
+        .rows
+        .iter()
+        .filter(|row| {
+            row.product_id.is_none()
+                && row
+                    .error_code
+                    .as_deref()
+                    .is_some_and(|code| code != "BOOTH_WITHHELD_PRODUCT_ID")
+        })
+        .count();
+    if rows == 0 {
+        page.unresolved
+    } else {
+        rows
+    }
+}
+/// What a source scan left open. Only a listing it could not close keeps the job
+/// incomplete; assets left as they were are counted instead.
+#[derive(Default)]
+struct SourceScan {
+    settled: bool,
+    /// Every gap is an asset the store refused or that could not be read.
+    gaps_local: bool,
+    products: BTreeSet<String>,
+    rows: usize,
+}
+impl SourceScan {
+    fn incomplete(&self) -> bool {
+        !self.settled && !self.gaps_local
+    }
+}
+/// The job completes with the number of assets and unreadable rows left as they were.
+fn record_incomplete(job: &mut Value, products: &BTreeSet<String>, rows: usize) {
+    let count = products.len() + rows;
+    if count > 0 {
+        job["progress"]["incompleteProducts"] = json!(count);
+    } else if let Some(progress) = job["progress"].as_object_mut() {
+        progress.remove("incompleteProducts");
+    }
 }
 fn source_has_incomplete_product(
     checkpoint: &Checkpoint,
@@ -814,6 +902,7 @@ impl BoothService {
         let client = self.client(app, account, false).await?;
         let mode = args["mode"].as_str().unwrap_or("incremental");
         let mut incomplete = false;
+        let (mut left_products, mut left_rows) = (BTreeSet::new(), 0);
         let public =
             http::build_client(std::sync::Arc::new(reqwest::cookie::Jar::default()), false)?;
         // Queue unique observations without coupling traversal to public-page latency.
@@ -863,7 +952,11 @@ impl BoothService {
             let mut publications = Publications::default();
             while let Some((source, result, collected)) = scans.next().await {
                 match result {
-                    Ok(complete) => incomplete |= !complete,
+                    Ok(scan) => {
+                        incomplete |= scan.incomplete();
+                        left_products.extend(scan.products);
+                        left_rows += scan.rows;
+                    }
                     Err(error) => {
                         let coverage_id = format!("{account}:{source}");
                         let mut coverage = self
@@ -956,7 +1049,7 @@ impl BoothService {
             self.publish_pipeline(app, job, &mut publications, results)
                 .await
         };
-        tokio::try_join!(
+        let (refused, ()) = tokio::try_join!(
             collect_and_publish,
             self.prefetch_metadata(
                 app,
@@ -974,6 +1067,8 @@ impl BoothService {
                 .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
                 .reused
         );
+        left_products.extend(refused);
+        record_incomplete(job, &left_products, left_rows);
         if incomplete {
             bail!("SYNC_INCOMPLETE");
         }
@@ -1015,6 +1110,7 @@ impl BoothService {
             anyhow::bail!("AUTH_REQUIRED");
         }
         let mut incomplete = false;
+        let (mut left_products, mut left_rows) = (BTreeSet::new(), 0);
         let public =
             http::build_client(std::sync::Arc::new(reqwest::cookie::Jar::default()), false)?;
         let mut enriched = BTreeMap::new();
@@ -1053,6 +1149,7 @@ impl BoothService {
                             &public,
                             &mut enriched,
                             &mut publications,
+                            &mut left_products,
                         )
                         .await?
                     {
@@ -1062,7 +1159,7 @@ impl BoothService {
                         continue;
                     }
                 }
-                incomplete |= !self
+                let scan = self
                     .scan_source(
                         app,
                         job,
@@ -1077,6 +1174,9 @@ impl BoothService {
                         None,
                     )
                     .await?;
+                incomplete |= scan.incomplete();
+                left_products.extend(scan.products);
+                left_rows += scan.rows;
             }
         }
         self.publish_collected(app, job, &mut publications).await?;
@@ -1084,11 +1184,20 @@ impl BoothService {
             if self.cancelled(job)? {
                 bail!("CANCELLED");
             }
-            if !enriched.contains_key(id) {
-                self.enrich(&public, id).await?;
-                source_changed(app, std::iter::once(id.clone()));
+            if !enriched.contains_key(id) && !left_products.contains(id) {
+                match self.enrich(&public, id).await {
+                    // A refused or unreadable public page leaves the product as it was.
+                    Err(error) if product_local_failure(&super::code(&error)) => {
+                        left_products.insert(id.clone());
+                    }
+                    result => {
+                        result?;
+                        source_changed(app, std::iter::once(id.clone()));
+                    }
+                }
             }
         }
+        record_incomplete(job, &left_products, left_rows);
         if incomplete {
             bail!("SYNC_INCOMPLETE");
         }
@@ -1104,6 +1213,7 @@ impl BoothService {
         public: &reqwest::Client,
         enriched: &mut BTreeMap<String, Value>,
         publications: &mut Publications,
+        refused: &mut BTreeSet<String>,
     ) -> Result<bool> {
         let acquisitions = self.inner.catalogue.list("acquisition")?;
         let remote = self.inner.catalogue.list("remote_file")?;
@@ -1118,16 +1228,14 @@ impl BoothService {
             if self.cancelled(job)? {
                 bail!("CANCELLED");
             }
+            // A receipt the store refused comes back unresolved, so the update falls
+            // back to the full purchase scan like any other receipt it cannot bind.
             let page = match self.fetch_page(client, "purchase", &route, None).await {
                 Ok(page) => page,
                 Err(error)
                     if matches!(
                         super::code(&error).as_str(),
-                        "AUTH_REQUIRED"
-                            | "AUTH_CHALLENGE"
-                            | "PERMISSION_DENIED"
-                            | "NETWORK_UNAVAILABLE"
-                            | "RATE_LIMITED"
+                        "AUTH_CHALLENGE" | "NETWORK_UNAVAILABLE" | "RATE_LIMITED"
                     ) =>
                 {
                     return Err(error)
@@ -1203,14 +1311,26 @@ impl BoothService {
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
             job["progress"] = json!({"stage":"enriching","source":"purchase","products":selected.len(),"published":checkpoint.published_products.len(),"mode":"selected"});
             self.progress(app, job)?;
-            if let Some(observation) = enriched.get(&product) {
+            let needs_enrichment = if let Some(observation) = enriched.get(&product) {
                 draft = observation.clone();
+                false
             } else {
-                self.enrich_into(public, &product, &mut draft, None).await?;
-                enriched.insert(product.clone(), draft.clone());
-            }
+                match self.enrich_into(public, &product, &mut draft, None).await {
+                    Ok(()) => {
+                        enriched.insert(product.clone(), draft.clone());
+                        false
+                    }
+                    // A refused or unreadable public page keeps this product's metadata
+                    // as it was; its receipt facts still publish, uncertified.
+                    Err(error) if product_local_failure(&super::code(&error)) => {
+                        refused.insert(product.clone());
+                        true
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
             let draft_id = format!("booth-product:{}:{product}", checkpoint.run_id);
-            self.save_product_draft(&draft_id, json!({"id":draft_id,"accountId":account,"source":"purchase","runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":true}))?;
+            self.save_product_draft(&draft_id, json!({"id":draft_id,"accountId":account,"source":"purchase","runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":!needs_enrichment}))?;
             publications
                 .products
                 .entry(product.clone())
@@ -1225,7 +1345,7 @@ impl BoothService {
                     files,
                     checkpoint_key: key.clone(),
                     force_verify: true,
-                    needs_enrichment: false,
+                    needs_enrichment,
                 });
         }
         publications.checkpoints.insert(key, checkpoint);
@@ -1238,12 +1358,36 @@ impl BoothService {
         route: &str,
         prefetch: Option<&PublicPrefetch>,
     ) -> Result<parser::Page> {
+        let page = match self.read_page(client, source, route, prefetch).await {
+            // A receipt or free item the store refused, moved or garbled stays as it was
+            // and the source goes on. A listing page or an outage still stops the source.
+            Err(error) if detail_route(route) && product_local_failure(&super::code(&error)) => {
+                unreadable_page(source, route, &super::code(&error))?
+            }
+            page => page?,
+        };
+        crate::support_trace::page(
+            source,
+            page.is_detail,
+            page.rows.len() as u64,
+            page.unresolved as u64,
+            page.terminal,
+        );
+        Ok(page)
+    }
+    async fn read_page(
+        &self,
+        client: &reqwest::Client,
+        source: &str,
+        route: &str,
+        prefetch: Option<&PublicPrefetch>,
+    ) -> Result<parser::Page> {
         if source == "free" {
             if let Some(id) = safety::free_item_id(route) {
                 let url =
                     url::Url::parse(route).map_err(|_| anyhow::anyhow!("INVALID_FREE_ITEM_ID"))?;
                 let (status, body) = self.inner.http.get(client, url).await?;
-                let page = if matches!(status.as_u16(), 404 | 410) {
+                return if matches!(status.as_u16(), 404 | 410) {
                     free_item::Evidence::unknown(id, "PUBLIC_METADATA_UNAVAILABLE", true).page()
                 } else if status.is_success() {
                     let evidence = free_item::parse(&body, id)?;
@@ -1255,11 +1399,11 @@ impl BoothService {
                             .remember(&evidence, &body)?;
                     }
                     evidence.page()
+                } else if status.is_client_error() {
+                    unreadable_page(source, route, "SOURCE_HTTP_FAILED")
                 } else {
                     bail!("SOURCE_HTTP_FAILED")
-                }?;
-                crate::support_trace::page(source, page.is_detail, page.rows.len() as u64, page.unresolved as u64, page.terminal);
-                return Ok(page);
+                };
             }
         }
         let (status, body) = self
@@ -1268,6 +1412,10 @@ impl BoothService {
             .get(client, safety::route(route, source)?)
             .await?;
         if !status.is_success() {
+            // A receipt the store refused is about that receipt alone.
+            if detail_route(route) && status.is_client_error() {
+                return unreadable_page(source, route, "SOURCE_HTTP_FAILED");
+            }
             bail!("SOURCE_HTTP_FAILED");
         }
         let mut page = parser::parse(&body, source, route)?;
@@ -1285,7 +1433,6 @@ impl BoothService {
                     .map_err(|_| anyhow::anyhow!("FREE_ITEM_INVALID"))?
             ));
         }
-        crate::support_trace::page(source, page.is_detail, page.rows.len() as u64, page.unresolved as u64, page.terminal);
         Ok(page)
     }
     async fn scan_source(
@@ -1301,12 +1448,16 @@ impl BoothService {
         enriched: &mut BTreeMap<String, Value>,
         publications: &mut Publications,
         prefetch: Option<&PublicPrefetch>,
-    ) -> Result<bool> {
+    ) -> Result<SourceScan> {
         crate::support_trace::source_start(source);
         let result = self.scan_source_inner(app, job, account, source, mode, client, selected,
             public, enriched, publications, prefetch).await;
         let error = result.as_ref().err().map(super::code);
-        crate::support_trace::source_done(source, result.as_ref().ok().copied(), error.as_deref());
+        crate::support_trace::source_done(
+            source,
+            result.as_ref().ok().map(|scan| scan.settled),
+            error.as_deref(),
+        );
         result
     }
     async fn scan_source_inner(
@@ -1322,7 +1473,7 @@ impl BoothService {
         enriched: &mut BTreeMap<String, Value>,
         publications: &mut Publications,
         prefetch: Option<&PublicPrefetch>,
-    ) -> Result<bool> {
+    ) -> Result<SourceScan> {
         let key = format!("booth:{account}:{source}");
         let baseline_key = format!("booth-complete:{account}:{source}");
         let previous_baseline = self
@@ -1618,6 +1769,9 @@ impl BoothService {
         let mut terminal_unproven_observed = false;
         let mut incomplete_products = BTreeSet::new();
         let mut availability_products = BTreeSet::new();
+        // Assets and rows left as they were. They no longer hold the job back, but an
+        // unbound row still keeps this source's membership uncertified.
+        let (mut left_products, mut unresolved_rows) = (BTreeSet::new(), 0);
         for (index, journal_id) in checkpoint.journal_ids.iter().enumerate() {
             if index % 16 == 0 {
                 // Scanners and public metadata share one try_join task. Let the
@@ -1663,6 +1817,7 @@ impl BoothService {
                 } else {
                     unbound_membership = true;
                     page_unbound = true;
+                    unresolved_rows += unbound_row_count(&page);
                 }
             }
             if !page.is_detail && !page.terminal && page.next.is_empty() {
@@ -1799,6 +1954,10 @@ impl BoothService {
             let availability_only = source == "free"
                 && availability_products.contains(&product)
                 && !incomplete_products.contains(&product);
+            // This asset's own rows or item page could not be read in full.
+            if !availability_only && (!complete || incomplete_products.contains(&product)) {
+                left_products.insert(product.clone());
+            }
             let observed_rows =
                 observed_grant_rows(source, &product_rows, manifest_complete, availability_only);
             let observed_files = observed_file_ids(account, observed_rows.iter().copied());
@@ -1890,7 +2049,12 @@ impl BoothService {
                     let error_code = super::code(&error);
                     self.save_product_draft(&draft_id,
                         json!({"id":draft_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":false,"errorCode":error_code}))?;
-                    enrichment_error.get_or_insert(error_code);
+                    // A refused or unreadable public page leaves this product as it was.
+                    if product_local_failure(&error_code) {
+                        left_products.insert(product.clone());
+                    } else {
+                        enrichment_error.get_or_insert(error_code);
+                    }
                     continue;
                 }
                 enriched.insert(product.clone(), draft.clone());
@@ -2086,13 +2250,25 @@ impl BoothService {
         if let Some(error_code) = enrichment_error {
             bail!(error_code);
         }
-        Ok(collection_settled(
-            &checkpoint,
-            collected_complete,
-            closed_traversal,
-            unbound_membership || !incomplete_products.is_empty(),
-            availability_products.len(),
-        ))
+        // A listing whose end, pages or head could not be proven keeps the job incomplete.
+        // Otherwise every gap is an asset (selected or not) or row the store answered for.
+        let gaps_local = closed_traversal
+            && !terminal_unproven_observed
+            && (!incomplete_products.is_empty()
+                || !left_products.is_empty()
+                || unresolved_rows > 0);
+        Ok(SourceScan {
+            settled: collection_settled(
+                &checkpoint,
+                collected_complete,
+                closed_traversal,
+                unbound_membership || !incomplete_products.is_empty(),
+                availability_products.len(),
+            ),
+            gaps_local,
+            products: left_products,
+            rows: unresolved_rows,
+        })
     }
     fn commit_source_page(
         &self,
@@ -2441,7 +2617,7 @@ impl BoothService {
         job: &mut Value,
         publications: &mut Publications,
         mut results: mpsc::UnboundedReceiver<(String, Result<Value, String>)>,
-    ) -> Result<()> {
+    ) -> Result<BTreeSet<String>> {
         let products = publication_products(publications);
         let total = products.len();
         let mut pending: BTreeSet<_> = products
@@ -2450,6 +2626,7 @@ impl BoothService {
             .cloned()
             .collect();
         let mut public_failed = false;
+        let mut refused = BTreeSet::new();
         let mut completed = total - pending.len();
         let mut published = published_product_count(publications);
         // This must also run when every prefetched observation is already done.
@@ -2520,8 +2697,14 @@ impl BoothService {
                         }
                     }
                 }
-                Err(_) => {
-                    public_failed = true;
+                Err(code) => {
+                    // A refused or unreadable public page keeps that product's metadata
+                    // as it was without holding up the job; an outage still does.
+                    if product_local_failure(&code) {
+                        refused.insert(product.clone());
+                    } else {
+                        public_failed = true;
+                    }
                     let keys: Vec<_> = publication_entries(publications, &product)
                         .map(|entry| entry.checkpoint_key.clone())
                         .collect();
@@ -2548,7 +2731,7 @@ impl BoothService {
         if public_failed {
             bail!("PUBLIC_METADATA_FAILED");
         }
-        Ok(())
+        Ok(refused)
     }
     fn publish_ready_product(
         &self,
@@ -3388,7 +3571,7 @@ impl BoothService {
             return Ok(());
         }
         if !status.is_success() {
-            bail!("PUBLIC_METADATA_FAILED");
+            bail!(public_status_code(status));
         }
         let value: Value =
             serde_json::from_str(&body).map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
@@ -3411,10 +3594,10 @@ impl BoothService {
                 Ok((status, html)) if status.is_success() => {
                     metadata::apply_public_support_html(product, &html)?
                 }
-                Ok(_) => {
+                Ok((status, _)) => {
                     product["publicMetadataState"] = json!("incomplete");
-                    product["publicMetadataErrorCode"] = json!("PUBLIC_METADATA_FAILED");
-                    bail!("PUBLIC_METADATA_FAILED");
+                    product["publicMetadataErrorCode"] = json!(public_status_code(status));
+                    bail!(public_status_code(status));
                 }
                 Err(error) => {
                     // Keep newly obtained price/title fields even when the
@@ -4305,6 +4488,142 @@ mod tests {
             "ACCOUNT_UNAVAILABLE", "CONCURRENT_UPDATE", "catalogue.lock"] {
             assert!(!source_local_failure(code));
         }
+    }
+    #[test]
+    fn one_assets_refused_or_unreadable_page_stays_local_and_outages_stop_the_job() {
+        for code in [
+            "AUTH_REQUIRED",
+            "PERMISSION_DENIED",
+            "RESPONSE_ROUTE_CHANGED",
+            "UNSAFE_REDIRECT",
+            "METADATA_TOO_LARGE",
+            "METADATA_ENCODING",
+            "PUBLIC_METADATA_INVALID",
+            "PUBLIC_ID_MISMATCH",
+        ] {
+            assert!(product_local_failure(code), "{code}");
+        }
+        for code in [
+            "NETWORK_UNAVAILABLE",
+            "NETWORK_TIMEOUT",
+            "RATE_LIMITED",
+            "AUTH_CHALLENGE",
+            "SOURCE_HTTP_FAILED",
+            "PUBLIC_METADATA_FAILED",
+            "CANCELLED",
+            "CHECKPOINT_INVALID",
+            "catalogue.lock",
+        ] {
+            assert!(!product_local_failure(code), "{code}");
+        }
+        use reqwest::StatusCode;
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_ACCEPTABLE,
+            StatusCode::GONE,
+        ] {
+            assert!(
+                product_local_failure(public_status_code(status)),
+                "{status}"
+            );
+        }
+        for status in [StatusCode::INTERNAL_SERVER_ERROR, StatusCode::BAD_GATEWAY] {
+            assert_eq!(public_status_code(status), "PUBLIC_METADATA_FAILED");
+        }
+        // Only a transient public failure is held back for the one later attempt.
+        let mut retry = PublicRetry::default();
+        let request = |product: &str| PublicRequest {
+            product: product.into(),
+            draft: json!({}),
+            account: "authored".into(),
+            source: "library".into(),
+            run_id: "current".into(),
+        };
+        let refused: Result<Value, String> =
+            Err(public_status_code(StatusCode::BAD_REQUEST).to_owned());
+        assert_eq!(retry.settle(request("900001"), refused).len(), 1);
+        let failed: Result<Value, String> =
+            Err(public_status_code(StatusCode::BAD_GATEWAY).to_owned());
+        assert!(retry.settle(request("900002"), failed).is_empty());
+    }
+    #[test]
+    fn unreadable_receipt_or_free_item_keeps_membership_open_without_inventing_rows() {
+        let receipt = unreadable_page("purchase", "/orders/910001", "PERMISSION_DENIED").unwrap();
+        assert!(receipt.is_detail && receipt.rows.is_empty() && receipt.free_item.is_none());
+        assert!(receipt.next.is_empty() && receipt.details.is_empty() && !receipt.terminal);
+        assert_eq!(
+            (receipt.route.as_str(), receipt.unresolved),
+            ("/orders/910001", 1)
+        );
+        // An unread receipt could hold any known asset: one unbound row, no retirements.
+        assert_eq!(unbound_row_count(&receipt), 1);
+        let journal =
+            json!({"accountId":"authored","source":"purchase","runId":"current","page":receipt});
+        assert!(checked_journal_page(&journal, "authored", "purchase", "current").is_ok());
+        let mut checkpoint = Checkpoint::fresh("authored", "purchase", "full").unwrap();
+        checkpoint.pending.push("/orders/910001".into());
+        record_source_page(
+            &mut checkpoint,
+            "purchase",
+            "/orders/910001",
+            &receipt,
+            None,
+        )
+        .unwrap();
+        assert_eq!(checkpoint.pending, vec!["/orders?page=1".to_owned()]);
+        assert_eq!(
+            (checkpoint.details_completed, checkpoint.unresolved),
+            (1, 1)
+        );
+        assert!(!checkpoint.terminal);
+        let mut history = BTreeMap::new();
+        remember_free_history(&free_history_page(), &mut history);
+        let route = safety::free_item_route("900001").unwrap();
+        for code in [
+            "AUTH_REQUIRED",
+            "PERMISSION_DENIED",
+            "RESPONSE_ROUTE_CHANGED",
+            "SOURCE_HTTP_FAILED",
+        ] {
+            let page = unreadable_page("free", &route, code).unwrap();
+            let evidence = page.free_item.as_ref().unwrap();
+            assert_eq!(evidence.error_code.as_deref(), Some(code));
+            assert!(!evidence.manifest_complete && !evidence.unavailable);
+            assert!(evidence.files.is_empty() && page.rows.is_empty());
+            assert_eq!(page.unresolved, 1);
+            // The item stays incomplete; it never settles as an unavailable offer.
+            assert!(!settled_free_absence(&page, &history));
+            let journal =
+                json!({"accountId":"authored","source":"free","runId":"current","page":page});
+            assert!(checked_journal_page(&journal, "authored", "free", "current").is_ok());
+        }
+        // Rows the parser could not bind count as rows; withheld IDs are not gaps.
+        let mut listing = free_history_page();
+        listing.unresolved = 1;
+        listing.rows[0].product_id = None;
+        listing.rows[0].error_code = Some("PRODUCT_ID_UNRESOLVED".into());
+        let mut withheld = listing.rows[0].clone();
+        withheld.error_code = Some("BOOTH_WITHHELD_PRODUCT_ID".into());
+        listing.rows.push(withheld);
+        assert_eq!(unbound_row_count(&listing), 1);
+    }
+    #[test]
+    fn only_an_unclosed_listing_keeps_the_job_incomplete_and_left_assets_are_counted() {
+        let scan = |settled, gaps_local| SourceScan {
+            settled,
+            gaps_local,
+            ..SourceScan::default()
+        };
+        assert!(!scan(true, false).incomplete());
+        assert!(!scan(false, true).incomplete());
+        assert!(scan(false, false).incomplete());
+        let mut job = json!({"progress":{"stage":"finalizing","incompleteProducts":9}});
+        let left = BTreeSet::from(["900001".to_owned(), "900002".to_owned()]);
+        record_incomplete(&mut job, &left, 1);
+        assert_eq!(job["progress"]["incompleteProducts"], 3);
+        record_incomplete(&mut job, &BTreeSet::new(), 0);
+        assert!(job["progress"].get("incompleteProducts").is_none());
+        assert_eq!(job["progress"]["stage"], "finalizing");
     }
     #[test]
     fn selected_update_cannot_recreate_a_removed_accounts_grants() {

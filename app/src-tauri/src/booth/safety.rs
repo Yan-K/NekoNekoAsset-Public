@@ -42,11 +42,19 @@ pub fn auth_navigation(url: &Url) -> bool {
         .iter()
         .any(|p| url.path().contains(p))
 }
+/// Any HTTPS domain: no IP literal, credentials or other port.
+pub fn secure_domain(url: &Url) -> bool {
+    secure(url) && matches!(url.host(), Some(url::Host::Domain(_)))
+}
+/// BOOTH's own download start may hand the file to any HTTPS host, as its CDN and signing
+/// hosts change. The request jar sends BOOTH cookies only to BOOTH.
 pub fn download_destination(url: &Url) -> bool {
-    secure(url)
-        && url.host_str().is_some_and(|h| {
-            booth_host(h) || h == "booth.pximg.net" || h == "booth-download.pximg.net"
-        })
+    secure_domain(url)
+}
+/// BOOTH's own sign-in page. Another host's path that merely mentions a login is not one.
+pub fn sign_in_page(url: &Url) -> bool {
+    url.host_str().is_some_and(booth_host)
+        && (url.path().contains("sign_in") || url.path().contains("login"))
 }
 pub fn item_id(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
@@ -241,7 +249,7 @@ pub fn short(value: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn sign_in_follows_provider_hops_without_expanding_download_or_purchase_scope() {
+    fn sign_in_follows_provider_hops_without_expanding_purchase_scope() {
         for value in [
             "https://accounts.booth.pm/users/sign_in",
             "https://oauth.secure.pixiv.net/v2/auth/authorize",
@@ -262,7 +270,6 @@ mod tests {
         ] {
             let url = Url::parse(value).unwrap();
             assert!(auth_navigation(&url), "{value}");
-            assert!(!download_destination(&url));
             assert!(!booth_host(url.host_str().unwrap()));
         }
         for value in [
@@ -425,5 +432,43 @@ mod tests {
         assert!(!download_destination(
             &Url::parse("https://127.0.0.1/a").unwrap()
         ));
+    }
+    #[test]
+    fn downloads_follow_any_https_host_and_only_booth_signs_in() {
+        for value in [
+            "https://booth.pm/downloadables/700001",
+            "https://booth-download.pximg.net/authored/file.zip",
+            "https://authored-cdn.example/signed/file.zip?token=authored",
+        ] {
+            assert!(download_destination(&Url::parse(value).unwrap()), "{value}");
+        }
+        for value in [
+            "http://booth-download.pximg.net/authored/file.zip",
+            "https://user@authored-cdn.example/file.zip",
+            "https://authored-cdn.example:8443/file.zip",
+            "https://192.0.2.1/file.zip",
+            "https://[2001:db8::1]/file.zip",
+        ] {
+            assert!(
+                !download_destination(&Url::parse(value).unwrap()),
+                "{value}"
+            );
+        }
+        for (value, sign_in) in [
+            ("https://accounts.booth.pm/users/sign_in", true),
+            ("https://booth.pm/users/login", true),
+            (
+                "https://booth-download.pximg.net/authored/login_bonus.zip",
+                false,
+            ),
+            ("https://authored-cdn.example/sign_in/file.zip", false),
+            ("https://booth.pm/downloadables/700001", false),
+        ] {
+            assert_eq!(
+                sign_in_page(&Url::parse(value).unwrap()),
+                sign_in,
+                "{value}"
+            );
+        }
     }
 }

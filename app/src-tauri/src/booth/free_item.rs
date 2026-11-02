@@ -508,7 +508,7 @@ pub(super) fn diagnose_entry(html: &str, id: &str) -> Result<EntryDiagnostics> {
     Ok(counts)
 }
 pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
-    let expected = safety::free_item_route(id)?;
+    safety::free_item_route(id)?;
     let doc = Html::parse_document(html);
     if doc
         .select(&sel(
@@ -532,13 +532,13 @@ pub(super) fn parse(html: &str, id: &str) -> Result<Evidence> {
     let roots: Vec<_> = doc
         .select(&sel("div#items.market[data-product-id]"))
         .collect();
+    // Canonical and OG may name the item by any HTTPS BOOTH URL: a locale prefix or the
+    // shop's own host. The root and every list row must still carry this item's ID.
+    let same_item = |raw: Option<&str>| raw.and_then(safety::item_id).as_deref() == Some(id);
     if canonical.len() != 1
-        || !canonical[0]
-            .value()
-            .attr("href")
-            .is_some_and(|raw| raw == expected || shop_item_identity(raw, id))
+        || !same_item(canonical[0].value().attr("href"))
         || og.len() != 1
-        || og[0].value().attr("content") != Some(expected.as_str())
+        || !same_item(og[0].value().attr("content"))
         || roots.len() != 1
         || roots[0].value().attr("data-product-id") != Some(id)
     {
@@ -903,59 +903,84 @@ mod tests {
         assert_eq!(value["canonicalExact"], true);
     }
     #[test]
-    fn identity_url_shapes_are_same_id_only_and_do_not_relax_production() {
+    fn identity_url_shapes_are_diagnosed_and_production_accepts_any_same_item_url() {
         let original = "https://booth.pm/ja/items/900001";
-        for (url, shape) in [
-            (original, "LocaleJaSameId"),
-            ("https://booth.pm/items/900001", "OldBareSameId"),
-            ("https://booth.pm/en/items/900001", "LocaleEnSameId"),
+        // Production needs this item's ID on an HTTPS BOOTH page, not one URL spelling.
+        for (url, shape, same_item) in [
+            (original, "LocaleJaSameId", true),
+            ("https://booth.pm/items/900001", "OldBareSameId", true),
+            ("https://booth.pm/en/items/900001", "LocaleEnSameId", true),
             (
                 "https://synthetic-shop.booth.pm/items/900001",
                 "ShopHostSameId",
+                true,
             ),
             (
                 "https://synthetic-shop.booth.pm/ja/items/900001",
                 "ShopHostSameId",
+                true,
             ),
             (
                 "https://synthetic-shop.booth.pm/en/items/900001",
                 "ShopHostSameId",
+                true,
             ),
-            ("https://booth.pm/ja/items/900002", "OtherShape"),
-            ("https://www.booth.pm/items/900001", "OtherShape"),
-            ("https://accounts.booth.pm/items/900001", "OtherShape"),
+            ("https://booth.pm/ja/items/900002", "OtherShape", false),
+            ("https://www.booth.pm/items/900001", "OtherShape", true),
+            (
+                "https://accounts.booth.pm/items/900001",
+                "OtherShape",
+                false,
+            ),
             (
                 "https://synthetic-shop.booth.pm/items/900001?x=1",
                 "OtherShape",
+                true,
             ),
             (
                 "https://synthetic-shop.booth.pm:443/items/900001",
                 "OtherShape",
+                true,
             ),
             (
                 "https://synthetic-shop.booth.pm/ja/../items/900001",
                 "OtherShape",
+                true,
             ),
             (
                 "https://synthetic-shop.booth.pm/items/900001/",
                 "OtherShape",
+                false,
             ),
-            ("https://synthetic-shop.booth.pm/items/900002", "OtherShape"),
+            (
+                "https://synthetic-shop.booth.pm/items/900002",
+                "OtherShape",
+                false,
+            ),
             (
                 "https://synthetic-shop.booth.pm.evil.test/items/900001",
                 "OtherShape",
+                false,
             ),
-            ("http://synthetic-shop.booth.pm/items/900001", "OtherShape"),
+            (
+                "http://synthetic-shop.booth.pm/items/900001",
+                "OtherShape",
+                false,
+            ),
         ] {
             let html = HTML.replace(original, url);
             let value = serde_json::to_value(diagnose_identity(&html, "900001").unwrap()).unwrap();
             assert_eq!(value[format!("canonical{shape}")], true, "{url}");
             assert_eq!(value[format!("og{shape}")], true, "{url}");
             assert_eq!(value["canonicalExact"], url == original);
-            assert_eq!(
-                parse(&html, "900001").unwrap().manifest_complete,
-                url == original
-            );
+            let evidence = parse(&html, "900001").unwrap();
+            assert_eq!(evidence.manifest_complete, same_item, "{url}");
+            if !same_item {
+                assert_eq!(
+                    evidence.error_code.as_deref(),
+                    Some("FREE_ITEM_IDENTITY_UNPROVEN")
+                );
+            }
         }
         let duplicate = HTML.replace(
             "</head>",
@@ -1332,7 +1357,7 @@ mod tests {
         );
     }
     #[test]
-    fn canonical_shop_alias_keeps_exact_og_product_and_list_guards() {
+    fn same_item_canonical_and_og_keep_product_and_list_guards() {
         let expected = "https://booth.pm/ja/items/900001";
         for alias in [
             "https://synthetic-shop.booth.pm/items/900001",
@@ -1341,11 +1366,12 @@ mod tests {
         ] {
             let html = HTML.replacen(expected, alias, 1);
             assert!(parse(&html, "900001").unwrap().manifest_complete);
+            let og = html.replace(
+                "content='https://booth.pm/ja/items/900001'",
+                &format!("content='{alias}'"),
+            );
+            assert!(parse(&og, "900001").unwrap().manifest_complete, "{alias}");
             for bad in [
-                html.replace(
-                    "content='https://booth.pm/ja/items/900001'",
-                    &format!("content='{alias}'"),
-                ),
                 html.replace("data-product-id='900001'", "data-product-id='900002'"),
                 html.replace("<ul id='variations'>", "<ul id='other'>"),
                 html.replace(
@@ -1356,33 +1382,45 @@ mod tests {
                     "</head>",
                     &format!("<link rel='canonical' href='{alias}'></head>"),
                 ),
+                og.replace(
+                    &format!("content='{alias}'"),
+                    "content='https://synthetic-shop.booth.pm/items/900002'",
+                ),
             ] {
                 assert!(!parse(&bad, "900001").unwrap().manifest_complete);
             }
         }
-        for alias in [
-            "https://booth.pm/items/900001",
-            "https://booth.pm/en/items/900001",
-            "https://www.booth.pm/items/900001",
-            "https://accounts.booth.pm/items/900001",
-            "https://manage.booth.pm/items/900001",
-            "https://synthetic-shop.booth.pm/items/900002",
-            "https://synthetic-shop.booth.pm:443/items/900001",
-            "https://user@synthetic-shop.booth.pm/items/900001",
-            "https://synthetic-shop.booth.pm/items/900001?q=1",
-            "https://synthetic-shop.booth.pm/items/900001#x",
-            "https://synthetic-shop.booth.pm/ja/../items/900001",
-            "https://synthetic-shop.booth.pm/items/%39%30%30%30%30%31",
-            "https://synthetic-shop.booth.pm/items/900001/",
-            "https://synthetic-shop.booth.pm.evil.test/items/900001",
-            "http://synthetic-shop.booth.pm/items/900001",
+        for (alias, same_item) in [
+            ("https://booth.pm/items/900001", true),
+            ("https://booth.pm/en/items/900001", true),
+            ("https://www.booth.pm/items/900001", true),
+            ("https://synthetic-shop.booth.pm:443/items/900001", true),
+            ("https://synthetic-shop.booth.pm/items/900001?q=1", true),
+            ("https://synthetic-shop.booth.pm/items/900001#x", true),
+            ("https://synthetic-shop.booth.pm/ja/../items/900001", true),
+            ("https://accounts.booth.pm/items/900001", false),
+            ("https://manage.booth.pm/items/900001", false),
+            ("https://synthetic-shop.booth.pm/items/900002", false),
+            ("https://user@synthetic-shop.booth.pm/items/900001", false),
+            (
+                "https://synthetic-shop.booth.pm/items/%39%30%30%30%30%31",
+                false,
+            ),
+            ("https://synthetic-shop.booth.pm/items/900001/", false),
+            (
+                "https://synthetic-shop.booth.pm.evil.test/items/900001",
+                false,
+            ),
+            ("http://synthetic-shop.booth.pm/items/900001", false),
         ] {
             let proof = parse(&HTML.replacen(expected, alias, 1), "900001").unwrap();
-            assert!(!proof.manifest_complete);
-            assert_eq!(
-                proof.error_code.as_deref(),
-                Some("FREE_ITEM_IDENTITY_UNPROVEN")
-            );
+            assert_eq!(proof.manifest_complete, same_item, "{alias}");
+            if !same_item {
+                assert_eq!(
+                    proof.error_code.as_deref(),
+                    Some("FREE_ITEM_IDENTITY_UNPROVEN")
+                );
+            }
         }
     }
     #[test]

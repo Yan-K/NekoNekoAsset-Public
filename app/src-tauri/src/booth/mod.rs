@@ -35,11 +35,13 @@ pub fn validate_download_response(response: &reqwest::Response) -> Result<()> {
     if !safety::download_destination(response.url()) {
         bail!("UNSAFE_DOWNLOAD_URL");
     }
-    if response.url().path().contains("sign_in") || response.url().path().contains("login") {
-        bail!("AUTH_REQUIRED");
+    // One file answering 401 or BOOTH's sign-in page is refused alone: only an account-level
+    // listing can say the session is signed out.
+    if safety::sign_in_page(response.url()) {
+        bail!("PERMISSION_DENIED");
     }
     match response.status().as_u16() {
-        401 => bail!("AUTH_REQUIRED"),
+        401 => bail!("PERMISSION_DENIED"),
         403 if response.url().host_str().is_some_and(safety::booth_host) => {
             bail!("PERMISSION_DENIED")
         }
@@ -153,6 +155,31 @@ fn product_line_diagnostic_args(args: &Value) -> Result<(&str, &str)> {
 }
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+/// A reopened hidden profile can take a few seconds to load its saved cookies. Only a jar
+/// still empty when the limit passes means there is no session to use.
+async fn loaded_cookies<T, F, Fut>(limit: std::time::Duration, mut read: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        match read().await {
+            Err(error)
+                if code(&error) == "AUTH_REQUIRED" && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await
+            }
+            result => return result,
+        }
+    }
+}
+/// One job per account at a time; a store-wide job (diagnostics, legacy updates) runs alone.
+fn blocked(running: &BTreeSet<String>, key: &str) -> bool {
+    running.contains(key)
+        || running.contains("booth-global")
+        || (key == "booth-global" && !running.is_empty())
 }
 fn code(error: &anyhow::Error) -> String {
     let value = error.to_string();
@@ -554,12 +581,14 @@ impl BoothService {
                     .as_str()
                     .map(|id| format!("account:{id}"))
                     .unwrap_or_else(|| if job["args"]["publicOnly"] == true { format!("booth-public:{id}") } else { "booth-global".into() });
-                if self
-                    .inner
-                    .running
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
-                    .contains(&key)
+                // A retried update waits for the account like a new one.
+                if job["type"] != "boothUpdate"
+                    && self
+                        .inner
+                        .running
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?
+                        .contains(&key)
                 {
                     bail!("ACCOUNT_BUSY");
                 }
@@ -584,6 +613,10 @@ impl BoothService {
                 ensure!(!ids.is_empty(), "INVALID_PRODUCT_IDS");
                 let mut jobs = Vec::new();
                 for scope in self.update_scopes(&ids)? {
+                    if let Some(active) = self.active_update(&scope)? {
+                        jobs.push(active["id"].clone());
+                        continue;
+                    }
                     let job = self.make_job("boothUpdate", scope)?;
                     self.spawn_job(app.clone(), job.clone())?;
                     jobs.push(job["id"].clone());
@@ -592,6 +625,14 @@ impl BoothService {
             }
             _ => bail!("UNKNOWN_BOOTH_ACTION"),
         }
+    }
+    /// An identical update already waiting or running covers a repeated request.
+    fn active_update(&self, scope: &Value) -> Result<Option<Value>> {
+        Ok(self.inner.catalogue.list("job")?.into_iter().find(|job| {
+            job["type"] == "boothUpdate"
+                && job["args"] == *scope
+                && matches!(job["state"].as_str(), Some("queued" | "running"))
+        }))
     }
     fn update_scopes(&self, ids: &BTreeSet<String>) -> Result<Vec<Value>> {
         let mut sources = self.inner.catalogue.list("entitlement")?;
@@ -638,10 +679,7 @@ impl BoothService {
                 .running
                 .lock()
                 .map_err(|_| anyhow::anyhow!("STATE_LOCK_FAILED"))?;
-            if running.contains(&key)
-                || running.contains("booth-global")
-                || (key == "booth-global" && !running.is_empty())
-            {
+            if blocked(&running, &key) {
                 let login_finishing = job["type"] == "boothSync"
                     && self.inner.catalogue.list("job")?.iter().any(|active| {
                         active["accountId"] == job["accountId"]
@@ -651,50 +689,26 @@ impl BoothService {
                                 Some("queued" | "running" | "completed")
                             )
                     });
-                if login_finishing && running.contains(&key) {
+                // An update waits for the account's sync or update to end, as a sync
+                // waits for its login; it stays queued meanwhile.
+                if job["type"] == "boothUpdate" || (login_finishing && running.contains(&key)) {
                     let service = self.clone();
                     tauri::async_runtime::spawn(async move {
                         let _work = work;
-                        loop {
-                            match service.cancelled(&job) {
-                                Ok(true) => {
-                                    if let Err(error) = service.finish_job(&job, Some("CANCELLED"))
-                                    {
-                                        eprintln!("BOOTH terminal write failed: {}", code(&error));
-                                    }
-                                    service.changed(&app, Some(&id));
-                                    return;
-                                }
-                                Err(_) => {
-                                    if let Err(error) =
-                                        service.finish_job(&job, Some("JOB_UNAVAILABLE"))
-                                    {
-                                        eprintln!("BOOTH terminal write failed: {}", code(&error));
-                                    }
-                                    service.changed(&app, Some(&id));
-                                    return;
-                                }
-                                Ok(false) => {}
+                        let error = match service.wait_for_turn(&job, &key).await {
+                            Ok(true) => service
+                                .spawn_job(app.clone(), job.clone())
+                                .err()
+                                .map(|error| code(&error)),
+                            Ok(false) => Some("CANCELLED".into()),
+                            Err(_) => Some("JOB_UNAVAILABLE".into()),
+                        };
+                        if let Some(error) = error {
+                            if let Err(error) = service.finish_job(&job, Some(&error)) {
+                                eprintln!("BOOTH terminal write failed: {}", code(&error));
                             }
-                            let busy = service
-                                .inner
-                                .running
-                                .lock()
-                                .map(|active| active.contains(&key))
-                                .unwrap_or(true);
-                            if !busy {
-                                if let Err(error) = service.spawn_job(app.clone(), job.clone()) {
-                                    if let Err(error) =
-                                        service.finish_job(&job, Some(&code(&error)))
-                                    {
-                                        eprintln!("BOOTH terminal write failed: {}", code(&error));
-                                    }
-                                }
-                                service.changed(&app, Some(&id));
-                                return;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
+                        service.changed(&app, Some(&id));
                     });
                     return Ok(());
                 }
@@ -781,17 +795,10 @@ impl BoothService {
         )?, "JOB_BUSY");
         Ok(job)
     }
+    /// A sign-in signal keeps the protected session: only logout, deletion, a failed first
+    /// login or a replacing login clear it, and a later successful sync reconnects.
     fn finish_job(&self, job: &Value, error: Option<&str>) -> Result<()> {
         let id = field(job, "id")?;
-        if error == Some("AUTH_REQUIRED") && self.inner.catalogue.library_root().is_some() {
-            if let Some(account) = job["accountId"].as_str() {
-                crate::stores::session::forget(
-                    &self.inner.catalogue.device_dir(),
-                    crate::stores::StoreProvider::Booth,
-                    account,
-                )?;
-            }
-        }
         for _ in 0..4 {
             let mut batch = batch::RecordBatch::new(&self.inner.catalogue);
             let current = batch
@@ -805,6 +812,15 @@ impl BoothService {
             }
             if let Some(capture) = job.get("supportCapture") {
                 terminal["supportCapture"] = capture.clone();
+            }
+            // Assets this attempt left as they were; an earlier attempt's count goes.
+            match job["progress"].get("incompleteProducts") {
+                Some(count) => terminal["progress"]["incompleteProducts"] = count.clone(),
+                None => {
+                    if let Some(progress) = terminal["progress"].as_object_mut() {
+                        progress.remove("incompleteProducts");
+                    }
+                }
             }
             terminal["supportLastStage"] = json!(crate::support::operation_stage(terminal["progress"]["stage"].as_str().unwrap_or("")));
             let error = if current["state"] == "cancelled" {
@@ -901,6 +917,24 @@ impl BoothService {
             .catalogue
             .get("job", field(job, "id")?)?
             .is_some_and(|j| j["state"] == "cancelled"))
+    }
+    /// Waits until nothing blocks this job's account; false once the job is cancelled.
+    async fn wait_for_turn(&self, job: &Value, key: &str) -> Result<bool> {
+        loop {
+            if self.cancelled(job)? {
+                return Ok(false);
+            }
+            let busy = self
+                .inner
+                .running
+                .lock()
+                .map(|active| blocked(&active, key))
+                .unwrap_or(true);
+            if !busy {
+                return Ok(true);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
     /// Whether this job's last durable progress is at least one event interval old.
     fn progress_due(&self, job: &Value) -> Result<bool> {
@@ -1142,15 +1176,10 @@ impl BoothService {
             bail!("AUTH_REQUIRED");
         }
         let window = auth::window(app, &self.inner.catalogue.device_dir(), account, false).await?;
-        let jar = match auth::jar(window.clone()).await {
-            Ok(jar) => jar,
-            Err(error) if code(&error) == "AUTH_REQUIRED" => {
-                // The reopened hidden profile may still be loading its persisted cookies.
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                auth::jar(window).await?
-            }
-            Err(error) => return Err(error),
-        };
+        let jar = loaded_cookies(std::time::Duration::from_secs(10), || {
+            auth::jar(window.clone())
+        })
+        .await?;
         http::build_client(jar, download)
     }
     pub async fn download_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
