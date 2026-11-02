@@ -59,11 +59,11 @@ export function formatSpendingTotal(total:SpendingTotal,locale:Locale):string {
  return `${total.currency} ${negative?'−':''}${grouped}${fraction}`;
 }
 const strings={
- en:{title:'Spending summary',loading:'Loading…',empty:'No known payments',products:'Products',skipped:'Skipped: {count}',unknown:'Unknown payments: {count}',share:'Share result',copied:'Copied',copyFailed:'Could not copy',close:'Close',failed:'Could not load spending summary',retry:'Retry',phrase:'My asset spending'},
- ja:{title:'金額集計',loading:'読み込み中…',empty:'確認できる支払額はありません',products:'商品',skipped:'集計対象外：{count}',unknown:'不明な支払額：{count}',share:'結果を共有',copied:'コピーしました',copyFailed:'コピーできませんでした',close:'閉じる',failed:'購入金額を読み込めませんでした',retry:'再試行',phrase:'アセット購入金額'},
- ko:{title:'구매 금액 합계',loading:'불러오는 중…',empty:'확인된 결제 금액이 없습니다',products:'상품',skipped:'집계 제외: {count}',unknown:'알 수 없는 결제: {count}',share:'결과 공유',copied:'복사됨',copyFailed:'복사하지 못했습니다',close:'닫기',failed:'구매 금액을 불러오지 못했습니다',retry:'다시 시도',phrase:'내 에셋 구매 금액'},
- 'zh-Hans':{title:'消费汇总',loading:'正在加载…',empty:'没有已知付款',products:'商品',skipped:'已跳过：{count}',unknown:'未知付款：{count}',share:'分享结果',copied:'已复制',copyFailed:'无法复制',close:'关闭',failed:'无法加载消费汇总',retry:'重试',phrase:'我的素材消费'},
- 'zh-Hant':{title:'消費彙總',loading:'載入中…',empty:'沒有已知付款',products:'商品',skipped:'已略過：{count}',unknown:'未知付款：{count}',share:'分享結果',copied:'已複製',copyFailed:'無法複製',close:'關閉',failed:'無法載入消費彙總',retry:'重試',phrase:'我的素材消費'},
+ en:{title:'Spending summary',loading:'Loading…',empty:'No known payments',products:'Assets',skipped:'Skipped: {count}',unknown:'Unknown payments: {count}',share:'Share result',copied:'Copied',copyFailed:'Could not copy',close:'Close',failed:'Could not load spending summary',retry:'Retry',phrase:'My asset spending'},
+ ja:{title:'金額集計',loading:'読み込み中…',empty:'確認できる支払額はありません',products:'アセット',skipped:'集計対象外：{count}',unknown:'不明な支払額：{count}',share:'結果を共有',copied:'コピーしました',copyFailed:'コピーできませんでした',close:'閉じる',failed:'購入金額を読み込めませんでした',retry:'再試行',phrase:'アセット購入金額'},
+ ko:{title:'구매 금액 합계',loading:'불러오는 중…',empty:'확인된 결제 금액이 없습니다',products:'에셋',skipped:'집계 제외: {count}',unknown:'알 수 없는 결제: {count}',share:'결과 공유',copied:'복사됨',copyFailed:'복사하지 못했습니다',close:'닫기',failed:'구매 금액을 불러오지 못했습니다',retry:'다시 시도',phrase:'내 에셋 구매 금액'},
+ 'zh-Hans':{title:'消费汇总',loading:'正在加载…',empty:'没有已知付款',products:'资产',skipped:'已跳过：{count}',unknown:'未知付款：{count}',share:'分享结果',copied:'已复制',copyFailed:'无法复制',close:'关闭',failed:'无法加载消费汇总',retry:'重试',phrase:'我的素材消费'},
+ 'zh-Hant':{title:'消費彙總',loading:'載入中…',empty:'沒有已知付款',products:'資產',skipped:'已略過：{count}',unknown:'未知付款：{count}',share:'分享結果',copied:'已複製',copyFailed:'無法複製',close:'關閉',failed:'無法載入消費彙總',retry:'重試',phrase:'我的素材消費'},
 } satisfies Record<Locale,Record<string,string>>;
 
 type Particle={x:number;y:number;vx:number;vy:number;life:number;maxLife:number;hue:number};

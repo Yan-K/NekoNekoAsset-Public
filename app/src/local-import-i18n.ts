@@ -5,8 +5,8 @@ const words:Record<string,string[]>={
  dropFiles:['Drag files or folders here','ファイル・フォルダーをここにドロップ','파일이나 폴더를 여기에 놓으세요','拖放文件或文件夹到这里','拖放檔案或資料夾到這裡'],
  fetch:['Fetch','取得','가져오기','抓取','抓取'],
 
- singleProduct:['One product','1つの商品','상품 하나','一个商品','一個商品'],
- batchProducts:['Each folder / ZIP as a product','フォルダー／ZIPごとに商品','폴더 / ZIP별 상품','每个文件夹 / ZIP 为一个商品','每個資料夾 / ZIP 為一個商品'],
+ singleProduct:['One asset','1つのアセット','에셋 하나','一个资产','一個資產'],
+ batchProducts:['Each folder / ZIP as an asset','フォルダー／ZIPごとにアセット','폴더 / ZIP별 에셋','每个文件夹 / ZIP 为一个资产','每個資料夾 / ZIP 為一個資產'],
  addFiles:['Add files','ファイルを追加','파일 추가','添加文件','新增檔案'],
  addFolder:['Add folder','フォルダーを追加','폴더 추가','添加文件夹','新增資料夾'],
  importQueued:['Import queued','インポートを待機列に追加しました','가져오기를 대기열에 추가했습니다','已加入导入队列','已加入匯入佇列'],

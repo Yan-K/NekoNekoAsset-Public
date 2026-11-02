@@ -10,7 +10,7 @@ import {StatusIcon} from './LibraryIcons';
 import {contentLang} from './content-lang';
 import './inspector.css';
 const fileActionLabels: Record<Locale,{openFolder:string;openFile:string;openPage:string}> = {
- en:{openFolder:'Open folder',openFile:'Open file',openPage:'Open product page'},ja:{openFolder:'フォルダーを開く',openFile:'ファイルを開く',openPage:'商品ページを開く'},ko:{openFolder:'폴더 열기',openFile:'파일 열기',openPage:'상품 페이지 열기'},'zh-Hans':{openFolder:'打开文件夹',openFile:'打开文件',openPage:'打开商品页面'},'zh-Hant':{openFolder:'開啟資料夾',openFile:'開啟檔案',openPage:'開啟商品頁面'}
+ en:{openFolder:'Open folder',openFile:'Open file',openPage:'Open listing'},ja:{openFolder:'フォルダーを開く',openFile:'ファイルを開く',openPage:'販売ページを開く'},ko:{openFolder:'폴더 열기',openFile:'파일 열기',openPage:'판매 페이지 열기'},'zh-Hans':{openFolder:'打开文件夹',openFile:'打开文件',openPage:'打开销售页面'},'zh-Hant':{openFolder:'開啟資料夾',openFile:'開啟檔案',openPage:'開啟販售頁面'}
 };
 function isZip(file:{name:string;type:string}):boolean {
  const extension=file.name.trim().match(/\.([^./\\]+)$/)?.[1].toLowerCase();

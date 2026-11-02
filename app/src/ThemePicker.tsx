@@ -21,12 +21,13 @@ export const defaultThemeOptions:ThemeOption[] = [
  builtIn('neon','Neon',['#0c0a14','#14111f','#1c1829','#342c4a','#f0ebff','#aea6cd','#5ff0e5','#ff7fd1','#0c0a14','#252038','#8ff0ac','#ffd47e','#ff8fa0']),
  builtIn('ink','Ink',['#efefef','#fafafa','#ffffff','#d2d2d2','#171717','#5c5c5c','#1c1c1c','#2f5fc4','#ffffff','#e5e5e5','#2e6a47','#835e0e','#b03838']),
  builtIn('contrast','High contrast',['#e9e9e9','#ffffff','#ffffff','#5a5a5a','#000000','#2f2f2f','#0039a6','#6a1b9a','#ffffff','#e0e0e0','#0a5a2a','#7a4000','#a3001b']),
+ builtIn('aqua','Aqua',['#e6f4f3','#f5fbfb','#ffffff','#add0cd','#173a3b','#456766','#0c6a70','#6a45ad','#ffffff','#d4ebe9','#2f6a4b','#855a12','#ab3445']),
  builtIn('lemon','Lemon',['#f6f3e2','#fdfbee','#ffffff','#dcd4b0','#2b2a1e','#605c43','#2c4987','#86399a','#ffffff','#eee8ca','#386840','#875a09','#ad3636']),
  builtIn('peach','Peach',['#fbf0e9','#fff8f3','#ffffff','#e5c9b8','#3d2a22','#75574a','#1c686c','#6646ad','#ffffff','#f4e2d6','#2f6845','#875310','#b03838']),
  builtIn('lilac','Lilac',['#f2eff9','#faf8ff','#ffffff','#cec4e5','#2a2340','#5d5277','#6446b6','#1c7486','#ffffff','#e7e1f5','#2f6a4e','#875a12','#ad3349'])
 ];
 // Display order; the seeded Mint/Violet/Sky/Amber/Rose/Silver presets join their tone group while they exist.
-const groupOrder={dark:['dark','noir','silver','midnight','ocean','forest','amber','sakura','violet','neon'],light:['light','ink','contrast','sky','mint','lemon','peach','rose','lilac']};
+const groupOrder={dark:['dark','noir','silver','midnight','ocean','forest','amber','sakura','violet','neon'],light:['light','ink','contrast','sky','aqua','mint','lemon','peach','rose','lilac']};
 const labels:Record<string,Record<Locale,string>>={
  contrast:{en:'High contrast',ja:'ハイコントラスト',ko:'고대비','zh-Hans':'高对比度','zh-Hant':'高對比'},
  custom:{en:'Custom',ja:'カスタム',ko:'사용자 지정','zh-Hans':'自定义','zh-Hant':'自訂'}

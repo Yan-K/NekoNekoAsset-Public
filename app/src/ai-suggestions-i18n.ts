@@ -71,7 +71,7 @@ const words:Record<string,string[]>={
  storeUnavailable:['Search unavailable','検索できません','검색할 수 없음','搜索不可用','搜尋無法使用'],
  noResults:['No results','結果なし','결과 없음','没有结果','沒有結果'],
  openProduct:['Open in library','ライブラリで開く','라이브러리에서 열기','在资产库中打开','在資產庫中開啟'],
- openPage:['Open product page','商品ページを開く','상품 페이지 열기','打开商品页面','開啟商品頁面'],
+ openPage:['Open listing','販売ページを開く','판매 페이지 열기','打开销售页面','開啟販售頁面'],
  ai_image_limit:['Attach up to four images','添付できる画像は4枚までです','이미지는 최대 4개까지 첨부할 수 있습니다','最多附加四张图片','最多附加四張圖片'],
  ai_image_invalid:['This image could not be read','この画像を読み込めません','이 이미지를 읽을 수 없습니다','无法读取此图片','無法讀取此圖片'],
  ai_image_too_large:['This image is too large','この画像は大きすぎます','이 이미지가 너무 큽니다','此图片过大','此圖片過大'],
