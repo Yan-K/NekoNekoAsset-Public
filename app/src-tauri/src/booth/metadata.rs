@@ -509,9 +509,56 @@ pub fn public_metadata(value: &Value, id: &str) -> Result<Value> {
         json!({"id":id,"store":"BOOTH","title":string(value,"name"),"sourceTitle":plain_string(value,"name",4096),"name":string(value,"name"),"description":string(value,"description"),"sourceDescription":plain_string(value,"description",40000),"publicPageAvailability":"available","publishedAt":string(value,"published_at"),"listingPriceText":scalar(value,"price"),"price":parse_jpy_price(&value["price"]),"isAdult":value.get("is_adult").and_then(Value::as_bool),"sensitive":value.get("is_adult").and_then(Value::as_bool),"sourceShop":{"name":string(shop,"name"),"url":shop["url"].as_str().and_then(|s|safety::public_url(s,"shop")),"uuid":string(shop,"uuid")},"shop":string(shop,"name"),"author":string(shop,"name"),"sourceCategory":{"id":scalar(category,"id"),"name":plain_string(category,"name",4096),"parentId":scalar(&category["parent"],"id"),"parentName":plain_string(&category["parent"],"name",4096)},"sourceTags":tags,"tags":tags,"publicVariants":public_variants(value),"previews":previews,"previewUrl":previews.first(),"sourceUrl":format!("https://booth.pm/ja/items/{id}"),"metadataUnavailable":false,"observedAt":chrono::Utc::now().to_rfc3339()}),
     )
 }
+/// When this account accepted a gift of the item, from the JSON its own session reads.
+/// `gift.url` is a private claim link, so only the date leaves here. BOOTH writes the date
+/// as 年月日 under `/ja/` and as `YYYY-MM-DD` under its other locales.
+pub(super) fn gift_accepted_date(value: &Value, id: &str) -> Option<String> {
+    let same_item = match value.get("id")? {
+        Value::String(actual) => actual == id,
+        actual => actual.to_string() == id,
+    };
+    if !same_item {
+        return None;
+    }
+    let accepted = value["gift"]["accepted_at"].as_str()?.trim();
+    ["%Y年%m月%d日", "%Y-%m-%d"]
+        .into_iter()
+        .find_map(|format| chrono::NaiveDate::parse_from_str(accepted, format).ok())
+        .map(|date| date.format("%Y/%m/%d").to_string())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gift_date_comes_only_from_this_items_accepted_field() {
+        let item = |id: Value, accepted: Value| json!({"id":id,"gift":{"accepted_at":accepted,"url":"https://booth.pm/gifts/PRIVATE_CLAIM"}});
+        for (accepted, expected) in [
+            ("2026年11月1日", "2026/11/01"),
+            ("2026年1月31日", "2026/01/31"),
+            (" 2026年12月25日 ", "2026/12/25"),
+            ("2026-11-01", "2026/11/01"),
+        ] {
+            let value = item(json!(900001), json!(accepted));
+            assert_eq!(
+                gift_accepted_date(&value, "900001").as_deref(),
+                Some(expected)
+            );
+        }
+        assert!(
+            gift_accepted_date(&item(json!("900001"), json!("2026年11月1日")), "900001").is_some()
+        );
+        for value in [
+            item(json!(900002), json!("2026年11月1日")),
+            item(json!(900001), json!("2026年2月30日")),
+            item(json!(900001), json!("November 1, 2026")),
+            item(json!(900001), Value::Null),
+            json!({"id":900001,"gift":null}),
+            json!({"id":900001,"order":{"purchased_at":"2026年11月1日"}}),
+            json!({"gift":{"accepted_at":"2026年11月1日"}}),
+        ] {
+            assert_eq!(gift_accepted_date(&value, "900001"), None, "{value}");
+        }
+    }
     #[test]
     fn public_digital_variant_labels_are_preserved_without_files_or_private_fields() {
         let payload = json!({"id":900001,"name":"Authored clothing","variations":[

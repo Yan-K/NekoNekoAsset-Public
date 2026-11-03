@@ -1454,6 +1454,94 @@ impl BoothService {
         }
         Ok(page)
     }
+    /// BOOTH's gift list shows no dates; the item page builds its received notice from the
+    /// JSON sent to the signed-in account. The date joins the row before the page is
+    /// journaled, so it publishes with the grant and leaves the record ID alone.
+    async fn read_gift_dates(
+        &self,
+        job: &Value,
+        account: &str,
+        mode: &str,
+        client: &reqwest::Client,
+        selected: Option<&BTreeSet<String>>,
+        page: &mut parser::Page,
+    ) -> Result<usize> {
+        let products = self.undated_gift_products(account, mode, selected, page)?;
+        for product in &products {
+            if self.cancelled(job)? {
+                bail!("CANCELLED");
+            }
+            let date = self.gift_accepted_date(client, product).await?;
+            crate::support_trace::page("gift", true, 0, 0, false);
+            let Some(date) = date else {
+                crate::support_trace::source_reason("gift", "GIFT_DATE_UNKNOWN", 1);
+                continue;
+            };
+            for row in &mut page.rows {
+                if row.product_id.as_ref() == Some(product) {
+                    row.acquired_date_text = Some(date.clone());
+                }
+            }
+        }
+        Ok(products.len())
+    }
+    /// An accepted date never changes, so a row that has one costs no request. A listing
+    /// proven removed has nothing to say; like its public page, only Full rereads it.
+    fn undated_gift_products(
+        &self,
+        account: &str,
+        mode: &str,
+        selected: Option<&BTreeSet<String>>,
+        page: &parser::Page,
+    ) -> Result<BTreeSet<String>> {
+        let catalogue = &self.inner.catalogue;
+        let known = |date: Option<&str>| date.is_some_and(|date| !date.trim().is_empty());
+        let mut products = BTreeSet::new();
+        for row in &page.rows {
+            let Some(product) = row.product_id.as_deref().filter(|id| safety::numeric(id)) else {
+                continue;
+            };
+            if known(row.acquired_date_text.as_deref())
+                || selected.is_some_and(|ids| !ids.contains(product))
+            {
+                continue;
+            }
+            let saved = catalogue.get(
+                "acquisition",
+                &format!("{account}:{}", row.source_record_id),
+            )?;
+            if saved.is_some_and(|saved| known(saved["acquiredDateText"].as_str())) {
+                continue;
+            }
+            if mode == "incremental"
+                && catalogue
+                    .get("product", product)?
+                    .is_some_and(|saved| saved["publicPageAvailability"] == "unavailable")
+            {
+                continue;
+            }
+            products.insert(product.to_owned());
+        }
+        Ok(products)
+    }
+    /// A removed listing or a refused page leaves the date unknown for a later sync, without
+    /// touching the gift's files or coverage. An outage or throttling still stops the job.
+    async fn gift_accepted_date(
+        &self,
+        client: &reqwest::Client,
+        id: &str,
+    ) -> Result<Option<String>> {
+        let url = url::Url::parse(&format!("https://booth.pm/ja/items/{id}.json"))
+            .map_err(|_| anyhow::anyhow!("INVALID_PRODUCT_ID"))?;
+        match self.inner.http.get(client, url).await {
+            Ok((status, body)) if status.is_success() => Ok(serde_json::from_str(&body)
+                .ok()
+                .and_then(|value| metadata::gift_accepted_date(&value, id))),
+            Ok(_) => Ok(None),
+            Err(error) if product_local_failure(&super::code(&error)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
     async fn scan_source(
         &self,
         app: &AppHandle,
@@ -1625,10 +1713,15 @@ impl BoothService {
                 });
             }
             if let Some(read) = reads.next().await {
-                let (route, page) = read?;
+                let (route, mut page) = read?;
                 active_routes.remove(&route);
                 if self.cancelled(job)? {
                     bail!("CANCELLED");
+                }
+                if source == "gift" {
+                    checkpoint.details_completed += self
+                        .read_gift_dates(job, account, mode, client, selected, &mut page)
+                        .await?;
                 }
                 // Persist only parsed digital projections. Replaying this journal is idempotent.
                 let journal_id = format!(
@@ -6370,6 +6463,127 @@ mod tests {
             &row
         )
         .is_none());
+    }
+    #[test]
+    fn only_undated_gift_rows_read_their_item_and_the_date_reaches_the_existing_record() {
+        let path =
+            std::env::temp_dir().join(format!("nna-booth-gift-date-{}", uuid::Uuid::new_v4()));
+        let catalogue = crate::catalogue::Catalogue::open(&path).unwrap();
+        let service = BoothService::new(catalogue.clone()).unwrap();
+        let account = "synthetic-account";
+        let row = |id: &str| parser::Row {
+            source_record_id: format!("gift:{}", safety::hash(format!(":{id}:::"))),
+            product_id: Some(id.into()),
+            name: Some("Authored gift".into()),
+            ..Default::default()
+        };
+        let page = |rows: Vec<parser::Row>| parser::Page {
+            source: "gift".into(),
+            route: "/library/gifts?page=1".into(),
+            rows,
+            next: vec![],
+            details: vec![],
+            terminal: true,
+            unresolved: 0,
+            fingerprint: "authored".into(),
+            is_detail: false,
+            ordering: parser::Ordering::Unknown,
+            free_item: None,
+        };
+        let needed = |mode: &str, selected: Option<&BTreeSet<String>>, page: &parser::Page| {
+            service
+                .undated_gift_products(account, mode, selected, page)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let saved_date = |id: &str, date: &str| {
+            let record = format!("{account}:{}", row(id).source_record_id);
+            catalogue
+                .put("acquisition", &record, json!({"id":record,"accountId":account,"source":"gift","productId":id,"acquiredDateText":date}))
+                .unwrap();
+        };
+        saved_date("900002", "2026/11/01");
+        saved_date("900003", " ");
+        catalogue
+            .put(
+                "product",
+                "900005",
+                json!({"id":"900005","publicPageAvailability":"unavailable"}),
+            )
+            .unwrap();
+        let mut second_gift = row("900001");
+        second_gift.source_record_id.push_str(":occurrence:1");
+        let mut listing_dated = row("900004");
+        listing_dated.acquired_date_text = Some("2026/11/01".into());
+        let rows = page(vec![
+            row("900001"),
+            second_gift,
+            row("900002"),
+            row("900003"),
+            listing_dated,
+            row("900005"),
+            row("not-numeric"),
+            parser::Row {
+                source_record_id: "gift:withheld".into(),
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(needed("incremental", None, &rows), ["900001", "900003"]);
+        // Only Full asks again about a listing proven removed.
+        assert_eq!(needed("full", None, &rows), ["900001", "900003", "900005"]);
+        assert_eq!(
+            needed("forced", None, &rows),
+            ["900001", "900003", "900005"]
+        );
+        let selected = BTreeSet::from(["900003".to_owned(), "900004".to_owned()]);
+        assert_eq!(needed("full", Some(&selected), &rows), ["900003"]);
+
+        // A library synced before this fix gains the date on the record it already has.
+        let mut gift = row("900006");
+        gift.files = vec![parser::File {
+            id: "700001".into(),
+            variant_id: None,
+            name: Some("authored.zip".into()),
+            size_bytes: None,
+            source_url: "https://booth.pm/downloadables/700001".into(),
+            revision: "authored".into(),
+            format: None,
+        }];
+        gift.manifest_complete = true;
+        let route = "/library/gifts?page=1";
+        service
+            .record_row(account, "gift", &gift, route, false)
+            .unwrap();
+        let record = format!("{account}:{}", gift.source_record_id);
+        let stored = || catalogue.get("acquisition", &record).unwrap().unwrap();
+        assert!(stored()["acquiredDateText"].is_null());
+        let undated_page = page(vec![gift.clone()]);
+        assert_eq!(needed("incremental", None, &undated_page), ["900006"]);
+        let mut dated = gift.clone();
+        dated.acquired_date_text = Some("2026/11/01".into());
+        service
+            .record_row(account, "gift", &dated, route, false)
+            .unwrap();
+        assert_eq!(stored()["acquiredDateText"], "2026/11/01");
+        assert_eq!(stored()["sourceRecordId"], json!(gift.source_record_id));
+        let products = catalogue.command("bootstrap", json!({})).unwrap()["products"].clone();
+        let projected = products
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "900006")
+            .unwrap();
+        assert_eq!(projected["acquired"], "2026/11/01");
+        // The next listing read has no date of its own: it costs no request and loses nothing.
+        assert!(needed("full", None, &undated_page).is_empty());
+        service
+            .record_row(account, "gift", &gift, route, false)
+            .unwrap();
+        assert_eq!(stored()["acquiredDateText"], "2026/11/01");
+        drop(service);
+        drop(catalogue);
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn shelf_date_supplementation_preserves_unique_fallback_but_not_distinct_dated_events() {
