@@ -6,12 +6,17 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
+import tarfile
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
+import zipfile
 
 import release
 
@@ -155,6 +160,29 @@ class ReleaseChecks(unittest.TestCase):
             with self.subTest(path=generated):
                 with self.assertRaisesRegex(ValueError, "Generated"):
                     release.check_public_paths(sources + [generated])
+
+    def test_bridge_archives_stamp_members_with_the_commit_time(self):
+        # Unity's importer keeps member times, and an unchanged time hides an update from an open Editor.
+        stamp = 1793000000
+        source = self.root / "bridge"
+        self.write_json("bridge/package.json", {"name": release.PACKAGE, "version": "0.2.0"})
+        (source / "package.json.meta").write_text(f"guid: {'a' * 32}\n", encoding="utf-8")
+        subprocess.run(["git", "init", "--quiet", source], check=True)
+        subprocess.run(["git", "-C", source, "add", "."], check=True)
+        subprocess.run(["git", "-C", source, "-c", "user.name=authored", "-c", "user.email=authored@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "authored"],
+                       env={**os.environ, "GIT_COMMITTER_DATE": f"{stamp} +0000"}, check=True)
+        packager = Path(__file__).resolve().parents[1] / "unity/scripts/package_bridge.py"
+        first, second = (json.loads(subprocess.check_output([sys.executable, packager, source, self.root / name],
+                                                            text=True))["archives"] for name in ("first", "second"))
+        # The same commit still packages to the same bytes.
+        self.assertEqual(first, second)
+        stem = f"first/{release.PACKAGE}-0.2.0"
+        for suffix in (".unitypackage", ".tgz"):
+            with tarfile.open(self.root / (stem + suffix)) as archive:
+                self.assertEqual({member.mtime for member in archive.getmembers()}, {stamp})
+        with zipfile.ZipFile(self.root / (stem + ".zip")) as archive:
+            self.assertEqual({info.date_time for info in archive.infolist()}, {time.gmtime(stamp)[:6]})
 
     def test_completed_gate_passes_and_stale_gate_fails(self):
         marker = self.marker()

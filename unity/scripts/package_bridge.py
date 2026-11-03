@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import tarfile
+import time
 import zipfile
 
 
@@ -73,7 +74,17 @@ def source_inventory(source: Path) -> tuple[dict, list[dict]]:
     return metadata, entries
 
 
-def tar_bytes(members: list[tuple[str, bytes]]) -> bytes:
+def member_time(source: Path) -> int:
+    """The source commit's time, so the same commit still packages to the same bytes.
+
+    Unity's importer keeps member times and its refresh only rehashes a file whose time
+    changed. An update stamped like the last one never compiles in an open Editor.
+    """
+    commit = subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=source, capture_output=True, check=False)
+    return int(commit.stdout) if commit.returncode == 0 else int(time.time())
+
+
+def tar_bytes(members: list[tuple[str, bytes]], stamp: int) -> bytes:
     output = io.BytesIO()
     with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -81,7 +92,7 @@ def tar_bytes(members: list[tuple[str, bytes]]) -> bytes:
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
                 info.mode = 0o644
-                info.mtime = 0
+                info.mtime = stamp
                 archive.addfile(info, io.BytesIO(data))
     return output.getvalue()
 
@@ -140,11 +151,12 @@ def package(source: Path, output: Path) -> dict:
     u_members = unity_members(entries)
     t_members = package_members(entries, "package/")
     z_members = package_members(entries, "")
-    paths["unitypackage"].write_bytes(tar_bytes(u_members))
-    paths["upm"].write_bytes(tar_bytes(t_members))
+    stamp = member_time(source)
+    paths["unitypackage"].write_bytes(tar_bytes(u_members, stamp))
+    paths["upm"].write_bytes(tar_bytes(t_members, stamp))
     with zipfile.ZipFile(paths["vpm"], "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, data in z_members:
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info = zipfile.ZipInfo(name, date_time=time.gmtime(stamp)[:6])
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             archive.writestr(info, data)
