@@ -1738,6 +1738,37 @@ impl Catalogue {
                 Ok(())
             })?;
         }
+        // Stored compatibility holds what the rules of the writing build resolved.
+        // Re-resolve once per rule version; no store or source record is read.
+        let resolved: Option<String> = this
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
+            .query_row(
+                "SELECT CAST(value AS TEXT) FROM meta WHERE key='taxonomy_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if resolved.as_deref() != Some(crate::taxonomy::VERSION) {
+            // Rewriting search entries spills the default 2 MB cache, and each spill
+            // syncs the journal: 88 s against 25 s on a cold 2,351-product hard disk.
+            let cache_size = |size: i64| -> Result<()> {
+                this.inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("catalogue.lock"))?
+                    .pragma_update(None, "cache_size", size)?;
+                Ok(())
+            };
+            cache_size(-65536)?;
+            let resolved = this.mutate(|tx, projections| {
+                tx.execute("INSERT INTO meta(key,value) VALUES('taxonomy_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[crate::taxonomy::VERSION])?;
+                projections.identities_changed = true;
+                Ok(())
+            });
+            cache_size(-2000)?;
+            resolved?;
+        }
         // Durable document is saved atomically with projections; no startup network is needed.
         Ok(this)
     }

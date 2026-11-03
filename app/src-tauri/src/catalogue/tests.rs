@@ -1855,6 +1855,51 @@ fn ambiguous_slash_bases_remain_selectable_without_fabricated_individual_identit
 }
 
 #[test]
+fn opening_after_a_name_rule_change_resolves_stored_tags_once() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("product", "base", json!({"id":"base","sourceTitle":"【販売終了】ソラネコ -Soraneko- / オリジナル3Dモデル","sourceCategory":{"name":"3Dアバター"}})).unwrap();
+    c.put("product", "coat", json!({"id":"coat","sourceTitle":"Authored coat","sourceCategory":{"name":"3D衣装"},"sourceTags":["Soraneko"]})).unwrap();
+    let resolved = BTreeSet::from(["product:base".to_owned()]);
+    assert_eq!(dynamic_tag_ids(&c, "coat"), resolved);
+    // A library written by an older build holds that build's resolution.
+    c.inner.lock().unwrap().execute_batch("UPDATE products SET body=json_set(body,'$.ownedAvatarEvidence',json('[]'),'$.ownedAvatars',json('[]')),summary=json_set(summary,'$.ownedAvatarEvidence',json('[]'),'$.ownedAvatars',json('[]')) WHERE id='coat'; UPDATE meta SET value='older' WHERE key='taxonomy_version';").unwrap();
+    assert!(dynamic_tag_ids(&c, "coat").is_empty());
+    drop(c);
+    let c = f.open();
+    assert_eq!(dynamic_tag_ids(&c, "coat"), resolved);
+    let revision = c.revision().unwrap();
+    drop(c);
+    assert_eq!(f.open().revision().unwrap(), revision);
+}
+
+#[test]
+fn a_category_rule_reaches_a_stored_product_only_through_its_own_records() {
+    let f = Fixture::new();
+    let c = f.open();
+    let source = |id: &str, tags: Value| json!({"id":id,"sourceTitle":"オリジナル3Dモデル「ソラネコ」","sourceCategory":{"name":"3Dキャラクター"},"sourceTags":tags});
+    let category = |c: &Catalogue, id: &str| -> String {
+        c.inner.lock().unwrap().query_row("SELECT category FROM products WHERE id=?1", [id], |r| r.get(0)).unwrap()
+    };
+    c.put("product", "stored", source("stored", json!(["髪型"]))).unwrap();
+    c.put("product", "manual", source("manual", json!(["髪型"]))).unwrap();
+    c.command("overlay", json!({"ids":["manual"],"patch":{"category":"Tool"}})).unwrap();
+    assert_eq!(category(&c, "stored"), "Base");
+    assert_eq!(category(&c, "manual"), "Tool");
+    // A library written by an older build holds that build's category.
+    c.inner.lock().unwrap().execute_batch("UPDATE products SET category='Hair',body=json_set(body,'$.category','Hair'),summary=json_set(summary,'$.category','Hair') WHERE id='stored'; UPDATE meta SET value='older' WHERE key='taxonomy_version';").unwrap();
+    drop(c);
+    let c = f.open();
+    assert_eq!(category(&c, "stored"), "Hair");
+    assert_eq!(category(&c, "manual"), "Tool");
+    // A new observation applies the current rules, and a manual category stays.
+    c.put("product", "stored", source("stored", json!(["髪型", "VRChat"]))).unwrap();
+    c.put("product", "manual", source("manual", json!(["髪型", "VRChat"]))).unwrap();
+    assert_eq!(category(&c, "stored"), "Base");
+    assert_eq!(category(&c, "manual"), "Tool");
+}
+
+#[test]
 fn avatar_snapshot_is_pure_and_manual_base_visibility_does_not_change_defaults() {
     let f = Fixture::new();
     let c = f.open();
@@ -2263,6 +2308,238 @@ fn derived_avatar_options_filter_the_products_they_count() {
     check(&c, 3);
     drop(c);
     check(&f.open(), 3);
+}
+
+/// Clothing on an owned variant, optionally with a public support section.
+fn owned_variant_product(c: &Catalogue, id: &str, variant: &str, support: Value) {
+    c.put_many(vec![
+        ("product".into(), id.into(), json!({"id":id,"store":"BOOTH","sourceTitle":"Authored VRChat clothing","sourceCategory":{"name":"3D衣装"},"sourceTags":["VRChat"],
+            "publicVariants":[{"id":format!("{id}-v"),"type":"digital","name":variant}],"publicSupportAvatars":support})),
+        ("remote_file".into(), format!("{id}-f"), json!({"id":format!("{id}-f"),"productId":id,"accountId":"a","variantId":format!("{id}-v"),"name":"opaque.zip","revision":"r1"})),
+        ("entitlement".into(), format!("{id}-e"), json!({"id":format!("{id}-e"),"productId":id,"accountId":"a","fileIds":[format!("{id}-f")],"manifestComplete":true})),
+    ]).unwrap();
+}
+/// Clothing whose support section links `item`, on an owned full pack.
+fn citing_product(c: &Catalogue, id: &str, item: &str, label: &str) {
+    owned_variant_product(c, id, "全部入りフルパック", json!([{"id":format!("booth:{item}"),"productId":item,"officialName":label,"displayName":label}]));
+}
+fn avatar_rows(c: &Catalogue, kind: &str) -> Vec<Value> {
+    c.command("avatar_options", json!({})).unwrap()["avatarOptions"].as_array().unwrap().iter()
+        .filter(|option| text(option, "id").starts_with(kind)).cloned().collect()
+}
+fn avatar_filter(c: &Catalogue, avatar: &Value) -> Vec<String> {
+    let mut ids = strings(&c.command("query", json!({"avatar":avatar})).unwrap()["matchedIds"]);
+    ids.sort();
+    ids
+}
+
+#[test]
+fn item_links_credit_an_owned_base_without_their_labels_becoming_names() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    synthetic_named_base(&c, "900201", "ソラネコ");
+    // Sellers label links with a shop or several avatars as well as a name.
+    let list = "ソラネコ and ウミネコ and ホシネコ";
+    assert!(!crate::taxonomy::avatar_label_is_unambiguous(list)
+        || crate::taxonomy::parsed_avatar_label(list).name_kind != "single");
+    citing_product(&c, "cites-shop", "900201", "Authored Shop");
+    citing_product(&c, "cites-list", "900201", list);
+    citing_product(&c, "cites-other", "900202", "ウミネコ");
+    // A variant's bare name has no ID either; its raw spelling reaches the filter too.
+    owned_variant_product(&c, "names-base", "Soraneko専用", json!([]));
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    assert_eq!(avatar_rows(&c, "product:")[0]["matchingProductCount"], 4);
+    assert_eq!(avatar_filter(&c, &json!("product:900201")), ["900201", "cites-list", "cites-shop", "names-base"]);
+    // A link to a Base outside this library keeps its derived row.
+    let derived = avatar_rows(&c, "avatar:");
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0]["officialName"], "ウミネコ");
+    assert_eq!(derived[0]["matchingProductCount"], 1);
+    assert_eq!(avatar_filter(&c, &derived[0]["id"]), ["cites-other"]);
+    let aliases = c.get("preferences", "app").unwrap().unwrap()["avatarAliases"].clone();
+    assert_eq!(aliases["booth:900202"], derived[0]["id"]);
+    assert!(aliases.get("booth:900201").is_none());
+    assert!(aliases.as_object().unwrap().keys().all(|alias| !alias.contains("authored shop") && !alias.contains(" and ")));
+    // Batch Edit acts on the Base these products count toward.
+    c.command("overlay", json!({"ids":["cites-shop"],"ownedAvatarsDelta":{"add":[],"remove":["product:900201"]}})).unwrap();
+    assert_eq!(c.get("overlay", "cites-shop").unwrap().unwrap()["ownedAvatars"], json!([]));
+    c.command("overlay", json!({"ids":["cites-list"],"ownedAvatarsDelta":{"add":[derived[0]["id"]],"remove":[]}})).unwrap();
+    assert_eq!(c.get("overlay", "cites-list").unwrap().unwrap()["ownedAvatars"], json!(["product:900201", "ウミネコ"]));
+    assert_eq!(avatar_filter(&c, &json!("product:900201")), ["900201", "cites-list", "names-base"]);
+}
+
+#[test]
+fn a_links_derived_row_hands_over_to_its_base_and_returns_if_the_base_leaves() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    citing_product(&c, "cites-label", "900201", "✦ソラネコ様");
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    let row = avatar_rows(&c, "avatar:")[0].clone();
+    let id = row["id"].clone();
+    let key = text(&row, "id").to_owned();
+    // Everything a human can have saved against that row.
+    product(&c, "manual");
+    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":[row["sourceIdentityValue"]]}})).unwrap();
+    let saved = json!({"enabled":true,"displayName":"Saved name","shopName":"Saved shop"});
+    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved}}})).unwrap();
+    assert_eq!(avatar_rows(&c, "avatar:")[0]["matchingProductCount"], 2);
+
+    synthetic_named_base(&c, "900201", "ソラネコ");
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    assert!(avatar_rows(&c, "avatar:").is_empty());
+    let base = avatar_rows(&c, "product:")[0].clone();
+    assert_eq!(base["matchingProductCount"], 3);
+    assert_eq!(base["displayName"], "Saved name");
+    assert_eq!(base["shopName"], "Saved shop");
+    assert_eq!(base["enabled"], true);
+    assert_eq!(base["explicitEnabled"], true);
+    assert!(strings(&base["aliases"]).contains(&key));
+    // Edit and Batch Edit find the manual choice's text through the Base.
+    assert!(strings(&base["aliases"]).iter().any(|alias| alias == text(&row, "sourceIdentityValue")));
+    let members = ["900201", "cites-label", "manual"];
+    assert_eq!(avatar_filter(&c, &base["id"]), members);
+    // A saved search still holds the row's ID.
+    assert_eq!(avatar_filter(&c, &id), members);
+    let preferences = c.get("preferences", "app").unwrap().unwrap();
+    assert_eq!(preferences["avatarSettings"], json!({(key.clone()):saved}));
+    assert_eq!(preferences["avatarAliases"]["booth:900201"], id);
+    assert_eq!(c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"], json!([row["sourceIdentityValue"]]));
+    let revision = c.revision().unwrap();
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    assert_eq!(c.revision().unwrap(), revision);
+
+    // The Base's own choices win, including a cleared name.
+    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved,"product:900201":{"enabled":false,"displayName":""}}}})).unwrap();
+    let base = avatar_rows(&c, "product:")[0].clone();
+    assert_eq!(base["enabled"], false);
+    assert_eq!(base["displayName"], base["sourceDisplayName"]);
+    assert_eq!(base["shopName"], "Saved shop");
+    // Unticking a duplicate never hides the Base.
+    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):{"enabled":false}},"avatarAutomaticEnabled":{"product:900201":true}}})).unwrap();
+    assert_eq!(avatar_rows(&c, "product:")[0]["enabled"], true);
+
+    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved},"avatarAutomaticEnabled":{}}})).unwrap();
+    c.delete("product", "900201").unwrap();
+    let row = avatar_rows(&c, "avatar:")[0].clone();
+    assert_eq!(row["id"], id);
+    assert_eq!(row["matchingProductCount"], 2);
+    assert_eq!(row["displayName"], "Saved name");
+    assert_eq!(row["enabled"], true);
+    assert_eq!(avatar_filter(&c, &id), ["cites-label", "manual"]);
+}
+
+#[test]
+fn a_label_shared_with_another_link_keeps_its_derived_row_apart_from_the_base() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    citing_product(&c, "cites-owned", "900201", "✦ソラネコ様");
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    let id = avatar_rows(&c, "avatar:")[0]["id"].clone();
+    let key = text(&avatar_rows(&c, "avatar:")[0], "id").to_owned();
+    c.command("preferences", json!({"patch":{"avatarSettings":{(key):{"displayName":"Saved name"}}}})).unwrap();
+    synthetic_named_base(&c, "900201", "ソラネコ");
+    citing_product(&c, "cites-other", "900203", "✦ソラネコ様");
+    let check = |c: &Catalogue| {
+        let derived = avatar_rows(c, "avatar:");
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0]["id"], id);
+        assert_eq!(derived[0]["matchingProductCount"], 1);
+        assert_eq!(derived[0]["displayName"], "Saved name");
+        assert_eq!(avatar_filter(c, &json!("product:900201")), ["900201", "cites-owned"]);
+    };
+    check(&c);
+    // Its filter joins the row once bootstrap has recorded the second link.
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    check(&c);
+    assert_eq!(avatar_filter(&c, &id), ["cites-other"]);
+}
+
+#[test]
+fn a_bare_variant_name_counts_toward_the_one_identity_with_that_name() {
+    let f = Fixture::new();
+    let c = f.open();
+    c.put("account", "a", json!({"id":"a","store":"BOOTH"})).unwrap();
+    owned_variant_product(&c, "names-base", "ソラネコ専用", json!([]));
+    owned_variant_product(&c, "untick", "ソラネコ専用", json!([]));
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    let row = avatar_rows(&c, "avatar:")[0].clone();
+    let id = row["id"].clone();
+    let key = text(&row, "id").to_owned();
+    // The label's spelling is our romanization, not one the Base's source uses.
+    assert_eq!(row["displayName"], "ソラネコ / Soraneko");
+    let saved = json!({"enabled":true,"displayName":"Saved name"});
+    c.command("preferences", json!({"patch":{"avatarSettings":{(key.clone()):saved}}})).unwrap();
+    product(&c, "manual");
+    c.command("overlay", json!({"ids":["manual"],"patch":{"ownedAvatars":[row["sourceIdentityValue"]]}})).unwrap();
+    assert_eq!(avatar_rows(&c, "avatar:")[0]["matchingProductCount"], 3);
+
+    synthetic_named_base(&c, "900201", "オリジナル3Dモデル「ソラネコ -Starcat-」");
+    let before = c.get("preferences", "app").unwrap().unwrap();
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    assert!(avatar_rows(&c, "avatar:").is_empty());
+    let base = avatar_rows(&c, "product:")[0].clone();
+    assert_eq!(base["sourceDisplayName"], "ソラネコ / Starcat");
+    assert_eq!(base["displayName"], "Saved name");
+    assert_eq!(base["enabled"], true);
+    assert_eq!(base["matchingProductCount"], 4);
+    assert!(strings(&base["aliases"]).contains(&key));
+    assert!(strings(&base["aliases"]).iter().any(|alias| alias == "ソラネコ / Soraneko"));
+    let members = ["900201", "manual", "names-base", "untick"];
+    assert_eq!(avatar_filter(&c, &base["id"]), members);
+    // A saved search still holds the row's ID.
+    assert_eq!(avatar_filter(&c, &id), members);
+    // Everything saved stays as it was, so the row can come back.
+    let preferences = c.get("preferences", "app").unwrap().unwrap();
+    assert_eq!(preferences["avatarSettings"], before["avatarSettings"]);
+    assert_eq!(preferences["avatarAliases"]["ソラネコ / soraneko"], id);
+    assert_eq!(c.get("overlay", "manual").unwrap().unwrap()["ownedAvatars"], json!([row["sourceIdentityValue"]]));
+    let revision = c.revision().unwrap();
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    assert_eq!(c.revision().unwrap(), revision);
+    // Batch Edit reaches the label through the Base it counts toward.
+    c.command("overlay", json!({"ids":["untick"],"ownedAvatarsDelta":{"add":[],"remove":["product:900201"]}})).unwrap();
+    assert_eq!(c.get("overlay", "untick").unwrap().unwrap()["ownedAvatars"], json!([]));
+    let members = ["900201", "manual", "names-base"];
+    assert_eq!(avatar_filter(&c, &base["id"]), members);
+
+    // A special edition leaves the plain product's name its own.
+    synthetic_named_base(&c, "900202", "オリジナル3Dモデル「ソラネコ -Starcat-」Gen3.0");
+    assert!(avatar_rows(&c, "avatar:").is_empty());
+    assert_eq!(avatar_filter(&c, &base["id"]), members);
+    c.delete("product", "900202").unwrap();
+    // A second avatar with that name leaves the label's owner unknown.
+    synthetic_named_base(&c, "900203", "オリジナル3Dモデル「ソラネコ -Skycat-」");
+    let check_apart = |c: &Catalogue, extra: &[&'static str]| {
+        let derived = avatar_rows(c, "avatar:");
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0]["id"], id);
+        assert_eq!(derived[0]["displayName"], "Saved name");
+        let mut members = vec!["manual", "names-base"];
+        members.extend_from_slice(extra);
+        members.sort();
+        assert_eq!(avatar_filter(c, &id), members);
+    };
+    check_apart(&c, &[]);
+    c.delete("product", "900203").unwrap();
+    assert!(avatar_rows(&c, "avatar:").is_empty());
+    // So does a link to another product under that name.
+    citing_product(&c, "cites-other", "900204", "ソラネコ");
+    c.command("bootstrap", json!({"includeProducts":false})).unwrap();
+    check_apart(&c, &["cites-other"]);
+    assert_eq!(avatar_filter(&c, &base["id"]), ["900201"]);
+    c.delete("remote_file", "cites-other-f").unwrap();
+    c.delete("entitlement", "cites-other-e").unwrap();
+    c.delete("product", "cites-other").unwrap();
+
+    c.delete("product", "900201").unwrap();
+    let row = avatar_rows(&c, "avatar:")[0].clone();
+    assert_eq!(row["id"], id);
+    assert_eq!(row["displayName"], "Saved name");
+    assert_eq!(row["matchingProductCount"], 2);
+    assert_eq!(avatar_filter(&c, &id), ["manual", "names-base"]);
 }
 
 #[test]

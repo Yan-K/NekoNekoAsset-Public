@@ -19,9 +19,14 @@ function matchingOptions(value:string,options:ProductAvatarOption[]):ProductAvat
  const aliases=new Set(getAvatarAliases(value).map(normalizeSearch));
  return options.filter(option=>option.legacyValue===undefined&&option.nameKind!=='bundle'&&option.nameKind!=='fallback'&&optionNames(option).some(name=>getAvatarAliases(name).some(alias=>aliases.has(normalizeSearch(alias)))));
 }
+/** An item link names the exact Base it cites, whatever label its seller gave it. */
+function evidenceOption(avatarId:string|undefined,options:ProductAvatarOption[]):ProductAvatarOption|undefined{
+ const cited=avatarId?.startsWith('booth:')?avatarId.slice(6):undefined;
+ return options.find(option=>option.id===avatarId||cited!==undefined&&option.baseProductIds?.includes(cited));
+}
 function avatarIdentities(product:AvatarProduct,value:string,options:ProductAvatarOption[]):string[]{
  const direct=options.find(option=>option.id===value);if(direct)return [direct.id];
- const evidence=new Set((product.ownedAvatarEvidence??[]).filter(item=>normalizeSearch(item.avatar)===normalizeSearch(value)&&options.some(option=>option.id===item.avatarId)).map(item=>item.avatarId!));
+ const evidence=new Set((product.ownedAvatarEvidence??[]).filter(item=>normalizeSearch(item.avatar)===normalizeSearch(value)).flatMap(item=>evidenceOption(item.avatarId,options)?.id??[]));
  if(evidence.size)return [...evidence];
  const legacy=options.find(option=>option.legacyValue===value);if(legacy)return [legacy.id];
  const matches=matchingOptions(value,options);return matches.length===1?[matches[0].id]:[];
@@ -47,8 +52,9 @@ export function productAvatarValues(product:AvatarProduct,options:ProductAvatarO
    if(!selected.includes(id))continue;
    // A shared friendly label cannot retain one of several exact identities.
    const option=options.find(option=>option.id===id)??openingOptions.find(option=>option.id===id);if(!option)continue;
-   const legacy=option.legacyValue;
-   const ambiguous=legacy===undefined&&(ids.length>1||matchingOptions(value,openingOptions).length>1);
+   const legacy=option.legacyValue,named=matchingOptions(value,openingOptions);
+   // Text that cannot find this identity by itself, such as a seller's link label, persists the identity.
+   const ambiguous=legacy===undefined&&(ids.length>1||named.length!==1||named[0].id!==id);
    values.push(ambiguous||value===id?persistedAvatarValue(option):value);retained.add(id);
   }
  }

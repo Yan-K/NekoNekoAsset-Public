@@ -7,6 +7,11 @@ pub(super) struct Registry {
     pub entries: BTreeMap<String, Value>,
     aliases: BTreeMap<String, String>,
     alias_keys: BTreeMap<String, String>,
+    /// The identity of each Base product in this library, by product ID.
+    base_identities: BTreeMap<String, String>,
+    /// Derived identities explained by one identity in `entries`: their only recorded
+    /// link names it, or nothing else has their name.
+    superseded: BTreeMap<String, String>,
 }
 impl Registry {
     pub(super) fn resolver(&self) -> crate::taxonomy::AvatarTagResolver {
@@ -23,9 +28,13 @@ impl Registry {
         if self.entries.contains_key(value) {
             return value.to_owned();
         }
+        if let Some(id) = self.cited_base(value).or_else(|| self.superseded.get(value)) {
+            return id.clone();
+        }
+        let current = |id: &String| self.superseded.get(id).unwrap_or(id).clone();
         let direct = normalized(value);
         if let Some(id) = self.aliases.get(&direct) {
-            return id.clone();
+            return current(id);
         }
         let key = self
             .alias_keys
@@ -34,8 +43,12 @@ impl Registry {
             .unwrap_or_else(|| normalized(&crate::taxonomy::clean_avatar_name(value)));
         self.aliases
             .get(&key)
-            .cloned()
+            .map(current)
             .unwrap_or_else(|| crate::taxonomy::canonical_tag(value))
+    }
+    /// An item link names this exact Base, whatever label its seller gave it.
+    fn cited_base(&self, value: &str) -> Option<&String> {
+        value.strip_prefix("booth:").and_then(|product| self.base_identities.get(product))
     }
     pub fn terms(&self, id: &str) -> BTreeSet<String> {
         let mut terms = BTreeSet::from([id.to_owned()]);
@@ -101,8 +114,16 @@ impl Registry {
         // Presentation improvements must not rename an existing derived
         // identity or abandon its saved user settings.
         let (identity_name, _) = crate::taxonomy::avatar_label_parts(name);
-        Some(format!("avatar:{:x}", Sha256::digest(normalized(&identity_name).as_bytes())))
+        let derived = derived_identity(&identity_name);
+        // A link to another product stays apart from a Base that shares its label.
+        Some(match self.superseded.get(&derived) {
+            Some(base) if !avatar_id.starts_with("booth:") => base.clone(),
+            _ => derived,
+        })
     }
+}
+fn derived_identity(name: &str) -> String {
+    format!("avatar:{:x}", Sha256::digest(normalized(name).as_bytes()))
 }
 fn names(entry: &Value) -> Vec<String> {
     strings(&entry["aliases"])
@@ -208,7 +229,8 @@ pub(super) fn source_aliases(product: &Value) -> BTreeSet<String> {
     let title = text(product, "sourceTitle");
     if text(product, "category") != "Base"
         || text(product, "id").is_empty()
-        || !crate::taxonomy::avatar_label_is_unambiguous(title)
+        || !(crate::taxonomy::avatar_label_is_unambiguous(title)
+            || crate::taxonomy::parsed_product_avatar_label(text(product, "id"), title).name_kind == "single")
     {
         return BTreeSet::new();
     }
@@ -287,6 +309,8 @@ fn registry_from_bases(
         entries: BTreeMap::new(),
         aliases: BTreeMap::new(),
         alias_keys: BTreeMap::new(),
+        base_identities: BTreeMap::new(),
+        superseded: BTreeMap::new(),
     };
     for entry in dictionary["avatars"].as_array().into_iter().flatten() {
         let mut entry = entry.clone();
@@ -355,6 +379,7 @@ fn registry_from_bases(
         if let Some(known) = registry.entries.get(&id) {
             entry = known.clone();
         }
+        registry.base_identities.insert(product_id.clone(), id.clone());
         let mut base_ids: BTreeSet<_> = strings(&entry["baseProductIds"]).into_iter().collect();
         base_ids.insert(product_id);
         entry["baseProductIds"] = json!(base_ids);
@@ -428,11 +453,55 @@ fn registry_from_bases(
             add_alias(&mut registry, alias, id, false);
         }
     }
-    for (id, settings) in preferences["avatarSettings"]
-        .as_object()
-        .into_iter()
-        .flatten()
-    {
+    // A link recorded a derived identity before its Base was here, or in an older
+    // build. Once only that Base explains it, the identity is a spelling of the Base,
+    // so saved searches and choices follow. Nothing on disk changes, so the row and
+    // its settings return if the Base leaves.
+    let mut cited = BTreeMap::<&str, Vec<&str>>::new();
+    for (alias, id) in preferences["avatarAliases"].as_object().into_iter().flatten() {
+        if let Some(id) = id.as_str().filter(|id| alias.starts_with("booth:") && id.starts_with("avatar:")) {
+            cited.entry(id).or_default().push(alias);
+        }
+    }
+    for (derived, links) in &cited {
+        let base = registry.resolve(links[0]);
+        if links.len() == 1 && registry.entries.contains_key(&base) {
+            registry.superseded.insert((*derived).to_owned(), base);
+        }
+    }
+    // A bare variant's label guesses a spelling, ソラネコ / Soraneko for a Base's
+    // ソラネコ / Starcat, but its identity hashes the name alone. One identity having
+    // that name explains it too, unless a link to another product shares the name.
+    let edition = crate::taxonomy::avatar_edition;
+    let mut named = BTreeMap::<String, Vec<&Value>>::new();
+    for entry in entries.iter().filter(|entry| !matches!(text(entry, "nameKind"), "bundle" | "fallback")) {
+        if let Some(name) = registry.alias_keys.get(text(entry, "officialName")) {
+            named.entry(derived_identity(name)).or_default().push(entry);
+        }
+    }
+    for (derived, mut holders) in named {
+        // A special edition does not make its plain product's name ambiguous.
+        if holders.iter().any(|entry| !edition(entry)) {
+            holders.retain(|entry| !edition(entry));
+        }
+        if let ([entry], false) = (&holders[..], cited.contains_key(derived.as_str())) {
+            registry.superseded.insert(derived, text(entry, "id").to_owned());
+        }
+    }
+    // The Base's own choices win, and unticking a duplicate never hides the Base.
+    let mut saved = preferences["avatarSettings"].as_object().cloned().unwrap_or_default();
+    for (derived, base) in &registry.superseded {
+        let Some(from) = saved.remove(derived) else { continue };
+        let own = saved.entry(base.clone()).or_insert_with(|| json!({}));
+        if let (Some(from), Some(own)) = (from.as_object(), own.as_object_mut()) {
+            for (field, value) in from {
+                if field != "enabled" || *value == json!(true) {
+                    own.entry(field.clone()).or_insert_with(|| value.clone());
+                }
+            }
+        }
+    }
+    for (id, settings) in &saved {
         let canonical = registry.resolve(id);
         let display = if let Some(entry) = registry.entries.get_mut(&canonical) {
             decorate(entry, settings);
@@ -454,7 +523,15 @@ fn registry_from_bases(
     }
     for entry in registry.entries.values_mut() {
         let id = text(entry, "id").to_owned();
-        decorate(entry, &preferences["avatarSettings"][&id]);
+        decorate(entry, saved.get(&id).unwrap_or(&Value::Null));
+    }
+    // A saved search still holding the old ID finds its label through this.
+    let recorded: BTreeSet<_> = preferences["avatarAliases"].as_object().into_iter().flatten()
+        .filter_map(|(_, id)| id.as_str()).collect();
+    for (derived, base) in registry.superseded.iter().filter(|(derived, _)| recorded.contains(derived.as_str())) {
+        if let Some(aliases) = registry.entries.get_mut(base).and_then(|entry| entry["aliases"].as_array_mut()) {
+            aliases.push(json!(derived));
+        }
     }
     Ok(registry)
 }
@@ -595,8 +672,26 @@ fn build_options(
                     add_alias(&mut registry, &alias, &id, false);
                 }
             }
-            add_alias(&mut registry, name, &id, true);
-            add_alias(&mut registry, key, &id, true);
+            // A link to a Base needs no alias, and its seller's label is not a name:
+            // some are shop names or lists of avatars. Text that found a known identity
+            // needs none either, so a guessed spelling stays unsaved.
+            let aliased = if identity(key) {
+                registry.cited_base(key).is_none_or(|base| base == key)
+            } else {
+                id.starts_with("avatar:")
+            };
+            if aliased {
+                add_alias(&mut registry, name, &id, true);
+                add_alias(&mut registry, key, &id, true);
+            }
+            // Batch Edit and the App read products' text as the identity they count toward.
+            if !identity(key) {
+                if let Some(aliases) = registry.entries.get_mut(&id).and_then(|entry| entry["aliases"].as_array_mut()) {
+                    if !aliases.iter().any(|alias| alias == name) {
+                        aliases.push(json!(name));
+                    }
+                }
+            }
             memberships.entry(id).or_default().insert(product.clone());
         }
     }
@@ -622,6 +717,7 @@ fn build_options(
 
 pub(super) struct AvatarDeltaResolver {
     options: BTreeMap<String, Value>,
+    cited: BTreeMap<String, String>,
     resolver: crate::taxonomy::AvatarTagResolver,
 }
 impl AvatarDeltaResolver {
@@ -631,7 +727,9 @@ impl AvatarDeltaResolver {
             entry["displayName"] = entry["sourceDisplayName"].clone();
         }
         let resolver = crate::taxonomy::AvatarTagResolver::from_options(&options);
-        Ok(Self { options: options.into_iter().map(|entry| (text(&entry, "id").to_owned(), entry)).collect(), resolver })
+        let cited = options.iter().flat_map(|entry| strings(&entry["baseProductIds"]).into_iter()
+            .map(|product| (format!("booth:{product}"), text(entry, "id").to_owned()))).collect();
+        Ok(Self { options: options.into_iter().map(|entry| (text(&entry, "id").to_owned(), entry)).collect(), cited, resolver })
     }
 
     /// Resolve each current membership by exact evidence before considering a
@@ -650,6 +748,7 @@ impl AvatarDeltaResolver {
                     .filter(|e| normalized(text(e, "avatar")) == normalized(&value))
                 {
                     let id = text(evidence, "avatarId");
+                    let id = self.cited.get(id).map_or(id, String::as_str);
                     if self.options.contains_key(id) || remove.contains(id) && identity(id) {
                         identities.insert(id.to_owned());
                     }

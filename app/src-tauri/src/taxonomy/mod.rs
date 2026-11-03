@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 
-pub const VERSION: &str = "2026-10-12.12";
+pub const VERSION: &str = "2026-11-03.15";
 pub const CATEGORY_KEYS: &[&str] = &[
     "Base",
     "Clothes",
@@ -460,6 +460,20 @@ pub fn infer_product_category(source: &Value) -> Value {
     if result["category"] == "Base" && !(base_leaf || base_title) {
         result = json!({"category":"NonVRChat","basis":"fallback","inferred":true,"evidence":[]});
     }
+    // BOOTH's own character category outranks tags, which also list what an avatar
+    // includes: a hair style, gestures, a shader. With no specific store category,
+    // a title that calls itself one named model is enough; a removed page is not.
+    if result["category"] != "Base" && !declared_software && !jinxxy_addon {
+        if category_name == "3dキャラクター" {
+            result = json!({"category":"Base","basis":"sourceCategory","inferred":true,
+                "evidence":[{"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")}]});
+        } else if matches!(category_name.as_str(), "" | "3dモデル(その他)")
+            && names_one_model(title, &title_normalized)
+        {
+            result = json!({"category":"Base","basis":"sourceTitle","inferred":true,
+                "evidence":[{"field":"sourceTitle","value":evidence_excerpt(title)}]});
+        }
+    }
     // A generic material/texture label must not defeat an explicit shader or
     // motion tag; dedicated clothing/hair/etc source categories still win.
     if matches!(result["category"].as_str(), Some("Texture" | "NonVRChat")) {
@@ -640,6 +654,49 @@ fn affirmative_base_title(title: &str) -> bool {
         }
     }
     false
+}
+
+/// How sellers call one 3D model. Compared with spaces removed, because they also
+/// write オリジナル 3Dモデル and VRChat対応 3Dモデル.
+fn model_wording() -> impl Iterator<Item = String> {
+    let platform = ["vrchat", "vrc"].into_iter().flat_map(|platform| {
+        ["向け", "用", "対応"].into_iter().flat_map(move |purpose| {
+            ["3dモデル", "モデル", "アバター"]
+                .into_iter()
+                .map(move |kind| format!("{platform}{purpose}{kind}"))
+        })
+    });
+    [
+        "オリジナル3dモデル".to_owned(),
+        "original3dmodel".to_owned(),
+    ]
+    .into_iter()
+    .chain(platform)
+}
+
+/// The wording must introduce the name or directly follow a quoted one, because a
+/// garment can end with the same phrase. Product wording after + or & can be a bonus
+/// that comes with the model, so there only the name parser decides.
+fn names_one_model(title: &str, normalized: &str) -> bool {
+    let compact: String = normalized.split_whitespace().collect();
+    let product = normalized.split(['+', '&']).next().unwrap_or(normalized);
+    model_wording().any(|word| {
+        compact.match_indices(&word).any(|(start, _)| {
+            let after = &compact[start + word.len()..];
+            // "original 3d modeler" is not the phrase.
+            !(word.is_ascii() && after.starts_with(|c: char| c.is_ascii_alphanumeric()))
+                && !names::for_target(after)
+                && (after.chars().any(char::is_alphanumeric)
+                    || compact[..start]
+                        .trim_end_matches('【')
+                        .ends_with(['」', '』', '”', '"', '〛']))
+        })
+    }) && !compatibility_context(normalized)
+        && !names::addon(product)
+        && !RULES
+            .iter()
+            .any(|rule| rule.specific && rule_match(product, rule))
+        && names::product_base_parts(title).name_kind != "fallback"
 }
 
 fn compatibility_context(text: &str) -> bool {
@@ -856,10 +913,18 @@ pub fn parsed_avatar_label(title: &str) -> AvatarLabelParts {
     names::structured_base_parts(title)
 }
 
-/// A bounded presentation correction tied to the public product identity.
-/// Similar titles and user renames never inherit another product's name.
+/// A special edition or another listing of one avatar leaves its plain listing's
+/// name unambiguous.
+pub fn avatar_edition(entry: &Value) -> bool {
+    entry["variantListing"] == true
+        || entry["labelQualifiers"].as_array().is_some_and(|values| !values.is_empty())
+}
+
+/// The name located in a known Base product's title, plus bounded presentation
+/// corrections tied to the public product identity. Similar titles and user
+/// renames never inherit another product's name.
 pub fn parsed_product_avatar_label(product_id: &str, title: &str) -> AvatarLabelParts {
-    let mut parsed = parsed_avatar_label(title);
+    let mut parsed = names::product_base_parts(title);
     let corrected = match product_id.strip_prefix("booth:").unwrap_or(product_id) {
         // https://booth.pm/ja/items/8547624 — name stem only; Latin unverified.
         "8547624" if title.contains("メイネーラ") => Some("メイネーラ"),
@@ -1285,6 +1350,7 @@ pub fn owned_base_options(products: &[Value]) -> Vec<Value> {
             entry["officialName"] = json!(parsed.original);
             entry["nameKind"] = json!(parsed.name_kind);
             entry["labelQualifiers"] = json!(parsed.qualifiers);
+            entry["variantListing"] = json!(names::variant_listing(title, &parsed.original));
             entry["englishNameStatus"] = json!(if english.is_empty() {
                 "unresolvedReading"
             } else if parsed.source_latin.is_some() {
@@ -1793,6 +1859,225 @@ mod tests {
         }
         assert_eq!(clean_avatar_name("真冬 / Mafuyu"), "真冬");
         assert_eq!(romanized_name("真冬 / Mafuyu"), "Mafuyu");
+    }
+
+    #[test]
+    fn booth_character_category_outranks_tags_unless_software_is_declared() {
+        // Authored structural equivalents; the human chose the category alone,
+        // so a gimmick or pet filed there follows it too.
+        for (title, tag) in [
+            ("星猫オリジナル3Dモデル「ソラネコ」-soraneko-", "髪型"),
+            (
+                "オリジナル3Dアバター『星空ソラネコ』 #ソラネコ3D",
+                "ギミック",
+            ),
+            (
+                "【VRChat 】オリジナルコラボ3Dアバター SORA_NEKO",
+                "アニメーション",
+            ),
+            (
+                "ソラネコ オリジナル3Dモデル -VRChatアバター & VRM & 追加衣装",
+                "衣装",
+            ),
+            (
+                "オリジナル3Ｄモデル「ソラネコ」Soraneko v1.17",
+                "lens texture",
+            ),
+            ("月猫オリジナル3Dモデル「ソラネコ」", "シェーダー"),
+            ("ペットウサギ「ソラネコ」", "vrc想定アクセサリー"),
+            ("Authored Open Car", "アバターギミック"),
+            ("Authored×Summer", "イラスト"),
+        ] {
+            for category in [json!({"name":"3Dキャラクター"}), json!("３Ｄキャラクター")]
+            {
+                let result = infer_product_category(
+                    &json!({"sourceCategory":category,"sourceTitle":title,"sourceTags":[tag]}),
+                );
+                assert_eq!(result["category"], "Base", "{title}");
+                assert_eq!(result["basis"], "sourceCategory", "{title}");
+            }
+        }
+        // A software tag alone is one more tag.
+        assert_eq!(
+            infer_product_category(
+                &json!({"sourceCategory":{"name":"3Dキャラクター"},"sourceTitle":"Authored","sourceTags":["プラグイン"]})
+            )["category"],
+            "Base"
+        );
+        for source in [
+            json!({"sourceCategory":{"name":"3Dキャラクター"},"sourceTitle":"「ソラネコ」用R18体Body Add-on v1.1","sourceTags":["VRChat","アバター"]}),
+            json!({"sourceCategory":{"name":"3Dキャラクター"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":"Unity editor tool for avatars."}),
+        ] {
+            assert_eq!(
+                infer_product_category(&source)["category"],
+                "Tool",
+                "{source}"
+            );
+        }
+        // Only this exact store category: not a parent, and not Jinxxy's own names.
+        for (source, expected) in [
+            (
+                json!({"sourceCategory":{"name":"その他","parentName":"3Dキャラクター"},"sourceTitle":"Authored","sourceTags":["髪型"]}),
+                "Hair",
+            ),
+            (
+                json!({"sourceCategory":{"name":"avatars"},"sourceTitle":"Authored","sourceTags":["hair"]}),
+                "Hair",
+            ),
+            (
+                json!({"sourceCategory":{"name":"3D衣装"},"sourceTitle":"Authored","sourceTags":["アバター"]}),
+                "Clothes",
+            ),
+        ] {
+            assert_eq!(
+                infer_product_category(&source)["category"],
+                expected,
+                "{source}"
+            );
+        }
+        // Managed paths freeze this lower layer's answer, so it must not move.
+        assert_eq!(
+            infer_category(&json!({"name":"3Dキャラクター"}), &["髪型".into()])["category"],
+            "Hair"
+        );
+        // Gumroad's explicit VRChat text requirement still has the last word.
+        assert_eq!(
+            infer_product_category(
+                &json!({"provider":"gumroad","sourceCategory":{"name":"3Dキャラクター"},"sourceTitle":"Authored"})
+            )["category"],
+            "NonVRChat"
+        );
+    }
+
+    #[test]
+    fn title_alone_makes_a_base_only_when_its_wording_places_one_model_name() {
+        let without_store_category = |title: &str, extra: &Value| {
+            let mut source = json!({"sourceTitle":title});
+            for (key, value) in extra.as_object().unwrap() {
+                source[key] = value.clone();
+            }
+            infer_product_category(&source)
+        };
+        let generic = json!({"sourceCategory":{"name":"3Dモデル（その他）"}});
+        for title in [
+            "オリジナル3Dモデル「ソラネコ」",
+            "オリジナル3Dモデル 『Soraneko -ソラネコ-』",
+            "オリジナル 3Dモデル『ソラネコ』",
+            "『ソラネコ』オリジナル3Dモデル",
+            "AuthoredCats vol.2『ソラネコ』オリジナル3Dモデル",
+            "【非公開】【オリジナル3Dモデル】Soraneko-ソラネコ-",
+            "【オリジナル3Dモデル】ソラネコ(フルセット)",
+            "◆オリジナル3Dモデル◆ソラネコ ver1.0 (通常版)",
+            "Original 3D Model ［soraneko -ソラネコ-］",
+            "※11/30非公開予定 オリジナル3Dモデル「Soraneko〈ソラネコ〉」",
+            "非公開済＠オリジナル3Dモデル「Soraneko〈ソラネコ〉」（Quest版付属）",
+            "【ARCHIVE】【VRChat想定 オリジナル3Dモデル 『ソラネコ Soraneko 』フルセット版",
+            "【VRChat対応 オリジナル3Dモデル 『ソラネコ -フルセット版-』v1.1＆V2.0】",
+            "オリジナル3Dモデル『ソラネコ』+追加衣装:Authored",
+            "VRChat対応オリジナル3Dモデル「ソラネコ」",
+            "VRChat用3Dモデル「ソラネコ(そらねこ)」",
+            "VRChat向けモデル【ソラネコ Ver1.1】",
+            "VRC向け3Dモデル【ソラネコ -Soraneko- 】V2",
+            "OculusQuest VRChat対応 3Dモデル 『ソラネコ -フルセット版-』v1.91",
+            "[VRChat向けアバター]ソラネコ・ノワール",
+            "[VRChat向けアバター] SORANEKO - 空猫",
+        ] {
+            for extra in [&json!({}), &generic] {
+                let result = without_store_category(title, extra);
+                assert_eq!(result["category"], "Base", "{title} {extra}");
+                assert_eq!(result["basis"], "sourceTitle", "{title} {extra}");
+            }
+        }
+        // Tags and descriptions, which often list contents, do not outrank the title.
+        assert_eq!(
+            without_store_category(
+                "オリジナル3Dモデル「ソラネコ」",
+                &json!({"sourceCategory":{"name":"3Dモデル（その他）"},"sourceTags":["シェーダー"],"sourceDescription":"VRChat 向け。衣装とテクスチャを含みます。"})
+            )["category"],
+            "Base"
+        );
+        for title in [
+            // The phrase can end a garment's title, or sit beside a garment's name.
+            "【version1.1】ふわふわワンピース【オリジナル3Dモデル】",
+            "『ソラT01』Ver2.0【オリジナル3Dモデル】アバター追加衣装",
+            "【オリジナル3Dモデル】ソラネコ 素体用追加テクスチャ",
+            "オリジナル3Dモデル「ソラネコ」専用コート",
+            "オリジナル3Dモデル「ソラネコ」用ヘアスタイル",
+            "ソラネコ対応オリジナル3Dモデル",
+            "オリジナル3Dモデル「ソラネコ」 Add-on",
+            "オリジナル3Dモデル「ソラネコ」用ワンピース",
+            "オリジナル3Dモデル ソラネコ&ウミネコ専用衣装",
+            "オリジナル3Dモデル用メガネ",
+            // A bare 3Dモデル also labels props.
+            "【3Dモデル】洗面器",
+            "[３Dモデル]単三電池 [VRC]",
+            "【VRChat向け】オルゴール 【3Dモデル】",
+            "VRChat向けスプーン",
+            // Platform wording followed by another product type.
+            "VRChat向けアバターギミック",
+            "VRChat向けアバター用ヘアピン",
+            "【VRC想定アバターLOADING時に】アニメーションファイル",
+            // No name, or not this phrase.
+            "オリジナル3Dモデル",
+            "オリジナル3Dモデル ver1.0",
+            "Original 3D Modeler",
+            "Original 3D Modeler Soraneko",
+            "「ソラネコ」「ウミネコ」オリジナル3Dモデル",
+        ] {
+            for extra in [&json!({}), &generic] {
+                assert_ne!(
+                    without_store_category(title, extra)["category"],
+                    "Base",
+                    "{title} {extra}"
+                );
+            }
+        }
+        // A specific store category wins, and a removed page itself proves nothing.
+        for (leaf, expected) in [
+            ("3D衣装", "Clothes"),
+            ("3D小道具", "Accessory"),
+            ("3Dテクスチャ", "Texture"),
+        ] {
+            let result = without_store_category(
+                "オリジナル3Dモデル「ソラネコ」",
+                &json!({"sourceCategory":{"name":leaf},"sourceTags":["VRChat"]}),
+            );
+            assert_eq!(result["category"], expected, "{leaf}");
+        }
+        assert_eq!(
+            without_store_category(
+                "Authored Soraneko",
+                &json!({"publicPageAvailability":"unavailable"})
+            )["category"],
+            "NonVRChat"
+        );
+        // Store-specific gates keep their last word.
+        let gumroad = json!({"provider":"gumroad"});
+        assert_eq!(
+            without_store_category("オリジナル3Dモデル「ソラネコ」", &gumroad)["category"],
+            "NonVRChat"
+        );
+        assert_eq!(
+            without_store_category(
+                "オリジナル3Dモデル「ソラネコ」",
+                &json!({"provider":"gumroad","sourceDescription":"For VRChat."})
+            )["category"],
+            "Base"
+        );
+        assert_eq!(
+            without_store_category(
+                "Original 3D Model Soraneko",
+                &json!({"provider":"jinxxy","sourceCategory":{"name":"avatars","types":["avatar_addon"]}})
+            )["category"],
+            "Gimmick"
+        );
+        assert_eq!(
+            without_store_category(
+                "Original 3D Model Soraneko",
+                &json!({"provider":"jinxxy","sourceCategory":{"name":"","types":["avatar_addon"]}})
+            )["category"],
+            "Gimmick"
+        );
     }
 
     #[test]

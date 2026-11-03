@@ -83,6 +83,14 @@ impl AvatarTagResolver {
                 }
             }
         }
+        // A special edition does not make its plain product's name ambiguous.
+        let editions: BTreeSet<_> = options.iter().filter(|entry| super::avatar_edition(entry))
+            .filter_map(|entry| entry["id"].as_str()).collect();
+        for ids in resolver.keys.values_mut() {
+            if ids.iter().any(|id| !editions.contains(id.as_str())) {
+                ids.retain(|id| !editions.contains(id.as_str()));
+            }
+        }
         resolver
     }
 
@@ -312,6 +320,41 @@ mod tests {
         }
         let resolver = AvatarTagResolver::from_options(&[a.clone(), a]);
         assert!(resolver.resolve_tag("ソラネコ").is_some());
+    }
+
+    #[test]
+    fn a_special_edition_keeps_its_plain_product_name_unambiguous() {
+        let plain = base("product:plain", "ソラネコ", "Soraneko");
+        let mut edition = base("product:edition", "ソラネコ", "Soraneko");
+        edition["labelQualifiers"] = json!(["Gen3.0"]);
+        edition["displayName"] = json!("ソラネコ / Soraneko (Gen3.0)");
+        let mut other_edition = edition.clone();
+        other_edition["id"] = json!("product:other-edition");
+        for options in [[plain.clone(), edition.clone()], [edition.clone(), plain.clone()]] {
+            let resolver = AvatarTagResolver::from_options(&options);
+            assert_eq!(resolver.resolve_tag("ソラネコ").unwrap()["id"], "product:plain");
+            assert_eq!(resolver.resolve_manual_avatar("product:edition").unwrap()["id"], "product:edition");
+        }
+        // Only an edition of its own name: still that product, or ambiguous among editions.
+        assert_eq!(AvatarTagResolver::from_options(&[edition.clone()]).resolve_tag("ソラネコ").unwrap()["id"], "product:edition");
+        assert!(AvatarTagResolver::from_options(&[edition, other_edition]).resolve_tag("ソラネコ").is_none());
+    }
+
+    #[test]
+    fn another_listing_of_one_avatar_keeps_the_plain_listing_name_unambiguous() {
+        let options = super::super::owned_base_options(&[
+            json!({"id":"free","category":"Base","sourceTitle":"【無料版】オリジナル3Dモデル「ソラネコ」"}),
+            json!({"id":"plain","category":"Base","sourceTitle":"オリジナル3Dモデル「ソラネコ」"}),
+            json!({"id":"deluxe","category":"Base","sourceTitle":"[DX版]ソラネコ"}),
+        ]);
+        let resolver = AvatarTagResolver::from_options(&options);
+        assert_eq!(resolver.resolve_tag("ソラネコ").unwrap()["id"], "product:plain");
+        // Without a plain listing the name stays ambiguous among the others.
+        let options = super::super::owned_base_options(&[
+            json!({"id":"free","category":"Base","sourceTitle":"【無料版】オリジナル3Dモデル「ソラネコ」"}),
+            json!({"id":"deluxe","category":"Base","sourceTitle":"[DX版]ソラネコ"}),
+        ]);
+        assert!(AvatarTagResolver::from_options(&options).resolve_tag("ソラネコ").is_none());
     }
 
     #[test]
