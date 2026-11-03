@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.7 Beta - 2026-11-03
+
+### Changed
+
+- Avatar names are now found in store titles that carry sale, status or platform text, so more avatars show their real name and match their compatible assets.
+- Assets that link to or name an avatar you own now count toward that avatar, and its duplicate rows are gone from Manage avatars.
+- An asset in BOOTH's 3D character category, or one whose title calls itself a single named 3D model, now counts as an Avatar base whatever its tags say. Assets already in your library change only when their listing changes; until then you can set the category in Edit.
+
+### Fixed
+
+- BOOTH gifts show the date you received them. Libraries synced earlier gain their dates on the next sync.
+- Unity Bridge: importing an update with Unity open now takes effect right away, without a restart.
+- Unity Bridge: a package that can't be read says which file and why.
+
+### Release notes
+
+- The App and the Unity Bridge move to 0.3.7. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained. The first start of an existing library re-reads its stored tags once, which can take about half a minute on a hard disk.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.6 Beta - 2026-11-02
 
 ### Added
