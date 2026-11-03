@@ -216,8 +216,10 @@ namespace NekoNekoAsset.Bridge
         private static string PreparationFailure(string entry, Exception error)
         {
             if (string.IsNullOrEmpty(error?.Message)) return "Could not prepare verified package/file review.";
+            // System IO errors name the staged file's absolute path, which a receipt must not carry.
+            string reason = error.Message.Contains(":\\") || error.Message.Contains(":/") ? "The file could not be read." : error.Message;
             entry = BridgeFiles.Diagnostic(entry, 64);
-            return BridgeFiles.Diagnostic(string.IsNullOrEmpty(entry) ? error.Message : entry + ": " + error.Message, 256);
+            return BridgeFiles.Diagnostic(string.IsNullOrEmpty(entry) ? reason : entry + ": " + reason, 256);
         }
 
         private static void PublishPreparationProgress(StoredBridgeRequest request, bool force = false)
