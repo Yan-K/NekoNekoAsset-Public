@@ -23,7 +23,7 @@
 .wf-account-name > strong {min-width:0;}
 .wf-account-name > input {width:100%;min-width:60px;}
 .wf-account-name > button {flex:none;display:grid;place-items:center;padding:4px;background:transparent;}
-.wf-error {color:var(--danger,#e76d77);font-size:12px;line-height:1.5;margin:9px 0;}
+.wf-error {color:var(--danger,#e76d77);font-size:12px;line-height:1.5;margin:9px 0;overflow-wrap:anywhere;}
 .wf-progress {display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;font-size:12px;}
 .wf-progress progress {flex:1 1 100px;min-width:60px;max-width:100%;accent-color:var(--accent);}
 .wf-scopes {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px;}

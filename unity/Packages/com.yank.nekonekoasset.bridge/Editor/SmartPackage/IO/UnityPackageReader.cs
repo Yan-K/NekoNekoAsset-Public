@@ -102,17 +102,22 @@ namespace NekoNekoAsset.Bridge.SmartPackage
 			}
 			catch (InvalidDataException ex)
 			{
-				throw new InvalidDataException("Not a valid .unitypackage: " + filePath + "\n" + ex.Message, ex);
+				throw new InvalidDataException("Not a valid .unitypackage: " + ex.Message, ex);
 			}
 			catch (EndOfStreamException ex)
 			{
-				throw new InvalidDataException("Not a valid .unitypackage: " + filePath, ex);
+				throw new InvalidDataException("Not a valid .unitypackage: " + ex.Message, ex);
+			}
+			// Mono's native inflate reports damaged or non-gzip bytes as a plain IOException.
+			catch (IOException ex) when (ex.Message.StartsWith("Corrupted data", StringComparison.Ordinal))
+			{
+				throw new InvalidDataException("Not a valid .unitypackage: Corrupted data.", ex);
 			}
 
 			var result = new List<UnityPackageEntry>(ordered.Count);
 			foreach (UnityPackageEntry record in ordered)
 			{
-				ValidateMetadataRecord(record, filePath);
+				ValidateMetadataRecord(record);
 				result.Add(record);
 			}
 			return result;
@@ -187,10 +192,10 @@ namespace NekoNekoAsset.Bridge.SmartPackage
             }
             return result;
         }
-		private static void ValidateMetadataRecord(UnityPackageEntry record, string filePath)
+		private static void ValidateMetadataRecord(UnityPackageEntry record)
 		{
 			if (record == null || !record.HasPathnameMember || string.IsNullOrEmpty(record.AssetPath))
-				throw new InvalidDataException("Package entry is missing a pathname in " + filePath);
+				throw new InvalidDataException("Package entry is missing a pathname.");
 
 			if (!ProjectPackagePath.TryNormalize(record.AssetPath, out string normalized, out string pathError))
 				throw new InvalidDataException(pathError);

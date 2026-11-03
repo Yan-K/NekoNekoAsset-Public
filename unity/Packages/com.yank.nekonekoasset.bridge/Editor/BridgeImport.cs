@@ -39,6 +39,7 @@ namespace NekoNekoAsset.Bridge
             for (int order = 0; order < manifest.entries.Count; ++order)
             {
                 BridgeEntry entry = manifest.entries[order];
+                request.preparingEntry = entry.displayName;
                 if (request.cancelTransfer) throw new OperationCanceledException();
                 string staged = BridgeFiles.Under(inputsDirectory, entry.entryId);
                 var before = new FileInfo(staged);
@@ -92,6 +93,7 @@ namespace NekoNekoAsset.Bridge
                 completedBytes += entry.bytes;
                 RecordPreparationProgress(request, phase, completedBytes, totalBytes, order + 1, manifest.entries.Count);
             }
+            request.preparingEntry = null;
             return packages;
         }
 
@@ -195,7 +197,7 @@ namespace NekoNekoAsset.Bridge
                 request.receipt.stage = "waitingForUser";
                 Save(request);
             }
-            catch (Exception) { Fail(request, "Could not prepare verified package/file review."); }
+            catch (Exception error) { Fail(request, PreparationFailure(request.preparingEntry, error)); }
         }
 
         private static bool AcceptPreparationResult<T>(StoredBridgeRequest request, Task<T> prepared)
@@ -205,8 +207,17 @@ namespace NekoNekoAsset.Bridge
             if (Terminal(request.receipt.stage) && !request.receipt.writesStarted) TryCleanupInputs(request);
             if (stopped || active != request || !registry.enabled || Terminal(request.receipt.stage)) return false;
             if (prepared.IsFaulted || prepared.IsCanceled)
-            { Fail(request, "Could not prepare verified package/file review."); return false; }
+            { Fail(request, PreparationFailure(request.preparingEntry, prepared.Exception?.InnerException)); return false; }
             return true;
+        }
+
+        // Shown in the result window and App, never logged. Wire v1 bounds a receipt error at
+        // 256 bytes, so a long file name cannot crowd out the reason.
+        private static string PreparationFailure(string entry, Exception error)
+        {
+            if (string.IsNullOrEmpty(error?.Message)) return "Could not prepare verified package/file review.";
+            entry = BridgeFiles.Diagnostic(entry, 64);
+            return BridgeFiles.Diagnostic(string.IsNullOrEmpty(entry) ? error.Message : entry + ": " + error.Message, 256);
         }
 
         private static void PublishPreparationProgress(StoredBridgeRequest request, bool force = false)

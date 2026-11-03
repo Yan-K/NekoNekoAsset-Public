@@ -126,6 +126,7 @@ namespace NekoNekoAsset.Bridge
         [NonSerialized] internal SmartPackage.ImportPlan preparedPreview;
         [NonSerialized] internal SmartPackage.ConflictPolicy preparedPolicy;
         [NonSerialized] internal volatile BridgePreparationProgress preparationProgress;
+        [NonSerialized] internal string preparingEntry;
         [NonSerialized] internal double nextPreparationPublish;
         public int version = 1;
         public string manifestJson;
