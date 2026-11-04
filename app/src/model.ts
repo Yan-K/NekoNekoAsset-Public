@@ -1,6 +1,6 @@
 import {t} from './i18n';
 export type Locale = 'en' | 'ja' | 'ko' | 'zh-Hans' | 'zh-Hant';
-export interface AcquisitionProvenance { rowId: string; source: string; acquisitionKey: string | null; acquiredDateText: string | null; acquisitionKind: string | null; variantName: string | null; accountId?: string }
+export interface AcquisitionProvenance { rowId: string; source: string; acquisitionKey: string | null; acquiredDateText: string | null; acquisitionKind: string | null; variantName: string | null; accountId?: string; variantId?: string | null; variantIds?: string[] }
 export interface FileProvenance { rowId: string; source: string; acquisitionKey: string | null; variantId: string | null; variantName: string | null; accountId?: string }
 export interface AssetFile { id: string; name: string; type: string; size: string; status: string; provenance?: FileProvenance[]; sizeBytes?:number; rootId?:string; relativePath?:string; originalAvailable?:boolean; verifiedHash?:string; errorCode?:string;
   /** A store product's file outside the store's current list: a download it stopped offering, or one the user added. */
@@ -54,6 +54,11 @@ export function currentPriceLabel(locale:Locale,product:Pick<Product,'provider'|
 /** Acquisition rows that are all gifts prove no payment of the holder's own. */
 export function onlyGifts(rows:readonly Pick<AcquisitionProvenance,'source'>[]):boolean {
  return rows.length>0&&rows.every(row=>row.source==='gift');
+}
+/** An unpriced variant is a gift when a gift bound it, or when its account holds the product only through gifts. */
+export function giftedVariant(rows:readonly Pick<AcquisitionProvenance,'source'|'accountId'|'variantId'|'variantIds'>[],accountId:string|undefined,variantId:string|undefined):boolean {
+ const own=rows.filter(row=>row.accountId===accountId);
+ return onlyGifts(own)||own.some(row=>row.source==='gift'&&!!variantId&&(row.variantId===variantId||!!row.variantIds?.includes(variantId)));
 }
 /** Compact cards omit variant names while keeping starting prices distinct from owned quotes. */
 export function cardPriceLabel(locale:Locale,product:Pick<Product,'provider'|'price'|'priceCurrency'|'ownedCurrentPrices'|'listingStartingPrice'>):string|null {

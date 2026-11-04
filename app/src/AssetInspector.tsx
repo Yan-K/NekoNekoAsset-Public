@@ -1,7 +1,7 @@
 import {useEffect,useId,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {FileArchive,FileBox,RefreshCw,Download,Plus,SlidersHorizontal,FolderOpen,ExternalLink,Trash2,Check,X,ChevronDown} from 'lucide-react';
 import type {Product,Locale,Account} from './model';
-import {getProductDisplayStatus,getEffectiveTags,getEffectiveAvatarTags,sourceCategoryLabel,isFileDownloaded,isProductDownloaded,priceLabel,currentPriceLabel,fileCountLabel,onlyGifts} from './model';
+import {getProductDisplayStatus,getEffectiveTags,getEffectiveAvatarTags,sourceCategoryLabel,isFileDownloaded,isProductDownloaded,priceLabel,currentPriceLabel,fileCountLabel,onlyGifts,giftedVariant} from './model';
 import {t} from './i18n';
 import {shellText} from './shell-i18n';
 import {wf} from './workflow-i18n';
@@ -95,8 +95,9 @@ export default function AssetInspector({product:p,categoryLabel,locale,wide,tab,
  const paidPrices=(p.ownedPaidPrices??[]).filter(row=>accountIds===null||!!row.accountId&&accountIds.includes(row.accountId));
  const provenanceInScope=(p.provenance??[]).filter(row=>accountIds===null||!!row.accountId&&accountIds.includes(row.accountId));
  const paidFallback=p.provider==='local'?L('localProductShop'):priceLabel(locale,p.paidPrice,p.paidCurrency)||(onlyGifts(provenanceInScope)?L('paidGift'):null);
- const unpaidRow=(accountId?:string)=>onlyGifts(provenanceInScope.filter(row=>row.accountId===accountId))?L('paidGift'):L('unknown');
- const variantPrices=(rows:readonly {name:string;price:number|null;currency:string|null;accountId?:string}[],fallback:string|null,missing:(accountId?:string)=>string=()=>L('unknown'))=>rows.length?<span className="asset-inspector-prices">{rows.map((row,index)=><span key={index}>{row.name&&<strong>{row.name} · </strong>}{priceLabel(locale,row.price,row.currency)||missing(row.accountId)}</span>)}</span>:<span>{fallback||L('unknown')}</span>;
+ type VariantPrice={variantId?:string;name:string;price:number|null;currency:string|null;accountId?:string};
+ const unpaidRow=(row:VariantPrice)=>giftedVariant(provenanceInScope,row.accountId,row.variantId)?L('paidGift'):L('unknown');
+ const variantPrices=(rows:readonly VariantPrice[],fallback:string|null,missing:(row:VariantPrice)=>string=()=>L('unknown'))=>rows.length?<span className="asset-inspector-prices">{rows.map((row,index)=><span key={index}>{row.name&&<strong>{row.name} · </strong>}{priceLabel(locale,row.price,row.currency)||missing(row)}</span>)}</span>:<span>{fallback||L('unknown')}</span>;
  const details=<div className="asset-inspector-scroll" ref={detailScroll}>
   {image&&!blocked&&<div className="asset-inspector-ambient" aria-hidden="true"><Preview key={image} src={image} title=""/></div>}
   <div className="asset-inspector-preview">{blocked?<button type="button" className="asset-inspector-reveal" onClick={onReveal}>{L('showR18')}</button>:pageAvailable?<button type="button" className="asset-inspector-page-link" aria-label={fileActionLabels[locale].openPage} title={fileActionLabels[locale].openPage} onClick={openPage}><Preview src={image} title={p.title}/><span className="asset-inspector-page-hint" aria-hidden="true"><ExternalLink size={14}/><span>{fileActionLabels[locale].openPage}</span></span></button>:<Preview src={image} title={p.title}/>}</div>
