@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.8 Beta - 2026-11-05
+
+### Changed
+
+- A gift's paid price now reads Gift instead of Unknown, in libraries you already have too. Gifts still don't count toward Spending.
+- Local assets are called Local File everywhere, including the account filter that used to say Offline files. Their paid price now says Local File too.
+- Local assets you add from now on show the date you added them as Acquired.
+- Local assets you add with a BOOTH, Gumroad or Jinxxy listing URL now show its current price. It is read after the import has finished, so it never slows an import down. A listing with several variants shows its cheapest, and a listing that is slow to answer or gone just leaves the price Unknown.
+
+### Fixed
+
+- Fetch accepts BOOTH links in Korean, Simplified Chinese and Traditional Chinese, such as `booth.pm/zh-tw/items/…`.
+
+### Release notes
+
+- The Unity Bridge is unchanged and stays at [0.3.7 Beta](https://github.com/Yan-K/NekoNekoAsset-Public/releases/tag/v0.3.7); this release does not include Bridge files. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained. Local assets added earlier keep their Unknown date and price.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.7 Beta - 2026-11-03
 
 ### Changed
