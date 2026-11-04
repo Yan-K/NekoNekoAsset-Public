@@ -2,7 +2,7 @@
 use super::{http, metadata, safety, BoothService};
 use anyhow::{bail, Result};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use url::Url;
 
@@ -18,6 +18,8 @@ pub(super) struct FetchedProductMetadata {
     category: String,
     tags: Vec<String>,
     thumbnail_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    listing_price: Option<Value>,
 }
 fn item_url(raw: &str) -> Result<ItemUrl> {
     let raw = raw.trim();
@@ -50,7 +52,9 @@ fn item_url(raw: &str) -> Result<ItemUrl> {
     let parts: Vec<_> = original_path.split('/').collect();
     let id = match parts.as_slice() {
         ["", "items", id] => *id,
-        ["", locale, "items", id] if matches!(*locale, "ja" | "en") => *id,
+        ["", locale, "items", id] if matches!(*locale, "ja" | "en" | "ko" | "zh-cn" | "zh-tw") => {
+            *id
+        }
         _ => bail!("INVALID_PRODUCT_URL"),
     };
     if !safety::numeric(id) || safety::item_id(source.as_str()).as_deref() != Some(id) {
@@ -102,16 +106,27 @@ fn staged(item: &ItemUrl, payload: &Value) -> Result<FetchedProductMetadata> {
                 .ok()
                 .map(|url| url.to_string())
         });
+    // Which variation a local copy came from is unknown, so the cheapest digital one
+    // stands in, as BOOTH's own headline price does.
+    let listing_price = public["publicVariants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|variant| variant["price"].as_f64())
+        .min_by(f64::total_cmp)
+        .or_else(|| metadata::listing_starting_price(&payload["price"]))
+        .map(|price| json!({"price":price,"priceCurrency":"JPY"}));
     Ok(FetchedProductMetadata {
         source_url: item.source.to_string(),
         title,
         category,
         tags,
         thumbnail_url,
+        listing_price,
     })
 }
 impl BoothService {
-    pub(super) async fn fetch_product_metadata(&self, raw: &str) -> Result<FetchedProductMetadata> {
+    pub(crate) async fn fetch_product_metadata(&self, raw: &str) -> Result<Value> {
         let item = item_url(raw)?;
         let client = http::build_client(Arc::new(reqwest::cookie::Jar::default()), false)?;
         let url = Url::parse(&format!("https://booth.pm/ja/items/{}.json", item.id)).unwrap();
@@ -124,7 +139,8 @@ impl BoothService {
         }
         let payload =
             serde_json::from_str(&body).map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
-        staged(&item, &payload)
+        serde_json::to_value(staged(&item, &payload)?)
+            .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))
     }
 }
 
@@ -137,6 +153,9 @@ mod tests {
         for raw in [
             "https://booth.pm/items/900001",
             "https://booth.pm/ja/items/900001",
+            "https://booth.pm/ko/items/900001",
+            "https://booth.pm/zh-cn/items/900001",
+            "https://booth.pm/zh-tw/items/900001",
             "https://synthetic.booth.pm/en/items/900001",
         ] {
             assert_eq!(item_url(raw).unwrap().id, "900001");
@@ -251,5 +270,37 @@ mod tests {
             .to_string(),
             "PUBLIC_ID_MISMATCH"
         );
+    }
+    #[test]
+    fn local_price_is_the_cheapest_digital_variation_or_the_listing_headline() {
+        let item = item_url("https://booth.pm/items/900001").unwrap();
+        let price = |listing: Value, variations: Value| {
+            let payload =
+                json!({"id":900001,"name":"Authored","price":listing,"variations":variations});
+            serde_json::to_value(staged(&item, &payload).unwrap()).unwrap()["listingPrice"].clone()
+        };
+        assert_eq!(
+            price(
+                json!("¥ 300 ~"),
+                json!([
+                    {"id":800001,"name":"Full","type":"digital","price":4200},
+                    {"id":800002,"name":"One avatar","type":"digital","price":1800},
+                    {"id":800003,"name":"Printed","type":"direct","price":300}
+                ])
+            ),
+            json!({"price":1800.0,"priceCurrency":"JPY"})
+        );
+        assert_eq!(
+            price(
+                json!("¥ 1,500 ~"),
+                json!([{"id":800001,"type":"direct","price":1500}])
+            ),
+            json!({"price":1500.0,"priceCurrency":"JPY"})
+        );
+        assert_eq!(
+            price(json!(0), json!([{"id":800001,"type":"digital","price":0}])),
+            json!({"price":0.0,"priceCurrency":"JPY"})
+        );
+        assert!(price(Value::Null, json!([])).is_null());
     }
 }

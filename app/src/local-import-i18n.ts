@@ -10,7 +10,7 @@ const words:Record<string,string[]>={
  addFiles:['Add files','ファイルを追加','파일 추가','添加文件','新增檔案'],
  addFolder:['Add folder','フォルダーを追加','폴더 추가','添加文件夹','新增資料夾'],
  importQueued:['Import queued','インポートを待機列に追加しました','가져오기를 대기열에 추가했습니다','已加入导入队列','已加入匯入佇列'],
- importSourcesMissing:['Choose local files or folders','ローカルのファイルまたはフォルダーを選択してください','로컬 파일 또는 폴더를 선택하세요','请选择本地文件或文件夹','請選擇本機檔案或資料夾'],
+ importSourcesMissing:['Choose local files or folders','ローカルのファイルまたはフォルダーを選択してください','로컬 파일 또는 폴더를 선택하세요','请选择本地文件或文件夹','請選擇本地檔案或資料夾'],
  no_import_files:['No files in the selected sources','選択した場所にファイルがありません','선택한 위치에 파일이 없습니다','所选来源中没有文件','所選來源中沒有檔案'],
  local_batch_requires_folder_or_zip:['Batch import accepts folders and ZIP files','一括インポートはフォルダーとZIPに対応しています','일괄 가져오기는 폴더와 ZIP 파일을 지원합니다','批量导入仅接受文件夹和 ZIP','批次匯入僅接受資料夾與 ZIP'],
  local_source_overlap:['Choose a folder or its contents, not both','フォルダーとその中身を重複して選択しないでください','폴더와 그 안의 파일을 중복 선택하지 마세요','请勿同时选择文件夹及其内容','請勿同時選擇資料夾與其內容'],

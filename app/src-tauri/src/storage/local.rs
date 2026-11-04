@@ -9,6 +9,9 @@ use std::{
 
 const JOB_TYPE: &str = "storage:import_local";
 const ENTRY_LIMIT: usize = 1_000_000;
+/// A listing slower than this just leaves the price unknown.
+const LISTING_PRICE_WAIT: Duration = Duration::from_secs(10);
+const PRICE_FIELDS: [&str; 4] = ["price", "priceCurrency", "priceFormatted", "priceSourceCurrency"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LocalFile {
@@ -316,6 +319,116 @@ mod tests {
     }
 
     #[test]
+    fn new_local_product_shows_when_it_was_added_and_a_price_read_from_its_link() {
+        let (path, service) = fixture();
+        fs::write(path.join("one.txt"), b"authored one").unwrap();
+        fs::write(path.join("two.txt"), b"authored two").unwrap();
+        let queued = service.prepare_local_import(&json!({"draftId":uuid::Uuid::new_v4(),"sources":[path.join("one.txt")],"name":"Authored","rootId":"authored-root","sourceUrl":"https://booth.pm/ja/items/900001"})).unwrap();
+        let id = queued["productIds"][0].as_str().unwrap();
+        let mut job = service
+            .catalogue
+            .get("job", queued["jobId"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        service
+            .run_local_import(&mut job, Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        job["state"] = json!("completed");
+        service
+            .catalogue
+            .put("job", job["id"].as_str().unwrap(), job.clone())
+            .unwrap();
+        let details = |args: Value| service.catalogue.command("product_details", args).unwrap();
+        let shown = details(json!({"id":id}));
+        let acquired = shown["acquired"].as_str().unwrap().to_owned();
+        assert!(
+            chrono::NaiveDateTime::parse_from_str(&acquired, "%Y/%m/%d %H:%M").is_ok(),
+            "{acquired}"
+        );
+        assert!(shown["acquiredSortKey"].is_string());
+        assert!(shown["price"].is_null() && shown["currentPriceText"].is_null());
+
+        let before = service.catalogue.get("product", id).unwrap().unwrap();
+        assert!(service
+            .store_listing_price(&before, &json!({"price":1800.0,"priceCurrency":"JPY"}))
+            .unwrap());
+        // Account scope keeps a local product's own facts.
+        for args in [json!({"id":id}), json!({"id":id,"accountIds":[]})] {
+            let shown = details(args);
+            assert_eq!((shown["price"].as_f64(), shown["priceCurrency"].as_str()), (Some(1800.0), Some("JPY")));
+            assert_eq!(shown["acquired"], acquired.as_str());
+        }
+        // A read that started before another change never overwrites it.
+        assert!(!service
+            .store_listing_price(&before, &json!({"price":1.0,"priceCurrency":"JPY"}))
+            .unwrap());
+        assert_eq!(details(json!({"id":id}))["price"].as_f64(), Some(1800.0));
+        // It is read once, and a retry of the import keeps what the first run recorded.
+        let priced = service.catalogue.get("product", id).unwrap().unwrap();
+        assert_eq!(listing_to_read(&before), Some("https://booth.pm/ja/items/900001"));
+        assert_eq!(listing_to_read(&priced), None);
+        let mut rerun = job.clone();
+        rerun["completedGroupIndexes"] = json!([]);
+        rerun["createdAt"] = json!("2001-01-01T00:00:00+00:00");
+        service
+            .run_local_import(&mut rerun, Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        let kept = service.catalogue.get("product", id).unwrap().unwrap();
+        assert_eq!(kept["acquired"], acquired.as_str());
+        assert_eq!(kept["price"].as_f64(), Some(1800.0));
+        assert_eq!(kept["priceObservedAt"], priced["priceObservedAt"]);
+        // A product imported before dates existed stays unknown through a retry too.
+        let mut older = kept.clone();
+        older["acquired"] = json!("");
+        older.as_object_mut().unwrap().remove("priceObservedAt");
+        older["price"] = Value::Null;
+        older["priceCurrency"] = Value::Null;
+        service.catalogue.put("product", id, older.clone()).unwrap();
+        assert_eq!(listing_to_read(&older), None);
+        service
+            .run_local_import(&mut rerun.clone(), Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        let kept_old = service.catalogue.get("product", id).unwrap().unwrap();
+        assert_eq!(kept_old["acquired"], "");
+        assert_eq!(listing_to_read(&kept_old), None);
+        service.catalogue.put("product", id, kept).unwrap();
+
+        // Adding a file keeps both facts.
+        let result = service.prepare_local_membership(&json!({"draftId":uuid::Uuid::new_v4(),"productId":id,"rootId":"authored-root","addSources":[path.join("two.txt")]})).unwrap();
+        let mut mutation = service
+            .catalogue
+            .get("job", result["jobId"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        service
+            .run_local_import(&mut mutation, Path::new("unused"), &AtomicBool::new(false))
+            .unwrap();
+        let shown = details(json!({"id":id}));
+        assert_eq!((shown["acquired"].as_str(), shown["price"].as_f64()), (Some(acquired.as_str()), Some(1800.0)));
+
+        // A store that quotes only text keeps it; a replaced link no longer claims a price.
+        let before = service.catalogue.get("product", id).unwrap().unwrap();
+        assert!(service
+            .store_listing_price(&before, &json!({"price":null,"priceCurrency":null,"priceFormatted":"¥1,000","priceSourceCurrency":"JPY"}))
+            .unwrap());
+        let shown = details(json!({"id":id}));
+        assert!(shown["price"].is_null());
+        assert_eq!(shown["currentPriceText"], "¥1,000");
+        service
+            .catalogue
+            .put("overlay", id, json!({"id":id,"sourceUrl":"https://jinxxy.com/authored/other"}))
+            .unwrap();
+        let shown = details(json!({"id":id}));
+        assert!(shown["price"].is_null() && shown["currentPriceText"].is_null());
+
+        // The date is the job's, so a retry does not move it.
+        let date = added_date(&json!({"createdAt":"2026-11-05T12:00:00+00:00"}));
+        assert!(date.starts_with("2026/11/0"), "{date}");
+        drop(service);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn store_product_accepts_added_files_without_changing_its_store_record() {
         let (path, service) = fixture();
         fs::write(path.join("Product_1.0.0.unitypackage"), b"authored old version").unwrap();
@@ -492,6 +605,23 @@ fn apply_initial_category(overlay: &mut Value, metadata: &Value) {
     if category_manual(metadata) && overlay.get("category").is_none() {
         overlay["category"] = metadata["category"].clone();
     }
+}
+/// When the user added it, on this device's clock, written like a BOOTH receipt date.
+fn added_date(job: &Value) -> String {
+    job["createdAt"]
+        .as_str()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&chrono::Local))
+        .unwrap_or_else(chrono::Local::now)
+        .format("%Y/%m/%d %H:%M")
+        .to_string()
+}
+/// The link to read once for a product added with a date; earlier imports stay as they are.
+fn listing_to_read(product: &Value) -> Option<&str> {
+    let added = product["acquired"].as_str().is_some_and(|date| !date.is_empty());
+    product["sourceUrl"]
+        .as_str()
+        .filter(|_| added && product["priceObservedAt"].is_null())
 }
 fn local_error(error: &anyhow::Error) -> &'static str {
     for code in [
@@ -1336,7 +1466,7 @@ impl StorageService {
                     .map(|f| file_id(&group.product_id, &f.relative))
                     .collect();
                 let metadata = group.metadata.as_ref().unwrap_or(&plan.metadata);
-                let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":"","importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
+                let mut product = json!({"id":group.product_id,"provider":"local","store":"Local Files","custom":true,"title":group.title,"sourceTitle":group.title,"category":metadata["category"],"tags":metadata["tags"],"sourceUrl":metadata["sourceUrl"],"thumbnailPath":metadata["thumbnailPath"],"price":null,"acquired":added_date(job),"importedAt":now(),"localManifest":{"complete":true,"fileIds":file_ids,"directories":group.directories.iter().map(|d| format!("{}/{d}", group.prefix)).collect::<Vec<_>>(),"rootId":root["id"],"productDirectory":group.prefix}});
                 product["previewUrl"] = metadata["sourceThumbnailUrl"].clone();
                 let mut store_product = false;
                 if group.membership {
@@ -1347,6 +1477,13 @@ impl StorageService {
                     // Added files join a store product through their own
                     // records; its store-observed record stays unchanged.
                     store_product = product["provider"] != "local";
+                } else if let Some(existing) = self.catalogue.get("product", &group.product_id)? {
+                    // A retry rebuilds the record from its plan; what an earlier run recorded stays.
+                    for key in ["acquired", "priceObservedAt"].iter().chain(&PRICE_FIELDS) {
+                        if let Some(value) = existing.get(*key) {
+                            product[*key] = value.clone();
+                        }
+                    }
                 }
                 if group.membership && !store_product {
                     let mut ids = strings(&product["localManifest"]["fileIds"]);
@@ -1758,5 +1895,61 @@ impl StorageService {
         let _ = self.put_job(&mut job, state, error);
         self.cancellations.lock().unwrap().remove(&id);
         self.changed(app, Some(&id));
+        self.fill_listing_prices(app, &job);
+    }
+
+    /// Reads the current price from the link a new product was imported with. Nothing waits
+    /// for it: the import has already finished, and a slow, missing or unreadable listing or
+    /// any other failure just leaves the price unknown.
+    fn fill_listing_prices(&self, app: &tauri::AppHandle, job: &Value) {
+        let Ok(plan) = serde_json::from_value::<LocalPlan>(job["localPlan"].clone()) else {
+            return;
+        };
+        let products: Vec<_> = plan
+            .groups
+            .into_iter()
+            .filter(|group| !group.membership)
+            .map(|group| group.product_id)
+            .collect();
+        let (service, app) = (self.clone(), app.clone());
+        tauri::async_runtime::spawn(async move {
+            for id in products {
+                let Ok(Some(before)) = service.catalogue.get("product", &id) else {
+                    continue;
+                };
+                let Some(url) = listing_to_read(&before) else {
+                    continue;
+                };
+                let Ok(Ok(Some(price))) =
+                    tokio::time::timeout(LISTING_PRICE_WAIT, service.stores.listing_price(url))
+                        .await
+                else {
+                    continue;
+                };
+                if service
+                    .store_listing_price(&before, &price)
+                    .unwrap_or(false)
+                {
+                    service.changed(&app, None);
+                }
+            }
+        });
+    }
+
+    /// Writes only over the record it read, so a product edited or deleted meanwhile stays as it is.
+    fn store_listing_price(&self, before: &Value, price: &Value) -> Result<bool> {
+        let _work = self.catalogue.begin_catalogue_work()?;
+        let id = io::required_string(before, "id")?;
+        let mut product = before.clone();
+        for key in PRICE_FIELDS {
+            if let Some(value) = price.get(key) {
+                product[key] = value.clone();
+            }
+        }
+        product["priceObservedAt"] = json!(now());
+        self.catalogue.put_many_if_unchanged(
+            vec![("product".into(), id.to_owned(), product)],
+            vec![("product".into(), id.to_owned(), Some(before.clone()))],
+        )
     }
 }

@@ -413,10 +413,6 @@ impl BoothService {
                 )
                 .map_err(|_| anyhow::anyhow!("DIAGNOSTICS_FAILED"))
             }
-            "fetch_product_metadata" => {
-                serde_json::to_value(self.fetch_product_metadata(field(&args, "url")?).await?)
-                    .map_err(|_| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))
-            }
             "diagnose_ordering" | "diagnose_manifests" | "diagnose_file_structure" => {
                 if !cfg!(debug_assertions) || std::env::var_os("NNA_DATA_DIR").is_none() {
                     bail!("DIAGNOSTICS_UNAVAILABLE");

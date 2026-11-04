@@ -358,19 +358,31 @@ impl StoreService {
         Ok(())
     }
 
+    /// A public listing's facts. No session, gate or catalogue write.
+    async fn public_product(&self, raw: &str) -> Result<Value> {
+        let Some((provider, url)) = public_metadata::product_url(raw)? else {
+            return self.booth.fetch_product_metadata(raw).await;
+        };
+        let transport = match provider {
+            StoreProvider::Gumroad => &self.public_gumroad,
+            StoreProvider::Jinxxy => &self.public_jinxxy,
+            StoreProvider::Booth => unreachable!(),
+        };
+        public_metadata::fetch(transport, provider, url).await
+    }
+
+    /// What a pasted store link asks now. Any other link never reaches the network.
+    pub(crate) async fn listing_price(&self, raw: &str) -> Result<Option<Value>> {
+        let product = self.public_product(&public_metadata::bare_url(raw)?).await?;
+        Ok(product.get("listingPrice").cloned())
+    }
+
     pub async fn command(&self, app: &AppHandle, action: &str, mut args: Value) -> Result<Value> {
         if action == "fetch_product_metadata" {
             let raw = args["url"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_URL"))?;
-            if let Some((provider, url)) = public_metadata::product_url(raw)? {
-                let transport = match provider {
-                    StoreProvider::Gumroad => &self.public_gumroad,
-                    StoreProvider::Jinxxy => &self.public_jinxxy,
-                    StoreProvider::Booth => unreachable!(),
-                };
-                return public_metadata::fetch(transport, provider, url).await;
-            }
+            return self.public_product(raw).await;
         }
         // Finish interrupted-job recovery before accepting a new login/sync.
         // Provider start is idempotent; the same gate prevents startup from

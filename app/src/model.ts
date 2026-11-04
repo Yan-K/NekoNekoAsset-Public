@@ -51,6 +51,10 @@ export function currentPriceLabel(locale:Locale,product:Pick<Product,'provider'|
  if(product.ownedCurrentPrices?.length)return product.ownedCurrentPrices.map(row=>[row.name,priceLabel(locale,row.price,row.currency)||'—'].filter(Boolean).join(' · ')).join(' / ');
  return priceLabel(locale,product.price,product.priceCurrency)||product.currentPriceText?.trim()||null;
 }
+/** Acquisition rows that are all gifts prove no payment of the holder's own. */
+export function onlyGifts(rows:readonly Pick<AcquisitionProvenance,'source'>[]):boolean {
+ return rows.length>0&&rows.every(row=>row.source==='gift');
+}
 /** Compact cards omit variant names while keeping starting prices distinct from owned quotes. */
 export function cardPriceLabel(locale:Locale,product:Pick<Product,'provider'|'price'|'priceCurrency'|'ownedCurrentPrices'|'listingStartingPrice'>):string|null {
  const rows=product.ownedCurrentPrices?.length?product.ownedCurrentPrices:[{price:product.price,currency:product.priceCurrency}];

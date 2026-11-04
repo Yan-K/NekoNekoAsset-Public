@@ -498,7 +498,11 @@ fn local_import_single_preserves_names_empty_directories_originals_and_truthful_
         thumbnail
     );
     assert!(product["price"].is_null());
-    assert_eq!(product["acquired"], "");
+    assert!(chrono::NaiveDateTime::parse_from_str(
+        product["acquired"].as_str().unwrap(),
+        "%Y/%m/%d %H:%M"
+    )
+    .is_ok());
     assert!(product["importedAt"].is_string());
     assert!(!f.path.join("library/.nna-import-partials").exists());
     assert_eq!(product["localManifest"]["complete"], true);

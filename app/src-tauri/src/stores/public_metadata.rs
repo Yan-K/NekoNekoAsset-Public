@@ -66,6 +66,14 @@ pub(super) fn product_url(raw: &str) -> Result<Option<(StoreProvider, Url)>> {
     Ok(Some((provider, url)))
 }
 
+/// A link copied from a browser may carry tracking parameters or a trailing slash.
+pub(super) fn bare_url(raw: &str) -> Result<String> {
+    let mut url = Url::parse(raw.trim()).map_err(|_| anyhow::anyhow!("INVALID_PRODUCT_URL"))?;
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
 fn text(raw: &str, max: usize) -> String {
     Html::parse_fragment(raw)
         .root_element()
@@ -252,6 +260,9 @@ fn jinxxy_presentation(source: &Url, document: &Html, expected_id: Option<&str>)
     if let Some(url) = product["cover"]["url"].as_str().and_then(|raw| crate::preview::parse_public_url(raw).ok()) {
         result["previewUrl"] = json!(url.as_str());
     }
+    if let Some(price) = super::jinxxy::usd_minor_amount(&product["base_price"], &product["currency_code"]) {
+        result["listingPrice"] = json!({"price":price,"priceCurrency":"USD"});
+    }
     Ok(Some(result))
 }
 
@@ -310,7 +321,7 @@ fn gumroad_values(url: &Url, value: &Value) -> Result<Value> {
         .filter_map(|tag| tag.as_str().or_else(|| tag["name"].as_str()))
         .map(str::to_owned)
         .collect();
-    suggestions(
+    let mut result = suggestions(
         url,
         value["name"].as_str().unwrap_or(""),
         observation.description.as_deref().unwrap_or(""),
@@ -321,7 +332,19 @@ fn gumroad_values(url: &Url, value: &Value) -> Result<Value> {
             .or_else(|| value["thumbnail_url"].as_str()),
         Some(StoreProvider::Gumroad),
         None,
-    )
+    )?;
+    let amount = observation
+        .current_price
+        .as_ref()
+        .and_then(super::gumroad::PublicPrice::usd_amount);
+    if amount.is_some() || observation.price_formatted.is_some() {
+        result["listingPrice"] = json!({
+            "price":amount,"priceCurrency":amount.map(|_| "USD"),
+            "priceFormatted":observation.price_formatted,
+            "priceSourceCurrency":observation.price_source_currency,
+        });
+    }
+    Ok(result)
 }
 
 fn html_values(url: &Url, html: &str) -> Result<Value> {
@@ -355,7 +378,7 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
             .or_else(|| meta("og:title")).unwrap_or_default();
         let thumbnail = product["previewUrl"].as_str().map(str::to_owned)
             .or_else(|| meta("og:image"));
-        return suggestions(
+        let mut result = suggestions(
             url,
             &title,
             product["sourceDescription"].as_str().unwrap_or(""),
@@ -363,7 +386,11 @@ fn html_values(url: &Url, html: &str) -> Result<Value> {
             thumbnail.as_deref(),
             Some(StoreProvider::Jinxxy),
             product.get("sourceCategory"),
-        );
+        )?;
+        if let Some(price) = product.get("listingPrice") {
+            result["listingPrice"] = price.clone();
+        }
+        return Ok(result);
     }
     let title = meta("og:title").ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
     let description = meta("og:description")
@@ -406,8 +433,14 @@ pub(super) async fn fetch_jinxxy_presentation(
         .filter(|(provider, _)| *provider == StoreProvider::Jinxxy)
         .ok_or_else(|| anyhow::anyhow!("INVALID_PRODUCT_URL"))?;
     let body = fetch_body(transport, StoreProvider::Jinxxy, source.clone()).await?;
-    jinxxy_presentation(&source, &Html::parse_document(&body), Some(expected_product_id))?
-        .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))
+    let mut presentation =
+        jinxxy_presentation(&source, &Html::parse_document(&body), Some(expected_product_id))?
+            .ok_or_else(|| anyhow::anyhow!("PUBLIC_METADATA_INVALID"))?;
+    // Buyer sync merges this into the product and has its own quote.
+    if let Some(fields) = presentation.as_object_mut() {
+        fields.remove("listingPrice");
+    }
+    Ok(presentation)
 }
 
 pub(super) async fn fetch(
@@ -508,6 +541,49 @@ mod tests {
         assert_eq!(editor["title"], "Authored Coat");
         assert_eq!(editor["tags"], json!(["cloth","coat"]));
         assert_eq!(editor.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn local_price_comes_from_the_public_listing_and_a_copied_link_still_works() {
+        let source = Url::parse("https://jinxxy.com/authored/product").unwrap();
+        let mut product = authored_product();
+        product["base_price"] = json!(5000);
+        product["currency_code"] = json!("USD");
+        let editor = html_values(&source, &authored_flight(product.clone(), None)).unwrap();
+        assert_eq!(editor["listingPrice"], json!({"price":50.0,"priceCurrency":"USD"}));
+        product["currency_code"] = json!("EUR");
+        let editor = html_values(&source, &authored_flight(product, None)).unwrap();
+        assert!(editor.get("listingPrice").is_none());
+
+        let source = Url::parse("https://authored.gumroad.com/l/shader").unwrap();
+        let public = |extra: Value| {
+            let mut value = json!({"api_version":1,"id":"authored-id","short_permalink":"shader",
+                "name":"Authored Shader","is_pay_what_you_want":false,"is_recurring_billing":false});
+            value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            gumroad_values(&source, &value).unwrap()
+        };
+        assert_eq!(
+            public(json!({"price_cents":2000,"currency_code":"usd","price_formatted":"$20"}))["listingPrice"],
+            json!({"price":20.0,"priceCurrency":"USD","priceFormatted":"$20","priceSourceCurrency":"USD"})
+        );
+        assert_eq!(
+            public(json!({"price_cents":1000,"currency_code":"jpy","price_formatted":"¥1,000"}))["listingPrice"],
+            json!({"price":null,"priceCurrency":null,"priceFormatted":"¥1,000","priceSourceCurrency":"JPY"})
+        );
+        assert!(public(json!({})).get("listingPrice").is_none());
+
+        for (raw, bare) in [
+            ("https://author.gumroad.com/l/shader?layout=profile", "https://author.gumroad.com/l/shader"),
+            ("https://booth.pm/zh-tw/items/900001/#top", "https://booth.pm/zh-tw/items/900001"),
+            (" https://jinxxy.com/authored/product/?ref=1 ", "https://jinxxy.com/authored/product"),
+        ] {
+            assert_eq!(bare_url(raw).unwrap(), bare);
+        }
+        // Only the three stores are ever read.
+        assert_eq!(
+            product_url(&bare_url("https://example.com/l/shader").unwrap()).unwrap_err().to_string(),
+            "UNSUPPORTED_PROVIDER"
+        );
     }
 
     #[test]

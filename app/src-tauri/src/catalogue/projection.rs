@@ -887,11 +887,12 @@ fn effective_with_jobs(
             p[f] = json!("");
         }
     }
-    if provider == "local" {
+    if provider == "local" && overridden_url {
+        // That price was read from the link the user has since replaced.
         p["price"] = Value::Null;
         p["priceCurrency"] = Value::Null;
         p["currentPriceText"] = Value::Null;
-    } else if matches!(provider, "gumroad" | "jinxxy") {
+    } else if matches!(provider, "gumroad" | "jinxxy" | "local") {
         let currency = text(&source, "priceCurrency");
         let amount = acquisition::money_amount(&source["price"], currency);
         p["price"] = json!(amount);
@@ -941,11 +942,7 @@ fn effective_with_jobs(
         &entitlements,
         &remote
     )?);
-    let source_acquired = if provider == "local" {
-        String::new()
-    } else {
-        text(&p, "acquired").to_owned()
-    };
+    let source_acquired = text(&p, "acquired").to_owned();
     acquisition::apply_default(&mut p, &source_acquired);
     acquisition::owned_prices(&mut p, &source, &acquisitions, &entitlements, &remote);
     let required: BTreeSet<_> = if provider == "local" {

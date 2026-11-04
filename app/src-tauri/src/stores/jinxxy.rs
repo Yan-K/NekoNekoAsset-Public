@@ -313,7 +313,7 @@ fn product_url(item: &Value) -> Option<String> {
     url.path_segments_mut().ok()?.extend([seller, slug]);
     Some(url.to_string())
 }
-fn usd_minor_amount(value: &Value, currency: &Value) -> Option<f64> {
+pub(super) fn usd_minor_amount(value: &Value, currency: &Value) -> Option<f64> {
     if currency != "USD" {
         return None;
     }

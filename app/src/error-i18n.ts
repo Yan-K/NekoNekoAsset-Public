@@ -36,7 +36,7 @@ const labels:Record<string,string[]>={
  'catalogue.invalid_avatar_selection':['Selected avatar is no longer available','選択したアバターは利用できなくなりました','선택한 아바타를 더 이상 사용할 수 없습니다','所选素体已不可用','選取的素體已無法使用'],
  'catalogue.invalid_avatar_delta':['Avatar selection could not be saved','アバターの選択を保存できませんでした','아바타 선택을 저장할 수 없습니다','无法保存素体选择','無法儲存素體選擇'],
  'catalogue.hide_store_only':['Only store assets can be hidden','非表示にできるのはストアのアセットのみです','스토어 에셋만 숨길 수 있습니다','仅可隐藏商店资产','僅可隱藏商店資產'],
- local_product_required:['Only offline assets can be deleted here','削除できるのはオフラインアセットのみです','오프라인 에셋만 삭제할 수 있습니다','此处仅可删除离线资产','此處僅可刪除離線資產'],
+ local_product_required:['Only local assets can be deleted here','削除できるのはローカルアセットのみです','로컬 에셋만 삭제할 수 있습니다','此处仅可删除本地资产','此處僅可刪除本地資產'],
  local_delete_unsafe_path:['Asset folder could not be safely verified; nothing deleted','アセットフォルダーの安全性を確認できません。削除していません','에셋 폴더를 안전하게 확인할 수 없어 삭제하지 않았습니다','无法安全验证资产文件夹，未删除任何内容','無法安全確認資產資料夾，未刪除任何內容'],
  local_delete_shared_path:['Asset folder is shared with another asset; nothing deleted','アセットフォルダーは別のアセットと共有されています。削除していません','다른 에셋과 공유된 폴더여서 삭제하지 않았습니다','资产文件夹被其他资产共用，未删除任何内容','資產資料夾由其他資產共用，未刪除任何內容'],
  local_delete_cleanup_failed:['Asset entries deleted; folder cleanup failed. Retry in Activity.','アセットは削除済みですが、フォルダーの削除に失敗しました。履歴で再試行してください。','에셋 항목은 삭제됐지만 폴더 정리에 실패했습니다. 활동에서 다시 시도하세요.','资产记录已删除，但文件夹清理失败。请在活动页重试。','資產紀錄已刪除，但資料夾清理失敗。請到活動頁重試。'],
