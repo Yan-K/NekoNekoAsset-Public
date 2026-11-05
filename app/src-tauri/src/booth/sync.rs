@@ -355,6 +355,8 @@ fn refused_updated_order(route: &str, error: &anyhow::Error) -> bool {
 fn contradicts_last_pass(page: &parser::Page, baseline: Option<&Baseline>) -> bool {
     !page.is_detail
         && page.rows.is_empty()
+        // An order page lists receipts to read instead of rows.
+        && page.details.is_empty()
         && page.terminal
         && page.unresolved == 0
         && baseline.is_some_and(Baseline::found_something)
@@ -6572,6 +6574,10 @@ mod tests {
         // A list that was empty before, or never read, may simply be empty.
         assert!(!contradicts_last_pass(&empty, Some(&Baseline::default())));
         assert!(!contradicts_last_pass(&empty, None));
+        // The last page of orders has no rows of its own, only receipts to read.
+        let mut orders = page(vec![], false, true, 0);
+        orders.details = vec!["/orders/910001".to_owned()];
+        assert!(!contradicts_last_pass(&orders, Some(&receipts_only)));
         // Only a page saying the whole list is empty: rows, a receipt, a page the parser
         // already doubts or a list that has not ended say something else.
         for other in [
