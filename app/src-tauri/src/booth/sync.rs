@@ -4,7 +4,7 @@ mod targeted_receipt_tests;
 
 use super::{
     field, free_item, http,
-    incremental::{Baseline, Tracker},
+    incremental::{Baseline, Tracker, UpdatedRead, UpdatedTracker},
     metadata, now, parser, safety, BoothService,
 };
 use anyhow::{bail, ensure, Result};
@@ -57,6 +57,9 @@ struct Checkpoint {
     /// Listed receipts whose rows come from the previous complete pass.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     reused: BTreeSet<String>,
+    /// The Library's updated order showed what an overlap cannot explain: read every page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    read_every_page: bool,
 }
 #[derive(Clone)]
 struct PublicPrefetch {
@@ -325,6 +328,24 @@ fn product_local_failure(code: &str) -> bool {
             | "PUBLIC_METADATA_INVALID"
             | "PUBLIC_ID_MISMATCH"
     )
+}
+/// BOOTH refused or moved its recently-updated order, or sent a page that cannot be read.
+/// Only that order was at stake, so the App reads every page instead. Signing out, throttling
+/// or an outage would stop those pages too, so they stop the job as on any list.
+fn refused_updated_order(route: &str, error: &anyhow::Error) -> bool {
+    safety::updated_order(route)
+        && matches!(
+            super::code(error).as_str(),
+            "SOURCE_HTTP_FAILED"
+                | "PERMISSION_DENIED"
+                | "RESPONSE_ROUTE_CHANGED"
+                | "UNSAFE_REDIRECT"
+                | "METADATA_TOO_LARGE"
+                | "METADATA_ENCODING"
+                | "SOURCE_MARKER_UNKNOWN"
+                | "NO_RECOGNIZED_ROWS"
+                | "DIGITAL_PROOF_UNPROVEN"
+        )
 }
 /// A public page the store refused is about that product; a server error may pass.
 fn public_status_code(status: reqwest::StatusCode) -> &'static str {
@@ -1623,19 +1644,33 @@ impl BoothService {
             let mut boundary_page = None;
             if let Some(boundary) = checkpoint.boundary.as_deref().filter(|b| *b != head_route) {
                 safety::route(boundary, source)?;
-                let page = self.fetch_page(client, source, boundary, prefetch).await?;
-                boundary_page = Some(page);
+                boundary_page = match self.fetch_page(client, source, boundary, prefetch).await {
+                    // Moved, as far as this run can tell: the fresh pass meets the refusal itself.
+                    Err(error) if refused_updated_order(boundary, &error) => None,
+                    page => Some(page?),
+                };
             }
             let moved = overlap_changed(&checkpoint, &head, boundary_page.as_ref());
             if moved {
                 checkpoint = Checkpoint::fresh(account, source, mode)?;
             }
         }
-        let mut tracker = if mode == "incremental" && selected.is_none() && source != "free" {
-            baseline.map(Tracker::new)
+        // Only the Library is long enough to matter and has a second order to find changes by.
+        // Every order and receipt is still read, so a purchase is found whatever this does.
+        let mut tracker = if mode == "incremental"
+            && selected.is_none()
+            && source == "library"
+            && !checkpoint.read_every_page
+        {
+            baseline
+                .filter(|b| {
+                    checkpoint.overlap_end.is_some() || b.recently_read_in_full(chrono::Utc::now())
+                })
+                .map(Tracker::new)
         } else {
             None
         };
+        let mut updated_tracker: Option<UpdatedTracker> = None;
         // Reconstruct exactly the durable parsed prefix after a cancellation/crash.
         let mut recovered_overlap = None;
         let mut free_history = BTreeMap::new();
@@ -1654,11 +1689,16 @@ impl BoothService {
             {
                 bail!("FREE_ITEM_HISTORY_UNPROVEN");
             }
-            if let Some(tracker) = tracker.as_mut() {
+            if safety::updated_order(&page.route) {
+                if let Some(updated) = updated_tracker.as_mut().filter(|_| recovered_overlap.is_some()) {
+                    updated.observe(&page);
+                }
+            } else if let Some(tracker) = tracker.as_mut().filter(|_| recovered_overlap.is_none()) {
                 let proof = tracker.observe(&page);
                 if checkpoint.overlap_end.is_some() && proof == checkpoint.overlap_end {
                     recovered_overlap = proof;
-                    break;
+                    updated_tracker =
+                        baseline.map(|base| tracker.updated(&base.updated_head));
                 }
             }
         }
@@ -1708,13 +1748,23 @@ impl BoothService {
                 }
                 active_routes.insert(route.clone());
                 reads.push(async move {
-                    let page = self.fetch_page(client, source, &route, prefetch).await?;
-                    Ok::<_, anyhow::Error>((route, page))
+                    let read = self.fetch_page(client, source, &route, prefetch).await;
+                    (route, read)
                 });
             }
-            if let Some(read) = reads.next().await {
-                let (route, mut page) = read?;
+            if let Some((route, read)) = reads.next().await {
                 active_routes.remove(&route);
+                let mut page = match read {
+                    Err(error) if refused_updated_order(&route, &error) => {
+                        crate::support_trace::source_reason(source, &super::code(&error), 1);
+                        read_every_page(&mut checkpoint);
+                        tracker = None;
+                        updated_tracker = None;
+                        self.save_checkpoint(&key, &checkpoint)?;
+                        continue;
+                    }
+                    read => read?,
+                };
                 if self.cancelled(job)? {
                     bail!("CANCELLED");
                 }
@@ -1736,7 +1786,12 @@ impl BoothService {
                         .get(&evidence.product_id)
                         .ok_or_else(|| anyhow::anyhow!("FREE_ITEM_HISTORY_UNPROVEN"))?;
                 }
-                for row in &page.rows {
+                // In updated order only what changed counts as read; the rest is the last pass's.
+                let unchanged_here = |row: &parser::Row| {
+                    safety::updated_order(&page.route)
+                        && !updated_tracker.as_ref().is_some_and(|updated| updated.changes(row))
+                };
+                for row in page.rows.iter().filter(|row| !unchanged_here(row)) {
                     if let Some(id) = &row.product_id {
                         checkpoint.product_ids.insert(id.clone());
                     }
@@ -1762,22 +1817,44 @@ impl BoothService {
                     limit_listing_pages(&mut checkpoint, limit);
                 }
                 checkpoint.journal_ids.push(journal_id.clone());
-                if let Some(end) = tracker
+                let updated_page = safety::updated_order(&page.route);
+                if updated_page {
+                    match updated_tracker.as_mut().map(|updated| updated.observe(&page)) {
+                        Some(UpdatedRead::Settled) => checkpoint.pending.clear(),
+                        Some(UpdatedRead::Reading) => {}
+                        Some(UpdatedRead::Broken) | None => {
+                            read_every_page(&mut checkpoint);
+                            tracker = None;
+                            updated_tracker = None;
+                        }
+                    }
+                } else if let Some(end) = tracker
                     .as_mut()
                     .and_then(|t| t.observe(&page))
                     .filter(|_| !page.terminal)
                 {
                     checkpoint.overlap_end = Some(end);
-                    checkpoint.pending.clear();
+                    checkpoint.pending = vec![safety::updated_route(1)];
                     // This terminal belongs to the previous complete tail, not this page.
                     checkpoint.terminal = true;
+                    updated_tracker = tracker
+                        .as_ref()
+                        .zip(baseline)
+                        .map(|(tracker, base)| tracker.updated(&base.updated_head));
                 }
-                if !page.is_detail && !page.terminal && page.next.is_empty() {
+                if !updated_page && !page.is_detail && !page.terminal && page.next.is_empty() {
                     checkpoint.unresolved += 1;
                 }
                 self.commit_source_page(&journal_id, &journal, &key, &checkpoint)?;
                 if let Some(prefetch) = prefetch {
                     let mut discovered = page.clone();
+                    if updated_page {
+                        // A file's page stays one the list always has.
+                        discovered.route = format!("{}?page=1", safety::source_path(source)?);
+                        discovered.rows.retain(|row| {
+                            updated_tracker.as_ref().is_some_and(|updated| updated.changes(row))
+                        });
+                    }
                     if let Some(evidence) = &page.free_item {
                         discovered.rows = free_history
                             .get(&evidence.product_id)
@@ -1874,6 +1951,7 @@ impl BoothService {
         // Replace the accessible manifest only after its current item rows were durably read.
         // Earlier acquisition observations/artifacts remain; retired remote files are not deleted.
         let mut current_rows = vec![];
+        let mut updated_rows = vec![];
         let mut free_evidence = BTreeMap::new();
         let mut row_routes = BTreeMap::new();
         let mut free_routes = BTreeMap::new();
@@ -1899,6 +1977,14 @@ impl BoothService {
                 .get("checkpoint", journal_id)?
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
             let page = checked_journal_page(&journal, account, source, &checkpoint.run_id)?;
+            // A row read in updated order joins through its own record. If the App went on to
+            // read every page, those pages hold it already, so such a page counts for nothing.
+            if safety::updated_order(&page.route) {
+                if checkpoint.overlap_end.is_some() {
+                    updated_rows.extend(page.rows);
+                }
+                continue;
+            }
             let mut page_unbound = false;
             // Normal parser unresolved rows are either exact product-bound
             // failures or unbound controls/routes. Free item evidence has its
@@ -1957,19 +2043,24 @@ impl BoothService {
                 }
             }
         }
+        let merged = checkpoint
+            .overlap_end
+            .map(|end| {
+                baseline
+                    .and_then(|base| {
+                        super::incremental::merged_rows(base, &current_rows, end, &updated_rows)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))
+            })
+            .transpose()?;
         let refreshed_products: BTreeSet<_> = current_rows
             .iter()
+            .chain(merged.iter().flat_map(|merged| &merged.changed))
             .filter_map(|r| r.product_id.clone())
             .collect();
-        let mut all_rows = if let Some(end) = checkpoint.overlap_end {
-            super::incremental::merged_rows(
-                baseline.ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?,
-                &current_rows,
-                end,
-            )
-            .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?
-        } else {
-            current_rows
+        let mut all_rows = match merged {
+            Some(merged) => merged.rows,
+            None => current_rows,
         };
         // Known listed receipts keep their previous complete observation, like a verified tail.
         for route in &checkpoint.reused {
@@ -2297,7 +2388,11 @@ impl BoothService {
             } else {
                 now()
             };
-        if collected_complete && selected.is_none() && super::incremental::unique(&all_rows) {
+        // A product bought more than once can list several Library rows under one record ID.
+        if collected_complete
+            && selected.is_none()
+            && (source == "library" || super::incremental::unique(&all_rows))
+        {
             checkpoint
                 .product_ids
                 .extend(all_rows.iter().filter_map(|r| r.product_id.clone()));
@@ -2317,6 +2412,10 @@ impl BoothService {
                 rows: all_rows,
                 full_traversal_at: full_traversal_at.clone(),
                 details,
+                updated_head: super::incremental::next_head(
+                    &updated_rows,
+                    previous_baseline.as_ref().map_or(&[], |base| &base.updated_head),
+                ),
             };
             let mut value = serde_json::to_value(base)?;
             value["id"] = json!(baseline_key);
@@ -4232,10 +4331,13 @@ fn record_source_page(
     }
     if !page.is_detail {
         checkpoint.boundary = Some(page.route.clone());
-        if checkpoint.pages == 0 {
-            checkpoint.ordering = page.ordering;
-        } else if checkpoint.ordering != page.ordering {
-            checkpoint.ordering = parser::Ordering::Unknown;
+        // The source's order is that of its plain pages; the updated order only adds to them.
+        if !safety::updated_order(&page.route) {
+            if checkpoint.pages == 0 {
+                checkpoint.ordering = page.ordering;
+            } else if checkpoint.ordering != page.ordering {
+                checkpoint.ordering = parser::Ordering::Unknown;
+            }
         }
     }
     checkpoint
@@ -4256,7 +4358,10 @@ fn record_source_page(
         }
     }
     checkpoint.terminal |= page.terminal;
-    checkpoint.unresolved += page.unresolved;
+    // A sorted page that cannot be read sends the App to read every page, which covers it.
+    if !safety::updated_order(&page.route) {
+        checkpoint.unresolved += page.unresolved;
+    }
     if page.is_detail {
         checkpoint.details_completed += 1;
     } else {
@@ -4281,6 +4386,20 @@ fn reuse_known_receipts(checkpoint: &mut Checkpoint, known: &BTreeMap<String, Ve
             .extend(known[&route].iter().filter_map(|row| row.product_id.clone()));
         checkpoint.reused.insert(route);
     }
+}
+/// Gives up on stopping early: the plain pages go on from where they stopped.
+fn read_every_page(checkpoint: &mut Checkpoint) {
+    let read = checkpoint
+        .committed
+        .keys()
+        .filter_map(|route| route.strip_prefix("/library?page="))
+        .filter_map(|page| page.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0);
+    checkpoint.read_every_page = true;
+    checkpoint.overlap_end = None;
+    checkpoint.terminal = false;
+    checkpoint.pending = vec![format!("/library?page={}", read + 1)];
 }
 fn limit_listing_pages(checkpoint: &mut Checkpoint, limit: usize) {
     if checkpoint.pages >= limit {
@@ -8251,6 +8370,65 @@ mod tests {
         assert!(overlap_changed(&c, &head, Some(&boundary)));
         c.head = "old-head".into();
         assert!(overlap_changed(&c, &head, Some(&boundary)));
+    }
+    #[test]
+    fn the_updated_order_adds_to_a_library_pass_without_changing_its_order_or_head() {
+        let page = |route: String, ordering, next: Vec<String>| parser::Page {
+            source: "library".into(),
+            route,
+            rows: vec![],
+            next,
+            details: vec![],
+            terminal: false,
+            unresolved: 0,
+            fingerprint: "authored".into(),
+            is_detail: false,
+            ordering,
+            free_item: None,
+        };
+        let acquired = parser::Ordering::AcquiredNewestFirst;
+        let updated = parser::Ordering::FileUpdatedNewestFirst;
+        let mut c = Checkpoint::fresh("synthetic", "library", "incremental").unwrap();
+        for number in 1..=2 {
+            let route = format!("/library?page={number}");
+            let next = vec![format!("/library?page={}", number + 1)];
+            record_source_page(&mut c, "library", &route, &page(route.clone(), acquired, next), None).unwrap();
+        }
+        let head = c.head.clone();
+        // The overlap held: the plain pages stop and the updated order starts.
+        c.pending = vec![safety::updated_route(1)];
+        c.terminal = true;
+        let first = parser::Page {
+            fingerprint: "sorted".into(),
+            unresolved: 1,
+            ..page(safety::updated_route(1), updated, vec![safety::updated_route(2), safety::updated_route(9)])
+        };
+        record_source_page(&mut c, "library", &safety::updated_route(1), &first, None).unwrap();
+        assert_eq!(c.ordering, acquired);
+        assert_eq!(c.head, head);
+        assert!(c.terminal);
+        assert_eq!(c.unresolved, 0);
+        assert_eq!(next_routes(&c.pending).unwrap(), [safety::updated_route(2)]);
+        // Only what is about this order gives up on it, and only on this order.
+        for code in ["SOURCE_HTTP_FAILED", "RESPONSE_ROUTE_CHANGED", "NO_RECOGNIZED_ROWS"] {
+            assert!(refused_updated_order(&safety::updated_route(1), &anyhow::anyhow!("{code}")), "{code}");
+            assert!(!refused_updated_order("/library?page=3", &anyhow::anyhow!("{code}")), "{code}");
+        }
+        for code in ["AUTH_REQUIRED", "AUTH_CHALLENGE", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CANCELLED"] {
+            assert!(!refused_updated_order(&safety::updated_route(1), &anyhow::anyhow!("{code}")), "{code}");
+        }
+        // Something did not fit: the plain pages go on from where they stopped, and stay on.
+        read_every_page(&mut c);
+        assert!(c.read_every_page && !c.terminal && c.overlap_end.is_none());
+        assert_eq!(c.pending, ["/library?page=3"]);
+        let saved = serde_json::to_value(&c).unwrap();
+        assert_eq!(saved["readEveryPage"], true);
+        assert!(serde_json::from_value::<Checkpoint>(saved).unwrap().read_every_page);
+        // A checkpoint saved before this field existed still loads.
+        let mut older = serde_json::to_value(Checkpoint::fresh("synthetic", "library", "incremental").unwrap()).unwrap();
+        assert!(older.get("readEveryPage").is_none());
+        older["ordering"] = serde_json::json!("unknown");
+        assert!(!serde_json::from_value::<Checkpoint>(older).unwrap().read_every_page);
     }
     #[test]
     fn revision_is_content_evidence_not_signed_url_or_clock() {

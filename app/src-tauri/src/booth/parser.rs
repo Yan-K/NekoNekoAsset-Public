@@ -256,39 +256,33 @@ pub enum Ordering {
     #[default]
     Unknown,
     AcquiredNewestFirst,
+    /// No page reports this any more; saved checkpoints may still hold it.
     DownloadedNewestFirst,
+    FileUpdatedNewestFirst,
 }
-fn ordering(doc: &Html, source: &str, heading: &str, is_detail: bool) -> Ordering {
-    if is_detail
-        || doc
-            .select(&sel(
-                "input[type='search'][value],input[name='q'][value],input[name='keyword'][value]",
-            ))
-            .any(|e| {
-                e.value()
-                    .attr("value")
-                    .is_some_and(|v| !v.trim().is_empty())
-            })
-    {
+/// The Library page states its query in `data-search-params`, whatever the page's language:
+/// `sort` only when it is not BOOTH's default, newest acquired first (announcement 970), and a
+/// search or filter as more keys. Only a whole list in a stated order counts.
+fn ordering(doc: &Html, source: &str, is_detail: bool) -> Ordering {
+    if is_detail || source != "library" {
         return Ordering::Unknown;
     }
-    // BOOTH announcements 970 and 945 are the provider's ordering contract.
-    // An offered sort option or a product title is not a selected sort witness.
-    if source == "library" {
-        let active: Vec<_> = doc.select(&sel("select option[selected],button[aria-pressed='true'],[role='option'][aria-selected='true'],[role='tab'][aria-selected='true']")).map(text).collect();
-        if active.iter().any(|s| s == "入手が新しい順")
-            && !active.iter().any(|s| s == "ファイル更新が新しい順")
-        {
-            return Ordering::AcquiredNewestFirst;
-        }
-    } else if source == "free"
-        && (heading.contains("無料ダウンロード")
-            || heading.contains("Free downloads")
-            || heading.contains("Free Downloads"))
-    {
-        return Ordering::DownloadedNewestFirst;
+    let Some(params) = doc
+        .select(&sel("main [data-search-params]"))
+        .next()
+        .and_then(|node| node.value().attr("data-search-params"))
+        .and_then(|raw| serde_json::from_str::<serde_json::Map<String, Value>>(raw).ok())
+    else {
+        return Ordering::Unknown;
+    };
+    if params.keys().any(|key| !matches!(key.as_str(), "page" | "sort")) {
+        return Ordering::Unknown;
     }
-    Ordering::Unknown
+    match params.get("sort").map(|sort| sort.as_str()) {
+        None | Some(Some("library_added_at_desc")) => Ordering::AcquiredNewestFirst,
+        Some(Some(safety::LIBRARY_UPDATED_SORT)) => Ordering::FileUpdatedNewestFirst,
+        Some(_) => Ordering::Unknown,
+    }
 }
 fn files(card: ElementRef<'_>, receipt: bool) -> Vec<File> {
     let mut result = BTreeMap::new();
@@ -2573,7 +2567,7 @@ fn parse_internal(
         unresolved: 0,
         fingerprint: String::new(),
         is_detail,
-        ordering: ordering(&doc, &source, &heading, is_detail),
+        ordering: ordering(&doc, &source, is_detail),
         free_item: None,
     };
     let mut occurrences: BTreeMap<String, usize> = BTreeMap::new();
@@ -2809,25 +2803,32 @@ fn parse_internal(
             // Past the first page, the list moved while it was being read.
             page.unresolved += usize::from(current > 1);
         }
+        // A sorted page goes on in its own order; the Library tabs on it link the default one.
+        let this_order = |u: &url::Url| {
+            safety::updated_order(&format!("{path}?{}", u.query().unwrap_or("")))
+                == safety::updated_order(&page.route)
+        };
+        let mut next = vec![];
         for a in doc.select(&sel("a[href]")) {
             if let Some(u) = a
                 .value()
                 .attr("href")
                 .and_then(|v| safety::route(v, &source).ok())
             {
-                if u.path() == path {
+                if u.path() == path && this_order(&u) {
                     let p = u
                         .query_pairs()
-                        .next()
+                        .find(|(k, _)| k == "page")
                         .and_then(|(_, v)| v.parse::<u32>().ok())
                         .unwrap_or(0);
                     // Past the end of a list BOOTH still offers a next page, also empty.
                     if p > current && !cards.is_empty() {
-                        page.next.push(format!("{path}?page={p}"));
+                        next.push(format!("{path}?{}", u.query().unwrap_or("")));
                     }
                 }
             }
         }
+        page.next.append(&mut next);
         page.next.sort();
         page.next.dedup();
         // A list of one page keeps BOOTH's pager element, with nothing in it.
@@ -4675,62 +4676,51 @@ mod tests {
     }
     const HTML: &str = r#"<main><h1>Library</h1><article data-test='library-item'><a href='https://invented.booth.pm/items/900001'>Invented avatar</a><div data-test='downloadable-list'><div><b data-test='filename'>source.psd</b><a data-test='downloadable' href='https://booth.pm/downloadables/700001?variation_id=800001'>Download</a><a href='https://booth.pm/downloadables/700001?variation_id=800001'>Again</a></div><div><b data-test='filename'>docs.zip</b><a href='https://booth.pm/downloadables/700002'>Download</a></div></div></article><nav class='pagination'><a aria-current='page' href='/library?page=1'>1</a></nav></main>"#;
     #[test]
-    fn ordering_requires_provider_selected_control_or_free_history_witness() {
+    fn ordering_comes_only_from_what_the_library_page_states_about_its_query() {
         assert_eq!(
             parse(HTML, "library", "/library?page=1").unwrap().ordering,
             Ordering::Unknown
         );
-        let selected = "<select><option selected>入手が新しい順</option><option>ファイル更新が新しい順</option></select>";
-        let h = HTML.replace("<main>", &format!("<main>{selected}"));
-        assert_eq!(
-            parse(&h, "library", "/library?page=1").unwrap().ordering,
-            Ordering::AcquiredNewestFirst
-        );
-        assert_eq!(
-            parse(
-                &h.replace(
-                    "<option selected>入手が新しい順</option><option>",
-                    "<option>入手が新しい順</option><option selected>"
-                ),
-                "library",
-                "/library?page=1"
-            )
-            .unwrap()
-            .ordering,
-            Ordering::Unknown
-        );
-        assert_eq!(
-            parse(
-                &h.replace(
-                    "<main>",
-                    "<main><input type='search' value='synthetic filter'>"
-                ),
-                "library",
-                "/library?page=1"
-            )
-            .unwrap()
-            .ordering,
-            Ordering::Unknown
-        );
-        let free = HTML
-            .replace("Library", "無料ダウンロード")
-            .replace("/library?page=1", "/library/free_downloads?page=1");
-        assert_eq!(
-            parse(&free, "free", "/library/free_downloads?page=1")
-                .unwrap()
-                .ordering,
-            Ordering::DownloadedNewestFirst
-        );
-        assert_eq!(
-            parse(
-                &free.replace("無料ダウンロード", "Free"),
-                "free",
-                "/library/free_downloads?page=1"
-            )
-            .unwrap()
-            .ordering,
-            Ordering::Unknown
-        );
+        let stated = |params: &str| {
+            let holder = format!("<div class='hidden' data-search-params='{params}' data-search-url='https://accounts.booth.pm/library'></div>");
+            HTML.replace("<main>", &format!("<main>{holder}"))
+        };
+        let read = |html: &str| parse(html, "library", "/library?page=1").unwrap().ordering;
+        for (params, expected) in [
+            (r#"{"page":1}"#, Ordering::AcquiredNewestFirst),
+            (r#"{"sort":"library_added_at_desc","page":1}"#, Ordering::AcquiredNewestFirst),
+            (r#"{"sort":"file_updated_at_desc","page":1}"#, Ordering::FileUpdatedNewestFirst),
+            (r#"{"sort":"authored_other","page":1}"#, Ordering::Unknown),
+            (r#"{"sort":1,"page":1}"#, Ordering::Unknown),
+            (r#"{"q":"authored","page":1}"#, Ordering::Unknown),
+            (r#"{"adult":"exclude","page":1}"#, Ordering::Unknown),
+            ("not json", Ordering::Unknown),
+        ] {
+            assert_eq!(read(&stated(params)), expected, "{params}");
+        }
+        // The words on the page have no say, and neither do other lists.
+        let words = "<select><option selected>入手が新しい順</option></select>";
+        assert_eq!(read(&HTML.replace("<main>", &format!("<main>{words}"))), Ordering::Unknown);
+        for (source, route) in [("gift", "/library/gifts?page=1"), ("free", "/library/free_downloads?page=1")] {
+            let html = stated(r#"{"page":1}"#).replace("/library?page=1", route);
+            assert_eq!(parse(&html, source, route).unwrap().ordering, Ordering::Unknown, "{source}");
+        }
+    }
+    #[test]
+    fn a_sorted_library_page_goes_on_in_its_own_order() {
+        let sorted = |current: &str, more: &str| {
+            format!("<html><head><meta name='js_const_user_signed_in' content='true'></head><body><main role='main'><div class='hidden' data-search-params='{{\"sort\":\"file_updated_at_desc\",\"page\":{current}}}'></div><nav><a class='nav-item current' href='https://accounts.booth.pm/library?page=9'>Authored tab</a></nav><article data-test='library-item'><a href='https://invented.booth.pm/items/900001'>Authored</a><div data-test='downloadable-list'><b data-test='filename'>authored.zip</b><a href='https://booth.pm/downloadables/700001'>Download</a></div></article><div class='pager border-0'><nav><ul>{more}</ul></nav></div></main></body></html>")
+        };
+        let first = sorted("1", "<li class='current'><a class='nav-item' href='/library?sort=file_updated_at_desc'>1</a></li><li><a class='nav-item' href='/library?page=2&amp;sort=file_updated_at_desc'>2</a></li><li><a class='nav-item' rel='next' href='/library?page=2&amp;sort=file_updated_at_desc'>n</a></li>");
+        let page = parse(&first, "library", &safety::updated_route(1)).unwrap();
+        assert_eq!(page.route, "/library?sort=file_updated_at_desc&page=1");
+        assert_eq!(page.next, [safety::updated_route(2)]);
+        assert_eq!(page.ordering, Ordering::FileUpdatedNewestFirst);
+        assert!(!page.terminal);
+        let last = sorted("2", "<li><a class='nav-item' rel='prev' href='/library?sort=file_updated_at_desc'>p</a></li><li class='current'><a class='nav-item' href='/library?page=2&amp;sort=file_updated_at_desc'>2</a></li>");
+        let page = parse(&last, "library", &safety::updated_route(2)).unwrap();
+        assert!(page.next.is_empty());
+        assert!(page.terminal);
     }
     #[test]
     fn scoped_names_manifest_and_identity() {

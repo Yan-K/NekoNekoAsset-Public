@@ -206,6 +206,15 @@ pub fn source_name(source: &str) -> Result<&'static str> {
         _ => bail!("INVALID_SOURCE"),
     }
 }
+/// BOOTH's "recently updated first" Library order (announcement 970), the one sort a route takes.
+pub const LIBRARY_UPDATED_SORT: &str = "file_updated_at_desc";
+pub fn updated_route(page: u32) -> String {
+    format!("/library?sort={LIBRARY_UPDATED_SORT}&page={page}")
+}
+/// Whether a canonical route from `route()` reads that order.
+pub fn updated_order(route: &str) -> bool {
+    route.starts_with("/library?sort=")
+}
 pub fn route(value: &str, source: &str) -> Result<Url> {
     let base = Url::parse("https://accounts.booth.pm").unwrap();
     let mut url = base
@@ -216,19 +225,33 @@ pub fn route(value: &str, source: &str) -> Result<Url> {
     }
     let path = source_path(source)?;
     if url.path() == path {
-        // BOOTH's canonical first-page anchor/response may omit the query.
-        // All requests and parser projections still use the explicit page route.
-        if url.query().is_none() {
-            url.set_query(Some("page=1"));
+        // BOOTH's canonical first-page anchor/response may omit the query, and its pager
+        // orders a sorted link's parameters its own way. Every route leaves here one way.
+        let (mut page, mut sorted) = (None, false);
+        for (key, value) in url.query_pairs() {
+            match key.as_ref() {
+                "page"
+                    if page.is_none()
+                        && numeric(&value)
+                        && value.parse::<u32>().unwrap_or(0) != 0 =>
+                {
+                    page = Some(value.into_owned());
+                }
+                "sort" if !sorted && path == "/library" && value == LIBRARY_UPDATED_SORT => {
+                    sorted = true;
+                }
+                _ => bail!("INVALID_SOURCE_ROUTE"),
+            }
         }
-        let pairs: Vec<_> = url.query_pairs().collect();
-        if pairs.len() != 1
-            || pairs[0].0 != "page"
-            || !numeric(&pairs[0].1)
-            || pairs[0].1.parse::<u32>().unwrap_or(0) == 0
-        {
+        if url.query().is_some() && page.is_none() && !sorted {
             bail!("INVALID_SOURCE_ROUTE");
         }
+        let page = page.unwrap_or_else(|| "1".into());
+        url.set_query(Some(&if sorted {
+            format!("sort={LIBRARY_UPDATED_SORT}&page={page}")
+        } else {
+            format!("page={page}")
+        }));
     } else if path != "/orders"
         || !url.path().strip_prefix("/orders/").is_some_and(numeric)
         || url.query().is_some()
@@ -428,6 +451,31 @@ mod tests {
             "https://accounts.booth.pm/library?page=1"
         );
         assert!(route("/library?", "library").is_err());
+        // The one sort a route takes comes out one way, whichever way BOOTH's pager wrote it.
+        for value in [
+            "/library?sort=file_updated_at_desc",
+            "/library?page=1&sort=file_updated_at_desc",
+            "/library?sort=file_updated_at_desc&page=1",
+        ] {
+            let url = route(value, "library").unwrap();
+            assert_eq!(url.as_str(), "https://accounts.booth.pm/library?sort=file_updated_at_desc&page=1");
+            let canonical = format!("{}?{}", url.path(), url.query().unwrap());
+            assert_eq!(canonical, updated_route(1));
+            assert!(updated_order(&canonical));
+        }
+        assert!(!updated_order("/library?page=1"));
+        for (value, source) in [
+            ("/library?sort=bogus&page=1", "library"),
+            ("/library?sort=file_updated_at_desc&sort=file_updated_at_desc", "library"),
+            ("/library?sort=file_updated_at_desc&page=0", "library"),
+            ("/library?sort=file_updated_at_desc&page=1&q=authored", "library"),
+            ("/library?page=1&page=2", "library"),
+            ("/library/gifts?sort=file_updated_at_desc&page=1", "gift"),
+            ("/library/free_downloads?sort=file_updated_at_desc&page=1", "free"),
+            ("/orders?sort=file_updated_at_desc&page=1", "purchase"),
+        ] {
+            assert!(route(value, source).is_err(), "{value}");
+        }
         assert!(route("/orders/12/receipt", "purchase").is_err());
         assert!(route("https://evil.test/library?page=1", "library").is_err());
         assert!(route("/library?page=1&token=x", "library").is_err());
