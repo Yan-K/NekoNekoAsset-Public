@@ -6401,7 +6401,7 @@ mod tests {
             ..Default::default()
         };
         let head = parser::parse(
-            "<main><h1>Library</h1><div class='empty-state'>No items</div></main>",
+            "<main><h1>Library</h1><div class='bg-white text-center'>No items</div></main>",
             "library",
             "/library?page=1",
         )

@@ -400,10 +400,21 @@ fn looks_filename(value: &str) -> bool {
         !ext.is_empty() && ext.len() <= 12 && ext.bytes().all(|c| c.is_ascii_alphanumeric())
     })
 }
+/// BOOTH fades a delisted row's thumbnail and stops linking its title. The badge beside it is
+/// translated; the markup is not.
+fn faded_row(card: ElementRef<'_>) -> bool {
+    card.select(&sel("img.l-library-item-thumbnail")).any(|image| {
+        image
+            .value()
+            .classes()
+            .any(|class| class.starts_with("opacity-"))
+    })
+}
 fn unavailable(card: ElementRef<'_>) -> bool {
     card.select(&sel("[data-test='item-unavailable'],.item-unavailable"))
         .next()
         .is_some()
+        || faded_row(card)
         || card
             .descendants()
             .filter(|n| {
@@ -2479,7 +2490,9 @@ fn parse_internal(
                 .and_then(absolute)
                 .and_then(|u| url::Url::parse(&u).ok())
                 .is_some_and(|u| u.host_str() == Some("accounts.booth.pm") && u.path() == path)
-        });
+        })
+        // An order list with nothing in it has no link to itself and a translated heading.
+        || (source == "purchase" && doc.select(&sel(".l-orders-index")).next().is_some());
     if !marker {
         bail!("SOURCE_MARKER_UNKNOWN");
     }
@@ -2783,36 +2796,19 @@ fn parse_internal(
             page.unresolved += 1;
         }
     } else {
-        if cards.is_empty() {
-            let empty = main
-                .select(&sel(
-                    "[data-test='empty-state'],.empty-state,.library-empty,.no-items",
-                ))
-                .any(|n| {
-                    let s = text(n).to_lowercase();
-                    [
-                        "ありません",
-                        "まだ",
-                        "見つかりません",
-                        "no items",
-                        "no orders",
-                        "no downloads",
-                        "no gifts",
-                        "empty",
-                    ]
-                    .iter()
-                    .any(|v| s.contains(v))
-                });
-            if !empty {
-                bail!("NO_RECOGNIZED_ROWS");
-            }
-            page.terminal = true;
-        }
         let current = url
             .query_pairs()
             .find(|(k, _)| k == "page")
             .and_then(|(_, v)| v.parse::<u32>().ok())
             .unwrap_or(1);
+        if cards.is_empty() {
+            if !empty_list(main, &source) {
+                bail!("NO_RECOGNIZED_ROWS");
+            }
+            page.terminal = true;
+            // Past the first page, the list moved while it was being read.
+            page.unresolved += usize::from(current > 1);
+        }
         for a in doc.select(&sel("a[href]")) {
             if let Some(u) = a
                 .value()
@@ -2825,7 +2821,8 @@ fn parse_internal(
                         .next()
                         .and_then(|(_, v)| v.parse::<u32>().ok())
                         .unwrap_or(0);
-                    if p > current {
+                    // Past the end of a list BOOTH still offers a next page, also empty.
+                    if p > current && !cards.is_empty() {
                         page.next.push(format!("{path}?page={p}"));
                     }
                 }
@@ -2833,6 +2830,10 @@ fn parse_internal(
         }
         page.next.sort();
         page.next.dedup();
+        // A list of one page keeps BOOTH's pager element, with nothing in it.
+        if page.next.is_empty() && current == 1 && !cards.is_empty() && only_page(&doc) {
+            page.terminal = true;
+        }
         if page.next.is_empty() {
             let explicit_last = doc
                 .select(&sel("a.last-page[href],a[aria-label='Last'][href]"))
@@ -2920,6 +2921,21 @@ fn parse_internal(
     )?);
     Ok(page)
 }
+/// A list with nothing in it. BOOTH translates the sentence, so its layout says what it is:
+/// a lone text panel, inside the order list for orders.
+fn empty_list(main: ElementRef<'_>, source: &str) -> bool {
+    let panel = if source == "purchase" {
+        ".l-orders-index > .text-center"
+    } else {
+        ".bg-white.text-center"
+    };
+    main.select(&sel(panel))
+        .any(|node| plain_leaf(node, 200).is_some_and(|text| !text.is_empty()))
+}
+fn only_page(doc: &Html) -> bool {
+    doc.select(&sel(".pager"))
+        .any(|pager| pager.children().filter_map(ElementRef::wrap).next().is_none())
+}
 fn order_id(e: ElementRef<'_>) -> Option<String> {
     let u = url::Url::parse(&absolute(e.value().attr("href")?)?).ok()?;
     let id = u.path().strip_prefix("/orders/")?;
@@ -2960,7 +2976,7 @@ mod tests {
     {
         let signed_out = "<meta name='js_const_user_signed_in' content='false'>";
         let oauth = format!("{signed_out}<main><h1>ログイン</h1><form action='/users/auth/pixiv' method='post'><input type='submit' value='pixivアカウントでログイン'></form></main>");
-        let empty = "<main><h1>Library</h1><div class='library-empty'>No items</div></main>";
+        let empty = "<main><h1>Library</h1><div class='bg-white text-center'>No items</div></main>";
         for html in [oauth, format!("{signed_out}{empty}")] {
             assert_eq!(
                 parse(&html, "library", "/library?page=1")
@@ -4842,6 +4858,112 @@ mod tests {
         let b = parse(&h, "library", "/library?page=1").unwrap();
         assert_eq!(a.rows[0].source_record_id, b.rows[0].source_record_id);
         assert_ne!(a.fingerprint, b.fingerprint);
+    }
+    /// The shapes real account pages use, with every word replaced by a language's wording.
+    fn library_page(current: &str, body: &str) -> String {
+        let tab = |path: &str| {
+            let class = if path == current { "nav-item current" } else { "nav-item" };
+            format!("<li><a class='{class}' href='https://accounts.booth.pm{path}?page=1'>Authored tab</a></li>")
+        };
+        format!("<html lang='zh-TW'><head><meta name='js_const_user_signed_in' content='true'></head><body><main role='main'><div class='text-center'><h1 class='typography-16'>Authored heading</h1></div><nav class='ui-segmented-tablet-nav centered'><ul>{}{}{}</ul></nav><div class='flex gap-40'><div class='w-full flex flex-col gap-16'><div class='h-32'></div>{body}</div></div></main></body></html>",
+            tab("/library"), tab("/library/gifts"), tab("/library/free_downloads"))
+    }
+    #[test]
+    fn empty_lists_are_told_by_layout_in_every_language() {
+        for sentence in ["受け取ったギフトはありません", "No gifts received", "받은 선물이 없습니다", "没有收到的礼物", "沒有收到的禮物"] {
+            let panel = format!("<div class='bg-white text-center text-16 font-bold text-text-gray600 py-64 desktop:rounded-8'>{sentence}</div>");
+            for (source, path) in [
+                ("library", "/library"),
+                ("gift", "/library/gifts"),
+                ("free", "/library/free_downloads"),
+            ] {
+                let page = parse(&library_page(path, &panel), source, &format!("{path}?page=1")).unwrap();
+                assert!(page.terminal && page.rows.is_empty() && page.unresolved == 0, "{source}");
+                assert!(page.next.is_empty());
+            }
+            let orders = format!("<html><head><meta name='js_const_user_signed_in' content='true'></head><body><main role='main'><div class='manage-page-head'><h1 class='manage-page-head-title'>Authored heading</h1><div><a href='https://accounts.booth.pm/library'><span>Authored link</span></a></div></div><div class='manage-page-body'><div class='container border-b'></div><div class='container static-3of4 l-orders-index'><div class='u-mt-500 text-center'>{sentence}</div></div></div></main></body></html>");
+            let page = parse(&orders, "purchase", "/orders?page=1").unwrap();
+            assert!(page.terminal && page.details.is_empty() && page.unresolved == 0);
+        }
+        // A list that shrank while it was read: BOOTH's pager goes on past the end, the App does
+        // not, and a row may have moved past what was read, so it does not certify the list.
+        let past_end = library_page("/library/gifts", "<div class='bg-white text-center py-64'>Authored sentence</div><div class='pager border-0'><nav><ul><li><a class='nav-item' rel='prev' href='https://accounts.booth.pm/library/gifts?page=8'>p</a></li><li><a class='nav-item' rel='next' href='https://accounts.booth.pm/library/gifts?page=10'>n</a></li></ul></nav></div>");
+        let page = parse(&past_end, "gift", "/library/gifts?page=9").unwrap();
+        assert!(page.terminal && page.next.is_empty());
+        assert_eq!(page.unresolved, 1);
+        // Only that panel says so: a page without it, or holding more than a sentence, stays unread.
+        for body in [
+            String::new(),
+            "<div class='bg-white text-center'></div>".to_owned(),
+            "<div class='text-center'>Authored sentence</div>".to_owned(),
+            "<div class='bg-white text-center'><a href='/authored'>Authored link</a></div>".to_owned(),
+        ] {
+            assert_eq!(
+                parse(&library_page("/library/gifts", &body), "gift", "/library/gifts?page=1").unwrap_err().to_string(),
+                "NO_RECOGNIZED_ROWS",
+                "{body}"
+            );
+        }
+        // Another page's layout does not stand in for the order list.
+        assert_eq!(
+            parse("<main><h1>Authored heading</h1><div class='bg-white text-center'>Authored sentence</div></main>", "purchase", "/orders?page=1").unwrap_err().to_string(),
+            "SOURCE_MARKER_UNKNOWN"
+        );
+        assert_eq!(
+            parse("<main><div class='l-orders-index'><div class='bg-white'>Authored sentence</div></div></main>", "purchase", "/orders?page=1").unwrap_err().to_string(),
+            "NO_RECOGNIZED_ROWS"
+        );
+    }
+    #[test]
+    fn a_list_of_one_page_ends_at_its_empty_pager() {
+        let row = "<div class='bg-white p-16 desktop:rounded-8'><b><a class='nav' href='https://authored.booth.pm/items/900001'>Authored title</a></b><div data-test='downloadable-list'><b data-test='filename'>authored.zip</b><a href='https://booth.pm/downloadables/700001'>Download</a></div></div>";
+        let html = |pager: &str| library_page("/library/gifts", &format!("{row}{pager}"));
+        let page = parse(&html("<div class='pager border-0'></div>"), "gift", "/library/gifts?page=1").unwrap();
+        assert!(page.terminal && page.next.is_empty() && page.unresolved == 0);
+        assert_eq!(page.rows[0].product_id.as_deref(), Some("900001"));
+        let orders = "<main role='main'><div class='container l-orders-index'><a href='https://accounts.booth.pm/orders/910001'><div class='sheet'>Authored order</div></a><div class='pager'></div></div></main>";
+        let page = parse(orders, "purchase", "/orders?page=1").unwrap();
+        assert!(page.terminal && page.next.is_empty());
+        assert_eq!(page.details, ["/orders/910001"]);
+        // Anything else stays unproven: no pager at all, one holding something, or a later page.
+        for pager in ["", "<div class='pager border-0'><nav></nav></div>", "<div class='other-pager'></div>"] {
+            let page = parse(&html(pager), "gift", "/library/gifts?page=1").unwrap();
+            assert!(!page.terminal, "{pager}");
+        }
+        let page = parse(&html("<div class='pager border-0'></div>"), "gift", "/library/gifts?page=2").unwrap();
+        assert!(!page.terminal);
+    }
+    #[test]
+    fn a_delisted_row_is_told_by_its_faded_thumbnail_in_every_language() {
+        let row = |image: &str, badge: &str, title: &str| {
+            format!("<div class='bg-white p-16 desktop:rounded-8'><div class='flex gap-8'><img class='{image}' src='https://booth.pximg.net/authored.png'><div><div class='bg-primary700 rounded-4 px-8 w-fit text-white text-12 font-bold'>{badge}</div>{title}<a class='no-underline w-fit flex' rel='noopener' href='https://authored.booth.pm/'><img class='rounded-[50%] w-24 h-24'><div class='text-14'>Authored shop</div></a></div></div></div>")
+        };
+        let plain = "<div class='text-text-default font-bold text-16 py-4 break-all opacity-[0.32]'>Authored title</div>";
+        let html = |card: String| {
+            library_page(
+                "/library/free_downloads",
+                &format!("{card}<div class='pager border-0'><nav><ul><li class='current'><a class='nav-item' href='https://accounts.booth.pm/library/free_downloads?page=1'>1</a></li></ul></nav></div>"),
+            )
+        };
+        let route = "/library/free_downloads?page=1";
+        for badge in ["非公開", "Private", "비공개", "未公开", "未公開"] {
+            let page = parse(&html(row("l-library-item-thumbnail opacity-[0.32]", badge, plain)), "free", route).unwrap();
+            assert_eq!(page.unresolved, 0, "{badge}");
+            assert!(page.terminal);
+            assert!(page.rows[0].unavailable && page.rows[0].product_id.is_none());
+            assert_eq!(page.rows[0].error_code.as_deref(), Some("BOOTH_WITHHELD_PRODUCT_ID"));
+        }
+        // A row that merely lost its link, unfaded and with unknown wording, is still unread.
+        let page = parse(&html(row("l-library-item-thumbnail", "Private", plain)), "free", route).unwrap();
+        assert_eq!(page.unresolved, 1);
+        assert_eq!(page.rows[0].error_code.as_deref(), Some("PRODUCT_ID_UNRESOLVED"));
+        assert!(!page.rows[0].unavailable);
+        // A faded row that still links its product keeps that identity.
+        let linked = "<b><a class='nav' href='https://authored.booth.pm/items/900001'>Authored title</a></b>";
+        let page = parse(&html(row("l-library-item-thumbnail opacity-[0.32]", "Private", linked)), "free", route).unwrap();
+        assert_eq!(page.rows[0].product_id.as_deref(), Some("900001"));
+        assert!(page.rows[0].unavailable);
+        assert_eq!(page.unresolved, 0);
     }
     #[test]
     fn exact_withheld_marker_keeps_unknown_id_but_not_unsupported_identity() {

@@ -61,7 +61,7 @@ fn positive_row_price(row: ElementRef<'_>) -> bool {
     let prices: Vec<_> = row.select(&sel(".variation-price")).collect();
     prices.len() == 1 && {
         let price = text(prices[0]);
-        (price.starts_with('¥') || price.ends_with('円'))
+        (price.starts_with('¥') || price.ends_with('円') || price.ends_with("JPY"))
             && super::metadata::parse_jpy_price(&serde_json::json!(price))
                 .is_some_and(|amount| amount > 0.0)
     }
@@ -854,6 +854,15 @@ mod tests {
         assert_eq!(counts["recognizedNonFreeRows"], 3);
         assert_eq!(counts["unrecognizedRoleRows"], 0);
         assert!(!counts.to_string().contains("PRIVATE_ROLE_SENTINEL"));
+        // BOOTH's other languages write the same closed rows' prices in JPY.
+        let elsewhere = closed.replace("¥ 500", "500 JPY").replace("¥ 700", "700 JPY");
+        let evidence = parse(&elsewhere, "900001").unwrap();
+        assert!(evidence.error_code.is_none() && evidence.manifest_complete);
+        let free = elsewhere.replace("500 JPY", "0 JPY");
+        assert_eq!(
+            parse(&free, "900001").unwrap().error_code.as_deref(),
+            Some("FREE_ITEM_ROLE_UNPROVEN")
+        );
     }
     #[test]
     fn identity_diagnostics_have_a_closed_shape_even_without_matching_root() {
