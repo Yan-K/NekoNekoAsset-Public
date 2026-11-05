@@ -410,6 +410,7 @@ pub fn infer_product_category(source: &Value) -> Value {
     let evidence = |text: &str, rule: &Rule| match rule.category {
         "Motion" if booth => {
             names_motion(text)
+                || names_emote_or_pose(text) && (in_3d || target_scope)
                 || bare_animation(text) && (in_3d || target_scope && !video_or_effect)
         }
         // 世界 is as often 世界観 or 異世界, and effect sellers tag every platform.
@@ -478,7 +479,8 @@ pub fn infer_product_category(source: &Value) -> Value {
         Some(("Clothes" | "Hair" | "Accessory" | "Texture", _))
     );
     let software_decides = if store_content {
-        software_opening || software_title && !add_on_pack(&title_normalized)
+        description_defines_software(&description_opening.replace("アドオンです", ""))
+            || software_title && !add_on_pack(&title_normalized)
     } else {
         software
             && (declared_software
@@ -575,7 +577,9 @@ pub fn infer_product_category(source: &Value) -> Value {
             }
         }
     }
-    let restricted = matches!(result["category"].as_str(), Some("Tool" | "Texture"));
+    // What a title or tag separates from BOOTH's tools still has to show where it runs.
+    let store_tools = store.is_some() && category_name == "3dツール・システム";
+    let restricted = store_tools || matches!(result["category"].as_str(), Some("Tool" | "Texture"));
     let store_texture = result["category"] == "Texture" && matches!(store, Some(("Texture", _)));
     let os_without_target_context = os_tag && !unity_scope && !explicit_vr_tag;
     if restricted
@@ -614,16 +618,20 @@ pub fn infer_product_category(source: &Value) -> Value {
         result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":[]});
     }
     // BOOTH's own 3D category stands against a Photoshop or Windows tag, which often
-    // says what the source files need. Tools have to show where they run.
-    let store_asset = store.is_some_and(|(kind, _)| kind != "Tool" && result["category"] == kind);
+    // says what the source files need, though not against a title naming the application.
+    let store_asset = !store_tools
+        && (store.is_some_and(|(kind, _)| kind != "Tool" && result["category"] == kind)
+            || booth && category_name == "3dキャラクター" && result["category"] == "Base");
+    let outside = if store_asset {
+        strong_external_application(&title_normalized) && !explicit_vr_tag
+    } else {
+        (outside_app_context || outside_category) && !explicit_vr_tag || os_without_target_context
+    };
     result["scope"] = json!(if gumroad_without_vr_text {
         "other"
     } else if jinxxy {
         "vrchat"
-    } else if !store_asset
-        && ((outside_app_context || outside_category) && !explicit_vr_tag
-            || os_without_target_context)
-    {
+    } else if outside {
         "other"
     } else if vr_scope {
         "vrchat"
@@ -654,8 +662,8 @@ fn names_type(text: &str, category: &str) -> bool {
 
 /// What BOOTH's own category says a product is, with where that came from. Tags also
 /// list what a product contains or suits, so they do not outvote it. BOOTH has no
-/// category for shaders, Udon or gimmicks: sellers file those under tools or worlds and
-/// say so in the title, and in tools their tags can tell them apart too.
+/// category for shaders, Udon or gimmicks: sellers file those under tools, worlds or
+/// textures and say so in the title, and in tools their tags can tell them apart too.
 fn store_type(
     leaf: &str,
     title: &str,
@@ -672,13 +680,25 @@ fn store_type(
         _ if title.contains("販売ワールド") => return Some(("World", "sourceTitle")),
         _ => return None,
     };
-    if !matches!(stated, "Tool" | "World") || title.contains("販売ワールド") {
+    if !matches!(stated, "Texture" | "Tool" | "World") || title.contains("販売ワールド") {
         return Some((stated, "sourceCategory"));
     }
     let tagged = |category| tags.iter().any(|tag| names_type(tag, category));
-    // Neither an installer that comes with a product nor a stool makes it a tool.
-    let title = title.replace("導入ツール", "").replace("スツール", "");
+    // An installer that comes with a product, a stool or two rooms do not make a tool.
+    let title = title
+        .replace("導入ツール", "")
+        .replace("スツール", "")
+        .replace("ツールーム", "");
     let sold = |words: &[&str]| words.iter().any(|word| sold_as(&title, word));
+    let shader = sold(&["シェーダ", "shader", "셰이더", "着色器", "著色器"]);
+    // A texture made for a shader says texture too.
+    if stated == "Texture" {
+        return Some(if shader && !names_type(&title, "Texture") {
+            ("Shader", "sourceTitle")
+        } else {
+            ("Texture", "sourceCategory")
+        });
+    }
     let tool = sold(&["ツール", "工具", "도구"])
         || ["tool", "tools", "utility", "utilities", "editor extension"]
             .iter()
@@ -691,7 +711,7 @@ fn store_type(
         Some("Tool")
     } else if sold(&["udon"]) {
         Some("Udon")
-    } else if sold(&["シェーダ", "shader", "셰이더", "着色器", "著色器"]) {
+    } else if shader {
         Some("Shader")
     } else if tagged("Udon")
         && (gimmick
@@ -719,13 +739,17 @@ fn store_type(
 /// A word for what is sold, not for something the product comes with or suits.
 fn sold_as(title: &str, word: &str) -> bool {
     title.match_indices(word).any(|(start, word)| {
-        let after = title[start + word.len()..].trim_start_matches('ー');
+        let after = title[start + word.len()..]
+            .trim_start_matches('ー')
+            .trim_start();
         let after = after.strip_prefix("ギミック").unwrap_or(after);
-        ![
-            "付", "つき", "搭載", "あり", "有り", "多数", "満載", "入り", "対応", "専用", "用", "向け",
-        ]
-        .iter()
-        .any(|suffix| after.starts_with(suffix))
+        !title[..start].ends_with("with ")
+            && ![
+                "付", "つき", "搭載", "あり", "有り", "多数", "満載", "入り", "同梱", "対応", "専用",
+                "用", "向け",
+            ]
+            .iter()
+            .any(|suffix| after.starts_with(suffix))
     })
 }
 
@@ -745,8 +769,6 @@ fn names_motion(text: &str) -> bool {
     [
         "モーション",
         "모션",
-        "エモート",
-        "ポーズ",
         "动作",
         "アニメーションファイル",
         "アニメーションクリップ",
@@ -762,13 +784,22 @@ fn names_motion(text: &str) -> bool {
             "gestures",
             "pose",
             "poses",
-            "emote",
-            "emotes",
             "animationclip",
             "animation clip",
         ]
         .iter()
         .any(|word| word_match(&text, word))
+}
+
+/// These also sell chat emotes and drawing references, so they need context.
+fn names_emote_or_pose(text: &str) -> bool {
+    text.contains("エモート")
+        || word_match(text, "emote")
+        || word_match(text, "emotes")
+        || text
+            .replace("プロポーズ", "")
+            .replace("コンポーズ", "")
+            .contains("ポーズ")
 }
 
 fn bare_animation(text: &str) -> bool {
@@ -2451,6 +2482,11 @@ mod tests {
             ("3D環境・ワールド", "Authored Room（Udonギミック付き）", &["VRChat"], "World"),
             ("3D環境・ワールド", "Udon対応 Authored Room", &["Udon"], "World"),
             ("3D環境・ワールド", "モダン Authored スツール", &[], "World"),
+            ("3D環境・ワールド", "Authored ツールームアパート", &[], "World"),
+            ("3D環境・ワールド", "Room【設定ツール同梱】", &[], "World"),
+            ("3D環境・ワールド", "Room Udon ギミック付き", &["VRChat"], "World"),
+            ("3D環境・ワールド", "Room シェーダー同梱", &["VRChat"], "World"),
+            ("3D環境・ワールド", "Room with Gimmicks", &["VRChat"], "World"),
             ("3D環境・ワールド", "Authored Solar System", &["VRChat"], "World"),
             ("3D環境・ワールド", "Authored 雨粒シェーダー", &["VRChat"], "Shader"),
             ("3D環境・ワールド", "AuthoredWaterShader", &["VRChat"], "Shader"),
@@ -2474,7 +2510,10 @@ mod tests {
             ("3Dテクスチャ", "Authored Eye", &["VRChat", "モーション", "シェーダー"], "Texture"),
             ("3Dテクスチャ", "Authored Eye", &[], "Texture"),
             ("3Dテクスチャ", "AuthoredShader専用マテリアル", &["VRChat", "シェーダー"], "Texture"),
-            ("3Dテクスチャ", "Authored Skin シェーダー", &["VRChat"], "Texture"),
+            ("3Dテクスチャ", "Authored Skin シェーダー", &["VRChat"], "Shader"),
+            ("3Dテクスチャ", "Authored Frost Glass Shader", &["VRChat", "Shader"], "Shader"),
+            ("3Dテクスチャ", "Authored シェーダーに使用できるマスクテクスチャ", &["VRChat"], "Texture"),
+            ("3Dテクスチャ", "Authored Eye", &["VRChat", "Shader"], "Texture"),
             ("3Dテクスチャ", "Authored Eye Add-on", &["ソフトウェア"], "Texture"),
             ("3D衣装", "Authored Dress Add-on", &[], "Clothes"),
             ("3D衣装", "Authored Dress", &["VRChat", "ソフトウェア"], "Clothes"),
@@ -2487,6 +2526,7 @@ mod tests {
             ("3Dモデル（その他）", "Authored Pin", &["VRChat", "アクセサリー"], "Accessory"),
             ("3Dモデル（その他）", "【販売ワールド】Authored Room", &["VRChat", "Udon"], "World"),
             ("3Dモデル（その他）", "Authored Cape", &["VRChat", "世界観衣装"], "Clothes"),
+            ("3Dモデル（その他）", "Authored プロポーズリング", &["VRChat"], "NonVRChat"),
             // It is 3D data already, so these need no VRChat or Unity word.
             ("3Dモデル（その他）", "Authored Walk", &["アニメーション"], "Motion"),
             ("3Dモデル（その他）", "Authored World 紹介動画あり", &[], "World"),
@@ -2509,13 +2549,21 @@ mod tests {
             ("3D衣装", "Authored Dress", &["Photoshop", "Windows"], "Clothes", "unknown"),
             ("3Dテクスチャ", "Authored Eye", &["Photoshop"], "Texture", "unknown"),
             ("3D環境・ワールド", "Authored Room", &["Windows"], "World", "unknown"),
-            // A tool has to show where it runs.
+            ("3Dキャラクター", "VRChat向け Authored Model", &["Photoshop"], "Base", "vrchat"),
+            // A title naming the application is not about source files.
+            ("3Dモーション・アニメーション", "After Effects用 Authored Preset", &[], "Motion", "other"),
+            // A tool has to show where it runs, whatever a title separates it into.
             ("3Dツール・システム", "Authored Tool", &["Unity", "AE"], "NonVRChat", "other"),
+            ("3Dツール・システム", "Authored Blender Shader", &["Blender"], "NonVRChat", "unknown"),
+            ("3Dツール・システム", "Authored Glow シェーダー", &["AfterEffects"], "NonVRChat", "other"),
         ] {
             let result = infer_product_category(&booth_listing("3Dモデル", leaf, title, tags));
             assert_eq!(result["category"], expected, "{leaf} {title}");
             assert_eq!(result["scope"], scope, "{leaf} {title}");
         }
+        // A description calling a garment an add-on is not defining software.
+        let swimsuit = infer_product_category(&json!({"store":"BOOTH","sourceCategory":{"name":"3D衣装","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceDescription":"Authored用の水着アドオンです。"}));
+        assert_eq!(swimsuit["category"], "Clothes");
         // Evidence is what decided, and a listing with no category has none to cite.
         let titled = infer_product_category(&json!({"store":"BOOTH","sourceTitle":"【販売ワールド】Authored"}));
         assert_eq!(titled["category"], "World");
@@ -2590,6 +2638,9 @@ mod tests {
             ("VRChat用 Authored アニメーション", "Motion"),
             ("Authored モーショングラフィックス", "NonVRChat"),
             ("Authored 動作確認済み", "NonVRChat"),
+            ("Authored Twitch Emote Pack", "NonVRChat"),
+            ("Authored ポーズ集", "NonVRChat"),
+            ("VRChat用 Authored ポーズ集", "Motion"),
         ] {
             assert_eq!(
                 infer_product_category(&json!({"store":"BOOTH","sourceTitle":title,"publicPageAvailability":"unavailable"}))["category"],
