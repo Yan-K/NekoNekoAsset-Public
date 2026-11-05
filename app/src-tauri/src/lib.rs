@@ -609,6 +609,12 @@ async fn catalogue_action(
             result["accounts"] = json!(services.stores.account_views(accounts.clone()));
         }
     }
+    if let Some(links) = result.as_object_mut().and_then(|result| result.remove("changedLinks")) {
+        let links: Vec<String> = serde_json::from_value(links).unwrap_or_default();
+        if !links.is_empty() {
+            services.storage.read_changed_link_prices(&app, links);
+        }
+    }
     if previous_preferences.is_object()
         && (previous_preferences["aiEnabled"] != result["aiEnabled"]
             || previous_preferences["aiFeaturesEnabled"] != result["aiFeaturesEnabled"])

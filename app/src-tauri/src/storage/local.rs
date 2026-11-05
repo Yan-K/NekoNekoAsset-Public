@@ -349,8 +349,9 @@ mod tests {
         assert!(shown["price"].is_null() && shown["currentPriceText"].is_null());
 
         let before = service.catalogue.get("product", id).unwrap().unwrap();
+        let link = "https://booth.pm/ja/items/900001";
         assert!(service
-            .store_listing_price(&before, &json!({"price":1800.0,"priceCurrency":"JPY"}))
+            .store_listing_price(id, link, &json!({"price":1800.0,"priceCurrency":"JPY"}))
             .unwrap());
         // Account scope keeps a local product's own facts.
         for args in [json!({"id":id}), json!({"id":id,"accountIds":[]})] {
@@ -358,9 +359,9 @@ mod tests {
             assert_eq!((shown["price"].as_f64(), shown["priceCurrency"].as_str()), (Some(1800.0), Some("JPY")));
             assert_eq!(shown["acquired"], acquired.as_str());
         }
-        // A read that started before another change never overwrites it.
+        // A read of a link the user has since replaced is dropped.
         assert!(!service
-            .store_listing_price(&before, &json!({"price":1.0,"priceCurrency":"JPY"}))
+            .store_listing_price(id, "https://booth.pm/ja/items/900002", &json!({"price":1.0,"priceCurrency":"JPY"}))
             .unwrap());
         assert_eq!(details(json!({"id":id}))["price"].as_f64(), Some(1800.0));
         // It is read once, and a retry of the import keeps what the first run recorded.
@@ -377,6 +378,7 @@ mod tests {
         assert_eq!(kept["acquired"], acquired.as_str());
         assert_eq!(kept["price"].as_f64(), Some(1800.0));
         assert_eq!(kept["priceObservedAt"], priced["priceObservedAt"]);
+        assert_eq!(kept["priceSourceUrl"], link);
         // A product imported before dates existed stays unknown through a retry too.
         let mut older = kept.clone();
         older["acquired"] = json!("");
@@ -406,20 +408,80 @@ mod tests {
         let shown = details(json!({"id":id}));
         assert_eq!((shown["acquired"].as_str(), shown["price"].as_f64()), (Some(acquired.as_str()), Some(1800.0)));
 
-        // A store that quotes only text keeps it; a replaced link no longer claims a price.
-        let before = service.catalogue.get("product", id).unwrap().unwrap();
+        // A store that quotes only text keeps it.
         assert!(service
-            .store_listing_price(&before, &json!({"price":null,"priceCurrency":null,"priceFormatted":"¥1,000","priceSourceCurrency":"JPY"}))
+            .store_listing_price(id, link, &json!({"price":null,"priceCurrency":null,"priceFormatted":"¥1,000","priceSourceCurrency":"JPY"}))
             .unwrap());
         let shown = details(json!({"id":id}));
         assert!(shown["price"].is_null());
         assert_eq!(shown["currentPriceText"], "¥1,000");
-        service
-            .catalogue
-            .put("overlay", id, json!({"id":id,"sourceUrl":"https://jinxxy.com/authored/other"}))
-            .unwrap();
+
+        // A link changed in Edit shows no price until its own read arrives, which replaces all
+        // of the old quote. An undo goes back to the same state for the earlier link.
+        let edit = |url: &str| {
+            service.catalogue.command(
+                "overlay",
+                json!({"changes":[{"id":id,"patch":{"sourceUrl":url},"clearFields":[]}]}),
+            )
+            .unwrap()
+        };
+        let other = "https://jinxxy.com/authored/other";
+        let edited = edit(other);
+        assert_eq!(edited["changedLinks"], json!([id]));
+        assert_eq!(service.current_link(id).as_deref(), Some(other));
         let shown = details(json!({"id":id}));
         assert!(shown["price"].is_null() && shown["currentPriceText"].is_null());
+        assert!(!service
+            .store_listing_price(id, link, &json!({"price":1.0,"priceCurrency":"JPY"}))
+            .unwrap());
+        assert!(service
+            .store_listing_price(id, other, &json!({"price":50.0,"priceCurrency":"USD"}))
+            .unwrap());
+        let shown = details(json!({"id":id}));
+        assert_eq!((shown["price"].as_f64(), shown["priceCurrency"].as_str()), (Some(50.0), Some("USD")));
+        assert_eq!(shown["currentPriceText"], "USD 50");
+        let record = service.catalogue.get("product", id).unwrap().unwrap();
+        assert!(record["priceFormatted"].is_null() && record["priceSourceCurrency"].is_null());
+        let undone = service
+            .catalogue
+            .command("undo", json!({"token":edited["token"]}))
+            .unwrap();
+        assert_eq!(undone["changedLinks"], json!([id]));
+        assert_eq!(service.current_link(id).as_deref(), Some(link));
+        assert!(details(json!({"id":id}))["price"].is_null());
+        assert!(service
+            .store_listing_price(id, link, &json!({"price":1800.0,"priceCurrency":"JPY"}))
+            .unwrap());
+        assert_eq!(details(json!({"id":id}))["price"].as_f64(), Some(1800.0));
+        // A price belongs to the listing, whatever a browser added to the link. A query the
+        // catalogue will not carry between devices stays out of the record too.
+        let carried = format!("{link}?expires=1#top");
+        assert_eq!(edit(&carried)["changedLinks"], json!([id]));
+        assert_eq!(details(json!({"id":id}))["price"].as_f64(), Some(1800.0));
+        assert!(service
+            .store_listing_price(id, &carried, &json!({"price":1700.0,"priceCurrency":"JPY"}))
+            .unwrap());
+        let record = service.catalogue.get("product", id).unwrap().unwrap();
+        assert_eq!(record["priceSourceUrl"], link);
+        assert_eq!(details(json!({"id":id}))["price"].as_f64(), Some(1700.0));
+        // Only a change asks for a read, and a cleared link has nothing to read.
+        assert_eq!(edit(&carried)["changed"], 0);
+        assert!(service
+            .catalogue
+            .command("overlay", json!({"changes":[{"id":id,"patch":{"note":"Authored"},"clearFields":[]}]}))
+            .unwrap()["changedLinks"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        edit("");
+        assert_eq!(service.current_link(id), None);
+        assert!(details(json!({"id":id}))["price"].is_null());
+        // A store product's link keeps its own store prices.
+        service.catalogue.put("product", "900001", json!({"id":"900001","store":"BOOTH","provider":"booth","title":"Authored online","sourceTitle":"Authored online","sourceUrl":link})).unwrap();
+        assert_eq!(service.current_link("900001"), None);
+        assert!(!service
+            .store_listing_price("900001", link, &json!({"price":1.0,"priceCurrency":"JPY"}))
+            .unwrap());
 
         // The date is the job's, so a retry does not move it.
         let date = added_date(&json!({"createdAt":"2026-11-05T12:00:00+00:00"}));
@@ -1477,13 +1539,6 @@ impl StorageService {
                     // Added files join a store product through their own
                     // records; its store-observed record stays unchanged.
                     store_product = product["provider"] != "local";
-                } else if let Some(existing) = self.catalogue.get("product", &group.product_id)? {
-                    // A retry rebuilds the record from its plan; what an earlier run recorded stays.
-                    for key in ["acquired", "priceObservedAt"].iter().chain(&PRICE_FIELDS) {
-                        if let Some(value) = existing.get(*key) {
-                            product[*key] = value.clone();
-                        }
-                    }
                 }
                 if group.membership && !store_product {
                     let mut ids = strings(&product["localManifest"]["fileIds"]);
@@ -1657,6 +1712,19 @@ impl StorageService {
                 io::required_string(job, "id")?.to_owned(),
                 next_job.clone(),
             ));
+            // The record was built before its files were copied. What an earlier run of a retry
+            // recorded, or a price read meanwhile, stays.
+            for (kind, id, value) in &mut writes {
+                if kind == "product" {
+                    if let Some(latest) = self.catalogue.get("product", id)? {
+                        for key in ["acquired", "priceObservedAt", "priceSourceUrl"].iter().chain(&PRICE_FIELDS) {
+                            if let Some(recorded) = latest.get(*key) {
+                                value[*key] = recorded.clone();
+                            }
+                        }
+                    }
+                }
+            }
             self.catalogue.put_many(writes)?;
             // The terminal worker must only persist completion facts that committed.
             *job = next_job;
@@ -1914,42 +1982,74 @@ impl StorageService {
         let (service, app) = (self.clone(), app.clone());
         tauri::async_runtime::spawn(async move {
             for id in products {
-                let Ok(Some(before)) = service.catalogue.get("product", &id) else {
+                let Ok(Some(product)) = service.catalogue.get("product", &id) else {
                     continue;
                 };
-                let Some(url) = listing_to_read(&before) else {
-                    continue;
-                };
-                let Ok(Ok(Some(price))) =
-                    tokio::time::timeout(LISTING_PRICE_WAIT, service.stores.listing_price(url))
-                        .await
-                else {
-                    continue;
-                };
-                if service
-                    .store_listing_price(&before, &price)
-                    .unwrap_or(false)
-                {
-                    service.changed(&app, None);
+                if let Some(url) = listing_to_read(&product) {
+                    service.read_link_price(&app, &id, url).await;
                 }
             }
         });
     }
 
-    /// Writes only over the record it read, so a product edited or deleted meanwhile stays as it is.
-    fn store_listing_price(&self, before: &Value, price: &Value) -> Result<bool> {
+    /// The same read for a link the user just added or changed on a local product in Edit,
+    /// whenever it was imported. The dialog has already closed by then.
+    pub(crate) fn read_changed_link_prices(&self, app: &tauri::AppHandle, products: Vec<String>) {
+        let (service, app) = (self.clone(), app.clone());
+        tauri::async_runtime::spawn(async move {
+            for id in products {
+                if let Some(url) = service.current_link(&id) {
+                    service.read_link_price(&app, &id, &url).await;
+                }
+            }
+        });
+    }
+
+    async fn read_link_price(&self, app: &tauri::AppHandle, id: &str, url: &str) {
+        let Ok(Ok(Some(price))) =
+            tokio::time::timeout(LISTING_PRICE_WAIT, self.stores.listing_price(url)).await
+        else {
+            return;
+        };
+        if self.store_listing_price(id, url, &price).unwrap_or(false) {
+            self.changed(app, None);
+        }
+    }
+
+    /// The link a local product shows now: the user's edit, else what it was imported with.
+    fn current_link(&self, id: &str) -> Option<String> {
+        let product = self.catalogue.get("product", id).ok()??;
+        if product["provider"] != "local" {
+            return None;
+        }
+        let overlay = self.catalogue.get("overlay", id).ok()?.unwrap_or(json!({}));
+        overlay
+            .get("sourceUrl")
+            .or_else(|| product.get("sourceUrl"))?
+            .as_str()
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned)
+    }
+
+    /// Keeps a price only for the link it came from, so a read overtaken by another edit is
+    /// dropped, and writes over the record as it is now, so that edit stays as it is.
+    fn store_listing_price(&self, id: &str, url: &str, price: &Value) -> Result<bool> {
         let _work = self.catalogue.begin_catalogue_work()?;
-        let id = io::required_string(before, "id")?;
+        if self.current_link(id).as_deref() != Some(url) {
+            return Ok(false);
+        }
+        let Some(before) = self.catalogue.get("product", id)? else {
+            return Ok(false);
+        };
         let mut product = before.clone();
         for key in PRICE_FIELDS {
-            if let Some(value) = price.get(key) {
-                product[key] = value.clone();
-            }
+            product[key] = price.get(key).cloned().unwrap_or(Value::Null);
         }
         product["priceObservedAt"] = json!(now());
+        product["priceSourceUrl"] = json!(crate::catalogue::listing_link(url));
         self.catalogue.put_many_if_unchanged(
             vec![("product".into(), id.to_owned(), product)],
-            vec![("product".into(), id.to_owned(), Some(before.clone()))],
+            vec![("product".into(), id.to_owned(), Some(before))],
         )
     }
 }

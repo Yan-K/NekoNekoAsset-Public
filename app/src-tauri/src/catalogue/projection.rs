@@ -887,8 +887,11 @@ fn effective_with_jobs(
             p[f] = json!("");
         }
     }
-    if provider == "local" && overridden_url {
-        // That price was read from the link the user has since replaced.
+    let priced_link = source["priceSourceUrl"]
+        .as_str()
+        .unwrap_or(text(&source, "sourceUrl"));
+    if provider == "local" && listing_link(text(&p, "sourceUrl")) != listing_link(priced_link) {
+        // That price was read from another listing than the one the user links now.
         p["price"] = Value::Null;
         p["priceCurrency"] = Value::Null;
         p["currentPriceText"] = Value::Null;

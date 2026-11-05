@@ -1600,6 +1600,10 @@ fn validate_patch(patch: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// What a price read from a link belongs to: the listing, not what a browser added to its address.
+pub(crate) fn listing_link(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/')
+}
 pub(super) fn validate_source_url(value: &str) -> Result<()> {
     if !value.is_empty() {
         crate::native::normalize_public_url(value)?;
@@ -3189,6 +3193,7 @@ impl Catalogue {
         }
         self.mutate(|tx, projections| {
             let mut entries = vec![];
+            let mut changed_links = vec![];
             let delta_resolver = if changes.iter().any(|change| change.get("ownedAvatarsDelta").is_some()) {
                 Some(avatars::AvatarDeltaResolver::new(tx)?)
             } else { None };
@@ -3277,6 +3282,9 @@ impl Catalogue {
                     .cloned()
                     .collect();
                 if !fields.is_empty() {
+                    if fields.contains("sourceUrl") {
+                        changed_links.push(id.clone());
+                    }
                     entries.push(json!({"id":id,"before":before,"after":after,"fields":fields}));
                     Self::write(tx, projections, "overlay", &id, Some(after))?;
                 }
@@ -3291,7 +3299,7 @@ impl Catalogue {
                 params![token, serde_json::to_string(&entries)?],
             )?;
             tx.execute("DELETE FROM undo WHERE rowid NOT IN(SELECT rowid FROM undo ORDER BY rowid DESC LIMIT 100)", [])?;
-            Ok(json!({"ok":true,"token":token,"undoToken":token,"changed":entries.len()}))
+            Ok(json!({"ok":true,"token":token,"undoToken":token,"changed":entries.len(),"changedLinks":changed_links}))
         })
     }
     fn undo(&self, token: &str) -> Result<Value> {
@@ -3305,6 +3313,7 @@ impl Catalogue {
                 serde_json::from_str(&body.context("catalogue.undo_missing")?)?;
             let mut conflicts = vec![];
             let mut changed = 0;
+            let mut changed_links = vec![];
             for entry in entries {
                 let id = text(&entry, "id");
                 let current = raw(tx, "overlay", id)?.unwrap_or(json!({"id":id}));
@@ -3329,6 +3338,9 @@ impl Catalogue {
                     conflicts.push(id.to_owned());
                     continue;
                 }
+                if fields.iter().any(|field| field == "sourceUrl") {
+                    changed_links.push(id.to_owned());
+                }
                 let mut restored = current;
                 for field in fields {
                     match entry["before"].get(&field) {
@@ -3344,7 +3356,7 @@ impl Catalogue {
                 changed += 1;
             }
             tx.execute("DELETE FROM undo WHERE token=?1", [token])?;
-            Ok(json!({"ok":conflicts.is_empty(),"changed":changed,"conflicts":conflicts}))
+            Ok(json!({"ok":conflicts.is_empty(),"changed":changed,"conflicts":conflicts,"changedLinks":changed_links}))
         })
     }
     fn manage(&self, action: &str, args: Value) -> Result<Value> {
