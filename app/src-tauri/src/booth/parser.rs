@@ -2930,8 +2930,13 @@ fn empty_list(main: ElementRef<'_>, source: &str) -> bool {
     } else {
         ".bg-white.text-center"
     };
-    main.select(&sel(panel))
-        .any(|node| plain_leaf(node, 200).is_some_and(|text| !text.is_empty()))
+    let selector = sel(panel);
+    let mut panels = main.select(&selector);
+    panels
+        .next()
+        .and_then(|node| plain_leaf(node, 200))
+        .is_some_and(|text| !text.is_empty())
+        && panels.next().is_none()
 }
 fn only_page(doc: &Html) -> bool {
     doc.select(&sel(".pager"))
@@ -4887,6 +4892,7 @@ mod tests {
             "<div class='bg-white text-center'></div>".to_owned(),
             "<div class='text-center'>Authored sentence</div>".to_owned(),
             "<div class='bg-white text-center'><a href='/authored'>Authored link</a></div>".to_owned(),
+            "<div class='bg-white text-center'>Authored sentence</div><div class='bg-white text-center'>Authored sentence</div>".to_owned(),
         ] {
             assert_eq!(
                 parse(&library_page("/library/gifts", &body), "gift", "/library/gifts?page=1").unwrap_err().to_string(),
@@ -4901,6 +4907,10 @@ mod tests {
         );
         assert_eq!(
             parse("<main><div class='l-orders-index'><div class='bg-white'>Authored sentence</div></div></main>", "purchase", "/orders?page=1").unwrap_err().to_string(),
+            "NO_RECOGNIZED_ROWS"
+        );
+        assert_eq!(
+            parse("<main><div class='l-orders-index'><div class='text-center'>Authored sentence</div><div class='text-center'>Authored sentence</div></div></main>", "purchase", "/orders?page=1").unwrap_err().to_string(),
             "NO_RECOGNIZED_ROWS"
         );
     }

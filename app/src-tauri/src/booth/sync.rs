@@ -60,6 +60,9 @@ struct Checkpoint {
     /// The Library's updated order showed what an overlap cannot explain: read every page.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     read_every_page: bool,
+    /// When this run began: a pass finished long after its pages were read is no fresher.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    started_at: String,
 }
 #[derive(Clone)]
 struct PublicPrefetch {
@@ -346,6 +349,15 @@ fn refused_updated_order(route: &str, error: &anyhow::Error) -> bool {
                 | "NO_RECOGNIZED_ROWS"
                 | "DIGITAL_PROOF_UNPROVEN"
         )
+}
+/// A list that reads empty after a complete pass found something may be a passing page, so
+/// it certifies nothing and replaces nothing, and the next sync reads the list afresh.
+fn contradicts_last_pass(page: &parser::Page, baseline: Option<&Baseline>) -> bool {
+    !page.is_detail
+        && page.rows.is_empty()
+        && page.terminal
+        && page.unresolved == 0
+        && baseline.is_some_and(Baseline::found_something)
 }
 /// A public page the store refused is about that product; a server error may pass.
 fn public_status_code(status: reqwest::StatusCode) -> &'static str {
@@ -672,8 +684,23 @@ impl Checkpoint {
             } else {
                 0
             },
+            started_at: now(),
             ..Self::default()
         })
+    }
+    /// Only what this pass lists can be settled. A row seen only in updated order, which no
+    /// plain page went on to show, would otherwise hold the source open for good.
+    fn forget_unlisted(&mut self, listed: impl Fn(&str) -> bool) {
+        self.enrichment_pending.retain(|id| listed(id));
+    }
+    /// When a pass that read every page read them. A saved run from before this was recorded
+    /// has only the time it finishes.
+    fn read_from(&self) -> String {
+        if self.started_at.is_empty() {
+            now()
+        } else {
+            self.started_at.clone()
+        }
     }
     fn complete(&self) -> bool {
         self.pending.is_empty()
@@ -1765,6 +1792,9 @@ impl BoothService {
                     }
                     read => read?,
                 };
+                if contradicts_last_pass(&page, previous_baseline.as_ref()) {
+                    page.unresolved += 1;
+                }
                 if self.cancelled(job)? {
                     bail!("CANCELLED");
                 }
@@ -2105,6 +2135,7 @@ impl BoothService {
             manifest.1 &= row.manifest_complete;
             manifest.0.extend(observed_file_ids(account, [row]));
         }
+        checkpoint.forget_unlisted(|id| rows_by_product.contains_key(id));
         let mut records = vec![];
         let closed_traversal = checkpoint.terminal
             && checkpoint.pending.is_empty()
@@ -2386,7 +2417,7 @@ impl BoothService {
                     .map(|b| b.full_traversal_at.clone())
                     .unwrap_or_default()
             } else {
-                now()
+                checkpoint.read_from()
             };
         // A product bought more than once can list several Library rows under one record ID.
         if collected_complete
@@ -6511,6 +6542,68 @@ mod tests {
         assert_eq!(receipt["publicVariants"], json!([]));
         assert!(receipt["publicMetadataErrorCode"].is_null());
         assert_eq!(receipt["note"], "Human note");
+    }
+    #[test]
+    fn a_list_reading_empty_after_a_pass_that_found_something_certifies_nothing() {
+        let page = |rows: Vec<parser::Row>, is_detail, terminal, unresolved| parser::Page {
+            source: "library".into(),
+            route: "/library?page=1".into(),
+            rows,
+            next: vec![],
+            details: vec![],
+            terminal,
+            unresolved,
+            fingerprint: "authored".into(),
+            is_detail,
+            ordering: parser::Ordering::AcquiredNewestFirst,
+            free_item: None,
+        };
+        let empty = page(vec![], false, true, 0);
+        let found = Baseline {
+            rows: vec![parser::Row::default()],
+            ..Default::default()
+        };
+        let receipts_only = Baseline {
+            details: BTreeSet::from(["/orders/910001".to_owned()]),
+            ..Default::default()
+        };
+        assert!(contradicts_last_pass(&empty, Some(&found)));
+        assert!(contradicts_last_pass(&empty, Some(&receipts_only)));
+        // A list that was empty before, or never read, may simply be empty.
+        assert!(!contradicts_last_pass(&empty, Some(&Baseline::default())));
+        assert!(!contradicts_last_pass(&empty, None));
+        // Only a page saying the whole list is empty: rows, a receipt, a page the parser
+        // already doubts or a list that has not ended say something else.
+        for other in [
+            page(vec![parser::Row::default()], false, true, 0),
+            page(vec![], true, true, 0),
+            page(vec![], false, true, 1),
+            page(vec![], false, false, 0),
+        ] {
+            assert!(!contradicts_last_pass(&other, Some(&found)));
+        }
+    }
+    #[test]
+    fn a_run_keeps_when_it_began_and_settles_only_what_it_lists() {
+        let mut c = Checkpoint::fresh("synthetic", "library", "incremental").unwrap();
+        assert!(!c.started_at.is_empty());
+        assert_eq!(c.read_from(), c.started_at);
+        let saved = serde_json::to_value(&c).unwrap();
+        assert_eq!(saved["startedAt"], json!(c.started_at));
+        // A run saved before this was recorded still loads, and has only the time it finishes.
+        let mut older = saved;
+        older.as_object_mut().unwrap().remove("startedAt");
+        let older: Checkpoint = serde_json::from_value(older).unwrap();
+        assert!(older.started_at.is_empty());
+        assert!(chrono::DateTime::parse_from_rfc3339(&older.read_from()).is_ok());
+        // Work for a product no list shows now cannot finish, so it does not hold the source open.
+        c.pending.clear();
+        c.terminal = true;
+        c.enrichment_pending.extend(["900001".to_owned(), "900002".to_owned()]);
+        c.forget_unlisted(|id| id == "900001");
+        assert!(c.enrichment_pending.contains("900001") && !c.complete());
+        c.forget_unlisted(|_| false);
+        assert!(c.complete());
     }
     #[test]
     fn unresolved_digital_candidates_prevent_manifest_certification() {

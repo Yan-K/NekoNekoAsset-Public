@@ -65,8 +65,15 @@ impl Baseline {
     /// What neither order brings to the top, like a delisted row or a removed file, waits for
     /// the next pass that reads every page. This keeps that wait short.
     pub fn recently_read_in_full(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
-        chrono::DateTime::parse_from_rfc3339(&self.full_traversal_at)
-            .is_ok_and(|at| now.signed_duration_since(at) < chrono::Duration::days(FULL_PASS_DAYS))
+        chrono::DateTime::parse_from_rfc3339(&self.full_traversal_at).is_ok_and(|at| {
+            let age = now.signed_duration_since(at);
+            // A date ahead of this clock proves nothing about how long ago that was.
+            age >= chrono::Duration::zero() && age < chrono::Duration::days(FULL_PASS_DAYS)
+        })
+    }
+    /// A complete pass that listed or read anything, so a list reading empty now contradicts it.
+    pub fn found_something(&self) -> bool {
+        !self.rows.is_empty() || !self.details.is_empty()
     }
 }
 const FULL_PASS_DAYS: i64 = 7;
@@ -745,6 +752,9 @@ mod tests {
             ("2026-11-05T11:00:00+00:00", true),
             ("2026-10-30T12:00:01+00:00", true),
             ("2026-10-29T12:00:00+00:00", false),
+            ("2026-11-05T12:00:00+00:00", true),
+            ("2026-11-05T12:00:01+00:00", false),
+            ("2027-01-01T00:00:00+00:00", false),
             ("previous-full-pass", false),
             ("", false),
         ] {
