@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.9 Beta - 2026-11-06
+
+### Changed
+
+- Automatic categories on BOOTH now follow the listing's own store category instead of its tags. A world stays in World when it is tagged Udon or Shader, and a 3D motion stays in Motion.
+- Shaders, gimmicks and Udon systems, which BOOTH has no category for, now go to Shader, Gimmick and Udon when their title says so, or for tools their tags.
+- Videos, moving backgrounds, VJ loops and particle effects tagged アニメーション no longer land in Motion. Outside BOOTH's 3D categories, a listing has to mention VRChat or Unity to get a VRChat category.
+- BOOTH Library sync is much faster after its first full read: it stops once it reaches items it already knows, then checks BOOTH's recently updated list for sellers' new files. A sync still reads every page at least once every 7 days.
+- Adding or changing a local asset's listing link in Edit now reads its current price too. It is read after the dialog closes, and a listing that is slow to answer or gone just leaves the price Unknown.
+
+### Fixed
+
+- BOOTH accounts with an empty or one-page Library, purchase, gift or free list no longer end every sync as incomplete, and an empty Library no longer fails first login.
+
+### Release notes
+
+- Categories you set yourself never change. An asset already in your library takes its new automatic category when its own listing or files change; nothing moves when you update or open the App.
+- The Unity Bridge is unchanged and stays at [0.3.7 Beta](https://github.com/Yan-K/NekoNekoAsset-Public/releases/tag/v0.3.7); this release does not include Bridge files. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- The first BOOTH Library sync after updating still reads every page.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.8 Beta - 2026-11-05
 
 ### Changed
