@@ -394,7 +394,64 @@ pub fn infer_product_category(source: &Value) -> Value {
     ]
     .iter()
     .any(|term| category_name.contains(term));
-    let mut result = infer_category(source_category, &tags);
+    let target_scope = vr_scope || unity_scope;
+    // BOOTH's top level says whether a product is 3D data at all.
+    let booth = ["provider", "store"]
+        .iter()
+        .any(|key| normalize(text(key)) == "booth");
+    let parent_name = normalize(source_category["parentName"].as_str().unwrap_or(""));
+    let in_3d = parent_name == "3dモデル";
+    // Bare アニメーション also describes videos, GIFs and particle effects, and a store
+    // category by that name is BOOTH's video shelf. Outside 3D categories it counts only
+    // in VRChat or Unity context with none of those words beside it.
+    let video_or_effect = std::iter::once(&title_normalized)
+        .chain(&normalized_tags)
+        .any(|text| mentions_video_or_effect(text));
+    let evidence = |text: &str, rule: &Rule| match rule.category {
+        "Motion" if booth => {
+            names_motion(text)
+                || bare_animation(text) && (in_3d || target_scope && !video_or_effect)
+        }
+        // 世界 is as often 世界観 or 異世界, and effect sellers tag every platform.
+        "World" if booth => {
+            (in_3d || !video_or_effect) && rule_match(&text.replace("世界", ""), rule)
+        }
+        _ => rule_match(text, rule),
+    };
+    let counts = |text: &str| {
+        !RULES.iter().any(|rule| rule_match(text, rule))
+            || RULES.iter().any(|rule| evidence(text, rule))
+    };
+    let type_tags: Vec<String> = tags
+        .iter()
+        .zip(&normalized_tags)
+        .filter(|(_, tag)| counts(tag))
+        .map(|(tag, _)| tag.clone())
+        .collect();
+    let mut result = infer_category(
+        if counts(&category_name) {
+            source_category
+        } else {
+            &Value::Null
+        },
+        &type_tags,
+    );
+    let store = booth
+        .then(|| store_type(&category_name, &title_normalized, &normalized_tags))
+        .flatten();
+    if let Some((kind, basis)) = store {
+        let found: Vec<Value> = match basis {
+            "sourceTitle" => vec![json!({"field":"sourceTitle","value":title})],
+            "sourceTags" => tags
+                .iter()
+                .zip(&normalized_tags)
+                .filter(|(_, tag)| names_type(tag, kind))
+                .map(|(tag, _)| json!({"field":"sourceTags","value":tag}))
+                .collect(),
+            _ => vec![json!({"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")})],
+        };
+        result = json!({"category":kind,"basis":basis,"inferred":true,"evidence":found});
+    }
     // Software describes the product; texture/avatar words often describe its
     // input or output. Only declared software type may override those words.
     let software_category = software_type(&category_name);
@@ -414,14 +471,23 @@ pub fn infer_product_category(source: &Value) -> Value {
                 .find(|r| r.category == "Tool")
                 .is_some_and(|r| rule_match(&title_normalized, r))
     });
-    if software
-        && !specialized_software
-        && (declared_software
-            || matches!(
-                result["category"].as_str(),
-                Some("Base" | "Texture" | "NonVRChat" | "Tool")
-            ))
-    {
+    // In a garment, hair, accessory or texture category an add-on is one more pack,
+    // and a software tag one more tag.
+    let store_content = matches!(
+        store,
+        Some(("Clothes" | "Hair" | "Accessory" | "Texture", _))
+    );
+    let software_decides = if store_content {
+        software_opening || software_title && !add_on_pack(&title_normalized)
+    } else {
+        software
+            && (declared_software
+                || matches!(
+                    result["category"].as_str(),
+                    Some("Base" | "Texture" | "NonVRChat" | "Tool")
+                ))
+    };
+    if software_decides && !specialized_software {
         let (field, value) = if software_category {
             (
                 "sourceCategory.name",
@@ -475,18 +541,19 @@ pub fn infer_product_category(source: &Value) -> Value {
         }
     }
     // A generic material/texture label must not defeat an explicit shader or
-    // motion tag; dedicated clothing/hair/etc source categories still win.
-    if matches!(result["category"].as_str(), Some("Texture" | "NonVRChat")) {
+    // motion tag; a store category that says what the product is still wins.
+    if store.is_none() && matches!(result["category"].as_str(), Some("Texture" | "NonVRChat")) {
         if let Some(rule) = RULES
             .iter()
             .filter(|r| matches!(r.category, "Shader" | "Motion"))
-            .find(|r| normalized_tags.iter().any(|tag| rule_match(tag, r)))
+            .find(|r| normalized_tags.iter().any(|tag| evidence(tag, r)))
         {
-            result = json!({"category":rule.category,"basis":"tags","inferred":true,"evidence":tags.iter().zip(&normalized_tags).filter(|(_, tag)| rule_match(tag, rule)).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
+            result = json!({"category":rule.category,"basis":"tags","inferred":true,"evidence":tags.iter().zip(&normalized_tags).filter(|(_, tag)| evidence(tag, rule)).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
         }
     }
-    // Descriptions can name dependencies of clothing, so they must not replace
-    // an existing specific category. They only supply missing type evidence.
+    // A description mentions dependencies, contents and what a product goes with. On
+    // BOOTH, where tags and a category are there to read, it must define a shader; a
+    // software definition was read above. It remains the evidence other stores have.
     if result["basis"] == "fallback" {
         for (field, content) in [
             ("sourceTitle", title_normalized.as_str()),
@@ -495,8 +562,9 @@ pub fn infer_product_category(source: &Value) -> Value {
             if let Some(rule) = RULES.iter().find(|rule| {
                 rule.category != "NonVRChat"
                     && (rule.category != "Base" || field == "sourceTitle" && base_title)
-                    && rule_match(content, rule)
-                    && (field == "sourceTitle" || vr_scope || unity_scope)
+                    && evidence(content, rule)
+                    && (field == "sourceTitle" || target_scope)
+                    && (field != "sourceDescription" || !booth || rule.category == "Shader")
                     && (field != "sourceDescription" || rule.category != "Motion")
                     && (field != "sourceDescription"
                         || rule.category != "Shader"
@@ -508,12 +576,22 @@ pub fn infer_product_category(source: &Value) -> Value {
         }
     }
     let restricted = matches!(result["category"].as_str(), Some("Tool" | "Texture"));
+    let store_texture = result["category"] == "Texture" && matches!(store, Some(("Texture", _)));
     let os_without_target_context = os_tag && !unity_scope && !explicit_vr_tag;
     if restricted
         && !jinxxy
-        && (!(vr_scope || unity_scope)
-            || outside_app_context && !explicit_vr_tag
-            || os_without_target_context)
+        && !store_texture
+        && (!target_scope || outside_app_context && !explicit_vr_tag || os_without_target_context)
+    {
+        result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
+    }
+    // Under any other top level, such as 素材データ, ゲーム or 映像作品, a word needs
+    // VRChat or Unity evidence too.
+    if booth
+        && !parent_name.is_empty()
+        && !in_3d
+        && !target_scope
+        && result["category"] != "NonVRChat"
     {
         result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
     }
@@ -535,19 +613,23 @@ pub fn infer_product_category(source: &Value) -> Value {
     if gumroad_without_vr_text {
         result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":[]});
     }
+    // BOOTH's own 3D category stands against a Photoshop or Windows tag, which often
+    // says what the source files need. Tools have to show where they run.
+    let store_asset = store.is_some_and(|(kind, _)| kind != "Tool" && result["category"] == kind);
     result["scope"] = json!(if gumroad_without_vr_text {
         "other"
     } else if jinxxy {
         "vrchat"
-    } else if (outside_app_context || outside_category) && !explicit_vr_tag
-        || os_without_target_context
+    } else if !store_asset
+        && ((outside_app_context || outside_category) && !explicit_vr_tag
+            || os_without_target_context)
     {
         "other"
     } else if vr_scope {
         "vrchat"
     } else if unity_scope {
         "unity"
-    } else if os_tag {
+    } else if os_tag && !store_asset {
         "other"
     } else {
         "unknown"
@@ -562,6 +644,147 @@ pub fn infer_product_category(source: &Value) -> Value {
         }
     }
     result
+}
+
+fn names_type(text: &str, category: &str) -> bool {
+    RULES
+        .iter()
+        .any(|rule| rule.category == category && rule_match(text, rule))
+}
+
+/// What BOOTH's own category says a product is, with where that came from. Tags also
+/// list what a product contains or suits, so they do not outvote it. BOOTH has no
+/// category for shaders, Udon or gimmicks: sellers file those under tools or worlds and
+/// say so in the title, and in tools their tags can tell them apart too.
+fn store_type(
+    leaf: &str,
+    title: &str,
+    tags: &[String],
+) -> Option<(&'static str, &'static str)> {
+    let stated = match leaf {
+        "3d衣装" | "3d靴" => "Clothes",
+        "3d髪型" => "Hair",
+        "3d装飾品" | "3d小道具" => "Accessory",
+        "3dモーション・アニメーション" => "Motion",
+        "3dテクスチャ" => "Texture",
+        "3dツール・システム" => "Tool",
+        "3d環境・ワールド" => "World",
+        _ if title.contains("販売ワールド") => return Some(("World", "sourceTitle")),
+        _ => return None,
+    };
+    if !matches!(stated, "Tool" | "World") || title.contains("販売ワールド") {
+        return Some((stated, "sourceCategory"));
+    }
+    let tagged = |category| tags.iter().any(|tag| names_type(tag, category));
+    // Neither an installer that comes with a product nor a stool makes it a tool.
+    let title = title.replace("導入ツール", "").replace("スツール", "");
+    let sold = |words: &[&str]| words.iter().any(|word| sold_as(&title, word));
+    let tool = sold(&["ツール", "工具", "도구"])
+        || ["tool", "tools", "utility", "utilities", "editor extension"]
+            .iter()
+            .any(|word| word_match(&title, word));
+    let gimmick = sold(&["ギミック", "gimmick", "기믹", "交互组件", "互動元件"]);
+    let for_worlds = ["ワールド用", "ワールド向け", "for world", "for vrchat world", "for vrc world"]
+        .iter()
+        .any(|phrase| title.contains(phrase));
+    let named = if tool {
+        Some("Tool")
+    } else if sold(&["udon"]) {
+        Some("Udon")
+    } else if sold(&["シェーダ", "shader", "셰이더", "着色器", "著色器"]) {
+        Some("Shader")
+    } else if tagged("Udon")
+        && (gimmick
+            || for_worlds
+            || title.contains("システム")
+            || word_match(&title, "system"))
+    {
+        Some("Udon")
+    } else if gimmick {
+        Some("Gimmick")
+    } else {
+        None
+    };
+    if let Some(kind) = named {
+        return Some((kind, "sourceTitle"));
+    }
+    if stated == "Tool" && !tagged("Tool") && !tags.iter().any(|tag| software_type(tag)) {
+        if let Some(kind) = ["Udon", "Shader", "Gimmick"].into_iter().find(|kind| tagged(kind)) {
+            return Some((kind, "sourceTags"));
+        }
+    }
+    Some((stated, "sourceCategory"))
+}
+
+/// A word for what is sold, not for something the product comes with or suits.
+fn sold_as(title: &str, word: &str) -> bool {
+    title.match_indices(word).any(|(start, word)| {
+        let after = title[start + word.len()..].trim_start_matches('ー');
+        let after = after.strip_prefix("ギミック").unwrap_or(after);
+        ![
+            "付", "つき", "搭載", "あり", "有り", "多数", "満載", "入り", "対応", "専用", "用", "向け",
+        ]
+        .iter()
+        .any(|suffix| after.starts_with(suffix))
+    })
+}
+
+/// Add-on wording that sells one more pack rather than naming an application.
+fn add_on_pack(title: &str) -> bool {
+    let rest = ["add-on", "addon", "add on", "アドオン", "애드온"]
+        .iter()
+        .fold(title.to_owned(), |rest, word| rest.replace(word, ""));
+    !software_type(&rest) && !title.contains("blender")
+}
+
+/// Words that name motion data. モーショングラフィックス is video work.
+fn names_motion(text: &str) -> bool {
+    let text = text
+        .replace("モーショングラフィック", "")
+        .replace("motion graphic", "");
+    [
+        "モーション",
+        "모션",
+        "エモート",
+        "ポーズ",
+        "动作",
+        "アニメーションファイル",
+        "アニメーションクリップ",
+    ]
+    .iter()
+    .any(|word| text.contains(word))
+        // 動作 usually says that something works.
+        || text == "動作"
+        || [
+            "motion",
+            "motions",
+            "gesture",
+            "gestures",
+            "pose",
+            "poses",
+            "emote",
+            "emotes",
+            "animationclip",
+            "animation clip",
+        ]
+        .iter()
+        .any(|word| word_match(&text, word))
+}
+
+fn bare_animation(text: &str) -> bool {
+    text.contains("アニメーション")
+        || text.contains("애니메이션")
+        || word_match(text, "animation")
+        || word_match(text, "animations")
+}
+
+fn mentions_video_or_effect(text: &str) -> bool {
+    ["エフェクト", "パーティクル", "動画", "映像", "動く背景"]
+        .iter()
+        .any(|word| text.contains(word))
+        || ["effect", "effects", "particle", "particles", "vfx", "gif", "vj"]
+            .iter()
+            .any(|word| word_match(text, word))
 }
 
 // Keep runtime/platform scope separate from product type. Blender alone does
@@ -2207,6 +2430,195 @@ mod tests {
                     &json!({"sourceCategory":"Materials","sourceTags":["Unity",tag]})
                 )["category"],
                 expected
+            );
+        }
+    }
+
+    fn booth_listing(parent: &str, leaf: &str, title: &str, tags: &[&str]) -> Value {
+        json!({"store":"BOOTH","sourceCategory":{"name":leaf,"parentName":parent},"sourceTitle":title,"sourceTags":tags})
+    }
+
+    #[test]
+    fn booth_3d_categories_outrank_tags() {
+        // Independently authored structures of what sellers file in each category.
+        for (leaf, title, tags, expected) in [
+            ("3D環境・ワールド", "【販売ワールド】Authored Hotel", &["VRChat", "Udon", "シェーダー", "ギミック"][..], "World"),
+            ("3D環境・ワールド", "【販売ワールド】Authored Bar ギミック シェーダー", &["VRChat", "Udon"], "World"),
+            ("3D環境・ワールド", "Authored Room", &["VRChat", "Udon", "UdonSharp"], "World"),
+            ("3D環境・ワールド", "Authored Room", &["シェーダー", "小物"], "World"),
+            ("3D環境・ワールド", "ギミック付き Authored Room", &["VRChat", "Udon"], "World"),
+            ("3D環境・ワールド", "Authored Room ギミック有り", &["VRChat"], "World"),
+            ("3D環境・ワールド", "Authored Room（Udonギミック付き）", &["VRChat"], "World"),
+            ("3D環境・ワールド", "Udon対応 Authored Room", &["Udon"], "World"),
+            ("3D環境・ワールド", "モダン Authored スツール", &[], "World"),
+            ("3D環境・ワールド", "Authored Solar System", &["VRChat"], "World"),
+            ("3D環境・ワールド", "Authored 雨粒シェーダー", &["VRChat"], "Shader"),
+            ("3D環境・ワールド", "AuthoredWaterShader", &["VRChat"], "Shader"),
+            ("3D環境・ワールド", "【VRC Udonギミック】Authored Darts", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "Authored Slot【UdonChips】", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "【VRChatワールドギミック】Authored Camera", &["VRChat", "Udon"], "Udon"),
+            ("3D環境・ワールド", "[VRCワールド] AUTHORED CAR SYSTEM", &["udon"], "Udon"),
+            ("3D環境・ワールド", "Authored Lift for VRChat Worlds", &["Udon"], "Udon"),
+            ("3D環境・ワールド", "【ワールド用】Authored 表示ギミック", &["VRChat"], "Gimmick"),
+            ("3D環境・ワールド", "ワールド制作支援ツール", &["VRChat"], "Tool"),
+            ("3Dツール・システム", "Authored 影シェーダー【導入ツール同梱】", &["VRChat"], "Shader"),
+            ("3Dツール・システム", "シェーダー変換ツール", &["VRChat"], "Tool"),
+            ("3Dツール・システム", "Authored 音ギミック", &["VRChat", "シェーダー"], "Gimmick"),
+            ("3Dツール・システム", "AuthoredLens", &["VRChat", "VRChatギミック"], "Gimmick"),
+            ("3Dツール・システム", "AuthoredMat", &["VRChat", "シェーダー", "VRChatギミック"], "Shader"),
+            ("3Dツール・システム", "AuthoredBed", &["VRChat", "Udon", "ギミック"], "Udon"),
+            ("3Dツール・システム", "AuthoredTool", &["VRChat", "ツール", "ギミック"], "Tool"),
+            ("3Dツール・システム", "AuthoredKit", &["VRChat", "エディタ拡張", "ギミック"], "Tool"),
+            ("3Dツール・システム", "Authored Fitter", &["VRChat", "衣装", "テクスチャ"], "Tool"),
+            ("3Dモーション・アニメーション", "Authored AFK", &["VRChat", "衣装", "シェーダー"], "Motion"),
+            ("3Dテクスチャ", "Authored Eye", &["VRChat", "モーション", "シェーダー"], "Texture"),
+            ("3Dテクスチャ", "Authored Eye", &[], "Texture"),
+            ("3Dテクスチャ", "AuthoredShader専用マテリアル", &["VRChat", "シェーダー"], "Texture"),
+            ("3Dテクスチャ", "Authored Skin シェーダー", &["VRChat"], "Texture"),
+            ("3Dテクスチャ", "Authored Eye Add-on", &["ソフトウェア"], "Texture"),
+            ("3D衣装", "Authored Dress Add-on", &[], "Clothes"),
+            ("3D衣装", "Authored Dress", &["VRChat", "ソフトウェア"], "Clothes"),
+            ("3D衣装", "着せ替え エディタ拡張", &["VRChat"], "Tool"),
+            ("3D靴", "Authored Boots", &["VRChat", "シェーダー"], "Clothes"),
+            ("3D髪型", "Authored Bob", &["VRChat", "衣装"], "Hair"),
+            ("3D装飾品", "Authored Ring", &["VRChat", "テクスチャ"], "Accessory"),
+            ("3D小道具", "Authored Cup", &["VRChat", "ワールド"], "Accessory"),
+            // A generic category leaves the type to the tags.
+            ("3Dモデル（その他）", "Authored Pin", &["VRChat", "アクセサリー"], "Accessory"),
+            ("3Dモデル（その他）", "【販売ワールド】Authored Room", &["VRChat", "Udon"], "World"),
+            ("3Dモデル（その他）", "Authored Cape", &["VRChat", "世界観衣装"], "Clothes"),
+            // It is 3D data already, so these need no VRChat or Unity word.
+            ("3Dモデル（その他）", "Authored Walk", &["アニメーション"], "Motion"),
+            ("3Dモデル（その他）", "Authored World 紹介動画あり", &[], "World"),
+        ] {
+            let source = booth_listing("3Dモデル", leaf, title, tags);
+            assert_eq!(infer_product_category(&source)["category"], expected, "{leaf} {title}");
+        }
+        // Declared software in tools and motion categories still decides, as for Base.
+        assert_eq!(
+            infer_product_category(&booth_listing("3Dモデル", "3Dモーション・アニメーション", "Blenderアドオン Authored", &["Blender", "Unity"]))["category"],
+            "Tool"
+        );
+        // A tool outside any VRChat or Unity context stays out of the default list.
+        let result = infer_product_category(&booth_listing("3Dモデル", "3Dツール・システム", "Authored Blender Tool", &["Blender"]));
+        assert_eq!(result["category"], "NonVRChat");
+        assert_eq!(result["scope"], "unknown");
+        // The store's own 3D category stands against a tag for what its sources need.
+        for (leaf, title, tags, expected, scope) in [
+            ("3D衣装", "VRChat向け Authored Dress", &["Photoshop"][..], "Clothes", "vrchat"),
+            ("3D衣装", "Authored Dress", &["Photoshop", "Windows"], "Clothes", "unknown"),
+            ("3Dテクスチャ", "Authored Eye", &["Photoshop"], "Texture", "unknown"),
+            ("3D環境・ワールド", "Authored Room", &["Windows"], "World", "unknown"),
+            // A tool has to show where it runs.
+            ("3Dツール・システム", "Authored Tool", &["Unity", "AE"], "NonVRChat", "other"),
+        ] {
+            let result = infer_product_category(&booth_listing("3Dモデル", leaf, title, tags));
+            assert_eq!(result["category"], expected, "{leaf} {title}");
+            assert_eq!(result["scope"], scope, "{leaf} {title}");
+        }
+        // Evidence is what decided, and a listing with no category has none to cite.
+        let titled = infer_product_category(&json!({"store":"BOOTH","sourceTitle":"【販売ワールド】Authored"}));
+        assert_eq!(titled["category"], "World");
+        assert_eq!(titled["evidence"], json!([{"field":"sourceTitle","value":"【販売ワールド】Authored"}]));
+        let shader = infer_product_category(&booth_listing("3Dモデル", "3D環境・ワールド", "Authored シェーダー", &["VRChat"]));
+        assert_eq!(shader["evidence"], json!([{"field":"sourceTitle","value":"Authored シェーダー"}]));
+        let world = infer_product_category(&booth_listing("3Dモデル", "3D環境・ワールド", "Authored", &["Udon"]));
+        assert_eq!(world["evidence"], json!([{"field":"sourceCategory.name","value":"3D環境・ワールド"}]));
+    }
+
+    #[test]
+    fn stores_other_than_booth_keep_their_rules() {
+        for (source, expected) in [
+            (json!({"provider":"gumroad","sourceTitle":"Authored","sourceDescription":"VRChat outfit for Authored."}), "Clothes"),
+            (json!({"provider":"jinxxy","sourceTitle":"Authored","sourceDescription":"A cute outfit for Authored."}), "Clothes"),
+            (json!({"provider":"jinxxy","sourceTitle":"Authored World VFX"}), "World"),
+            (json!({"provider":"local","sourceTitle":"Authored Walk Animation"}), "Motion"),
+            (json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"VRChat Authored","sourceTags":["Udon"]}), "Udon"),
+            (json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"Authored"}), "NonVRChat"),
+        ] {
+            assert_eq!(infer_product_category(&source)["category"], expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn tags_outside_booth_3d_categories_need_vrchat_or_unity_evidence() {
+        for (parent, leaf, title, tags, expected) in [
+            ("素材データ", "背景画像", "【動く背景】Authored Room", &["アニメーション", "配信背景"][..], "NonVRChat"),
+            ("映像作品", "アニメーション", "Authored 第1話 DVD", &["アニメーション"], "NonVRChat"),
+            ("映像作品", "アニメーション", "Authored Blu-ray", &[], "NonVRChat"),
+            ("素材データ", "素材（その他）", "Authored Loop", &["アニメーション", "モーショングラフィックス", "VJ素材"], "NonVRChat"),
+            ("素材データ", "素材（その他）", "Authored プリセット", &["モーション", "プリセット"], "NonVRChat"),
+            ("イラスト", "メイキング・講座", "Authored 講座", &["アニメーション"], "NonVRChat"),
+            ("ファッション", "パーカー", "Authored Hoodie", &["衣装"], "NonVRChat"),
+            ("アクセサリー", "ペンダント", "Authored Pendant", &[], "NonVRChat"),
+            ("素材データ", "BGM素材", "Authored BGM", &["異世界"], "NonVRChat"),
+            // The motion data sellers file there keeps its place.
+            ("素材データ", "素材（その他）", "Authored Idle", &["VRChat", "アニメーション", "モーション素材"], "Motion"),
+            ("映像作品", "アニメーション", "VRC用 Authored Motion", &["VRChat", "Emote"], "Motion"),
+            ("映像作品", "アニメーション", "Authored Animation Pack", &["VRChat"], "Motion"),
+            ("映像作品", "アニメーション", "Authored 表情アニメーション", &["Unity", "アニメーション"], "Motion"),
+            ("ゲーム", "ゲーム関連商品", "Authored Combo", &["VRChat", "アニメーション", "ツール"], "Motion"),
+            ("素材データ", "素材（その他）", "Authored Idle", &["VRChat", "エモート"], "Motion"),
+            ("素材データ", "素材（その他）", "Authored Set", &["VRChat", "ポーズ集"], "Motion"),
+            ("素材データ", "素材（その他）", "Authored ポーズ集", &["イラスト用"], "NonVRChat"),
+            // Particle sellers tag アニメーション and every platform; none of that is the type.
+            ("素材データ", "素材（その他）", "【Unity/VRChat】Authored Fire", &["アニメーション", "Unity", "パーティクル", "VRChat"], "NonVRChat"),
+            ("映像作品", "アニメーション", "【Unity/VRChat】World of Authored", &["アニメーション", "Unity", "エフェクト", "vrchat world"], "NonVRChat"),
+            ("映像作品", "アニメーション", "【VRChatライブ映像】Authored", &["VRChat"], "NonVRChat"),
+            // Other types still come from their tags once the scope is explicit.
+            ("ゲーム", "ゲーム関連商品", "Authored Lift script for VRChat Worlds", &["VRChat", "Udon"], "Udon"),
+            ("ゲーム", "ゲーム関連商品", "【販売ワールド】Authored Room", &["VRChat", "Udon"], "World"),
+            ("素材データ", "素材（その他）", "Authored Water", &["Unity", "シェーダー"], "Shader"),
+            ("素材データ", "背景画像", "Authored Skybox", &["VRChat", "ワールド"], "World"),
+            ("素材データ", "背景画像", "Authored Eye", &["VRChat", "テクスチャ"], "Texture"),
+        ] {
+            let source = booth_listing(parent, leaf, title, tags);
+            assert_eq!(infer_product_category(&source)["category"], expected, "{leaf} {title}");
+        }
+        // A VRChat video is no asset type, and its VRChat word keeps it in the default list.
+        let video = infer_product_category(&booth_listing("映像作品", "アニメーション", "【VRChatライブ映像】Authored", &["VRChat"]));
+        assert_eq!(video["category"], "NonVRChat");
+        assert_eq!(video["scope"], "vrchat");
+    }
+
+    #[test]
+    fn a_removed_listing_title_names_motion_only_with_motion_words() {
+        for (title, expected) in [
+            ("Authored 待機モーション", "Motion"),
+            ("Authored Motion Pack", "Motion"),
+            ("Authored アニメーション", "NonVRChat"),
+            ("VRChat用 Authored アニメーション", "Motion"),
+            ("Authored モーショングラフィックス", "NonVRChat"),
+            ("Authored 動作確認済み", "NonVRChat"),
+        ] {
+            assert_eq!(
+                infer_product_category(&json!({"store":"BOOTH","sourceTitle":title,"publicPageAvailability":"unavailable"}))["category"],
+                expected,
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_description_names_a_type_only_by_defining_it() {
+        for description in [
+            "テクスチャと衣装を含みます。ワールドでも使えます。",
+            "VRChat 向けの小物です。ヘアゴムとアクセサリーがセットです。",
+            "Includes a texture, a tool and a world prefab.",
+        ] {
+            let result = infer_product_category(&json!({"store":"BOOTH","sourceCategory":{"name":"3Dモデル（その他）","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":description}));
+            assert_eq!(result["category"], "NonVRChat", "{description}");
+            // It stays in the default list as Unclassified, because it says VRChat.
+            assert_eq!(result["scope"], "vrchat", "{description}");
+        }
+        for (description, expected) in [
+            ("Unity shader for skin.", "Shader"),
+            ("Unity editor tool for avatars.", "Tool"),
+        ] {
+            assert_eq!(
+                infer_product_category(&json!({"store":"BOOTH","sourceCategory":{"name":"3Dモデル（その他）","parentName":"3Dモデル"},"sourceTitle":"Authored","sourceTags":["VRChat"],"sourceDescription":description}))["category"],
+                expected,
+                "{description}"
             );
         }
     }

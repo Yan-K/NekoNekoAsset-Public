@@ -1900,6 +1900,29 @@ fn a_category_rule_reaches_a_stored_product_only_through_its_own_records() {
 }
 
 #[test]
+fn a_manual_category_outlasts_the_store_category_rule() {
+    let f = Fixture::new();
+    let c = f.open();
+    let source = |tags: Value| json!({"id":"room","store":"BOOTH","sourceTitle":"【販売ワールド】Authored Room","sourceCategory":{"name":"3D環境・ワールド","parentName":"3Dモデル"},"sourceTags":tags});
+    let category = |c: &Catalogue| -> String {
+        c.inner.lock().unwrap().query_row("SELECT category FROM products WHERE id='room'", [], |r| r.get(0)).unwrap()
+    };
+    c.put("product", "room", source(json!(["VRChat", "Udon"]))).unwrap();
+    assert_eq!(category(&c), "World");
+    c.command("overlay", json!({"ids":["room"],"patch":{"category":"Udon"}})).unwrap();
+    assert_eq!(category(&c), "Udon");
+    // A new observation runs the rule again and the user's choice stays.
+    c.put("product", "room", source(json!(["VRChat", "Udon", "UdonSharp"]))).unwrap();
+    assert_eq!(category(&c), "Udon");
+    drop(c);
+    let c = f.open();
+    assert_eq!(category(&c), "Udon");
+    // Clearing it hands the product back to the rule.
+    c.command("overlay", json!({"ids":["room"],"patch":{},"clearFields":["category"]})).unwrap();
+    assert_eq!(category(&c), "World");
+}
+
+#[test]
 fn avatar_snapshot_is_pure_and_manual_base_visibility_does_not_change_defaults() {
     let f = Fixture::new();
     let c = f.open();
