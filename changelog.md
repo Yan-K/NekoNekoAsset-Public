@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.10 Beta - 2026-11-10
+
+### Added
+
+- A new filter beside the account filter shows Paid, Free and Gift assets, on their own or together. It works with categories, accounts and saved searches.
+- The Attention badge now has an × to clear it once you have seen the problem. Clear Attention is also in the More and right-click menus, so you can clear several at once. It comes back only if something fails again.
+
+### Changed
+
+- In Edit, click the thumbnail to upload your own. Hovering over it shows an upload icon.
+- Hidden assets now lists every hidden asset on its own, and clicking any category, avatar, collection or other section leaves it.
+- Automatic categories on BOOTH now tell Udon, Gimmick, Shader and World apart by what an asset is built on, wherever the seller filed it: Udon for the world SDK, Gimmick for the avatar SDK, and particles and light effects made for worlds in Shader.
+- Download all, downloading several assets at once and automatic downloads now skip a free file whose offer has ended. Downloading that asset on its own still tries again.
+
+### Fixed
+
+- A free download that has ended now says so when it fails, instead of claiming the App cannot write to the folder.
+- Any other download a store refuses now says the store refused it.
+
+### Release notes
+
+- Categories you set yourself never change. An asset already in your library takes its new automatic category when its own listing or files change; nothing moves when you update or open the App.
+- The Unity Bridge is unchanged and stays at [0.3.7 Beta](https://github.com/Yan-K/NekoNekoAsset-Public/releases/tag/v0.3.7); this release does not include Bridge files. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.9 Beta - 2026-11-06
 
 ### Changed
