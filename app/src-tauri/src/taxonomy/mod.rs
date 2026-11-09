@@ -438,7 +438,14 @@ pub fn infer_product_category(source: &Value) -> Value {
         &type_tags,
     );
     let store = booth
-        .then(|| store_type(&category_name, &title_normalized, &normalized_tags))
+        .then(|| {
+            store_type(
+                &category_name,
+                &title_normalized,
+                &normalized_tags,
+                &description_opening,
+            )
+        })
         .flatten();
     if let Some((kind, basis)) = store {
         let found: Vec<Value> = match basis {
@@ -446,7 +453,16 @@ pub fn infer_product_category(source: &Value) -> Value {
             "sourceTags" => tags
                 .iter()
                 .zip(&normalized_tags)
-                .filter(|(_, tag)| names_type(tag, kind))
+                .filter(|(_, tag)| {
+                    names_type(tag, kind)
+                        || kind == "Udon"
+                            && (tag.contains("udon")
+                                || word_match(tag, "u#")
+                                || WORLD_GIMMICK_TAGS.iter().chain(WORLD_BUILD_TAGS).any(|word| tag.contains(word))
+                                || tag.contains("チクワカーシステム")
+                                || tag.contains("chikuwa vehicle system"))
+                        || kind == "Gimmick" && names_avatar_build(tag)
+                })
                 .map(|(tag, _)| json!({"field":"sourceTags","value":tag}))
                 .collect(),
             _ => vec![json!({"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")})],
@@ -476,9 +492,13 @@ pub fn infer_product_category(source: &Value) -> Value {
     // and a software tag one more tag.
     let store_content = matches!(
         store,
-        Some(("Clothes" | "Hair" | "Accessory" | "Texture", _))
+        Some(("Clothes" | "Hair" | "Accessory" | "Texture", _)) | Some(("World", "sourceTitle"))
     );
-    let software_decides = if store_content {
+    // What a title or tag already separated from tools says more than the word tool.
+    let store_built_for = matches!(store, Some(("Udon" | "Gimmick" | "Shader", _)));
+    let software_decides = if store_built_for {
+        false
+    } else if store_content {
         description_defines_software(&description_opening.replace("アドオンです", ""))
             || software_title && !add_on_pack(&title_normalized)
     } else {
@@ -531,7 +551,7 @@ pub fn infer_product_category(source: &Value) -> Value {
     // BOOTH's own character category outranks tags, which also list what an avatar
     // includes: a hair style, gestures, a shader. With no specific store category,
     // a title that calls itself one named model is enough; a removed page is not.
-    if result["category"] != "Base" && !declared_software && !jinxxy_addon {
+    if store.is_none() && result["category"] != "Base" && !declared_software && !jinxxy_addon {
         if category_name == "3dキャラクター" {
             result = json!({"category":"Base","basis":"sourceCategory","inferred":true,
                 "evidence":[{"field":"sourceCategory.name","value":source_category.as_str().or_else(|| source_category["name"].as_str()).unwrap_or("")}]});
@@ -577,8 +597,23 @@ pub fn infer_product_category(source: &Value) -> Value {
             }
         }
     }
+    // A world prop in a generic 3D category says world and carries no avatar wording.
+    if booth
+        && in_3d
+        && store.is_none()
+        && result["category"] == "Accessory"
+        && normalized_tags
+            .iter()
+            .any(|tag| tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world"))
+        && !normalized_tags
+            .iter()
+            .any(|tag| ["アクセサリ", "アバター", "avatar"].iter().any(|word| tag.contains(word)))
+    {
+        result = json!({"category":"World","basis":"tags","inferred":true,"evidence":tags.iter().zip(&normalized_tags).filter(|(_, tag)| tag.contains("ワールド") && !tag.contains("固定") || word_match(tag, "world")).take(8).map(|(raw, _)| json!({"field":"sourceTags","value":evidence_excerpt(raw)})).collect::<Vec<_>>()});
+    }
     // What a title or tag separates from BOOTH's tools still has to show where it runs.
-    let store_tools = store.is_some() && category_name == "3dツール・システム";
+    let store_tools =
+        store.is_some() && matches!(category_name.as_str(), "3dツール・システム" | "ソフトウェア");
     let restricted = store_tools || matches!(result["category"].as_str(), Some("Tool" | "Texture"));
     let store_texture = result["category"] == "Texture" && matches!(store, Some(("Texture", _)));
     let os_without_target_context = os_tag && !unity_scope && !explicit_vr_tag;
@@ -590,11 +625,15 @@ pub fn infer_product_category(source: &Value) -> Value {
         result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
     }
     // Under any other top level, such as 素材データ, ゲーム or 映像作品, a word needs
-    // VRChat or Unity evidence too.
+    // VRChat or Unity evidence too, and a book about a VRChat world is still a book.
+    let work = matches!(
+        parent_name.as_str(),
+        "小説・その他書籍" | "漫画" | "音楽" | "音声作品" | "イラスト"
+    );
     if booth
         && !parent_name.is_empty()
         && !in_3d
-        && !target_scope
+        && (!target_scope || work)
         && result["category"] != "NonVRChat"
     {
         result = json!({"category":"NonVRChat","basis":"scopeGate","inferred":true,"evidence":result["evidence"]});
@@ -660,40 +699,96 @@ fn names_type(text: &str, category: &str) -> bool {
         .any(|rule| rule.category == category && rule_match(text, rule))
 }
 
+/// Tags saying a product goes into a world or onto an avatar, which BOOTH has no category for.
+const WORLD_GIMMICK_TAGS: &[&str] = &["ワールドギミック", "world gimmick", "udonギミック", "udon gimmick"];
+const WORLD_BUILD_TAGS: &[&str] = &["ワールドアセット", "world asset", "ワールドキット"];
+const AVATAR_TAGS: &[&str] = &[
+    "アバターギミック",
+    "avatar gimmick",
+    "modularavatar",
+    "modular avatar",
+    "avatar3.0",
+    "avatars3.0",
+    "avatar 3.0",
+];
+
+fn names_avatar_build(text: &str) -> bool {
+    AVATAR_TAGS.iter().any(|word| text.contains(word)) || word_match(text, "ma対応")
+}
+
 /// What BOOTH's own category says a product is, with where that came from. Tags also
 /// list what a product contains or suits, so they do not outvote it. BOOTH has no
-/// category for shaders, Udon or gimmicks: sellers file those under tools, worlds or
-/// textures and say so in the title, and in tools their tags can tell them apart too.
+/// category for what a product is built on, so sellers file a world's scripts, an avatar's
+/// gimmicks and shaders under tools, software or worlds and say which in the title or tags.
+/// Udon goes into the world SDK, Gimmick into the avatar SDK, and World is an environment
+/// or a prop placed in one.
 fn store_type(
     leaf: &str,
     title: &str,
     tags: &[String],
+    opening: &str,
 ) -> Option<(&'static str, &'static str)> {
+    let any_tag = |words: &[&str]| tags.iter().any(|tag| words.iter().any(|word| tag.contains(word)));
+    let system_title = word_match(title, "cvs2") || title.contains("チクワカー");
+    let system_tag = any_tag(&["チクワカーシステム", "chikuwa vehicle system"]);
     let stated = match leaf {
         "3d衣装" | "3d靴" => "Clothes",
         "3d髪型" => "Hair",
         "3d装飾品" | "3d小道具" => "Accessory",
         "3dモーション・アニメーション" => "Motion",
         "3dテクスチャ" => "Texture",
-        "3dツール・システム" => "Tool",
+        "3dツール・システム" | "ソフトウェア" => "Tool",
         "3d環境・ワールド" => "World",
+        "3dキャラクター" => return sells_texture(title).then_some(("Texture", "sourceTitle")),
         _ if title.contains("販売ワールド") => return Some(("World", "sourceTitle")),
+        _ if system_title || ["vrchat world prefab", "vrc world prefab"].iter().any(|word| title.contains(word)) => {
+            return Some(("Udon", "sourceTitle"))
+        }
+        _ if system_tag || any_tag(WORLD_GIMMICK_TAGS) => return Some(("Udon", "sourceTags")),
         _ => return None,
     };
+    if stated == "Accessory" {
+        return Some(
+            if [
+                "udonギミック",
+                "udon用ギミック",
+                "udon gimmick",
+                "ワールドギミック",
+                "worldギミック",
+                "world gimmick",
+            ]
+            .iter()
+            .any(|word| sold_as(title, word))
+            {
+                ("Udon", "sourceTitle")
+            } else if title.contains("ワールド小物")
+                || title.contains("ワールド用小物")
+                || word_match(title, "world prop")
+                || word_match(title, "world props")
+            {
+                ("World", "sourceTitle")
+            } else {
+                ("Accessory", "sourceCategory")
+            },
+        );
+    }
     if !matches!(stated, "Texture" | "Tool" | "World") || title.contains("販売ワールド") {
         return Some((stated, "sourceCategory"));
     }
     let tagged = |category| tags.iter().any(|tag| names_type(tag, category));
+    let world = stated == "World";
+    let software_leaf = leaf == "ソフトウェア";
     // An installer that comes with a product, a stool or two rooms do not make a tool.
-    let title = title
+    let cleaned = title
         .replace("導入ツール", "")
         .replace("スツール", "")
         .replace("ツールーム", "");
-    let sold = |words: &[&str]| words.iter().any(|word| sold_as(&title, word));
+    let title = cleaned.as_str();
+    let sold = |words: &[&str]| words.iter().any(|word| sold_as(title, word));
     let shader = sold(&["シェーダ", "shader", "셰이더", "着色器", "著色器"]);
     // A texture made for a shader says texture too.
     if stated == "Texture" {
-        return Some(if shader && !names_type(&title, "Texture") {
+        return Some(if shader && !names_type(title, "Texture") {
             ("Shader", "sourceTitle")
         } else {
             ("Texture", "sourceCategory")
@@ -702,38 +797,151 @@ fn store_type(
     let tool = sold(&["ツール", "工具", "도구"])
         || ["tool", "tools", "utility", "utilities", "editor extension"]
             .iter()
-            .any(|word| word_match(&title, word));
+            .any(|word| word_match(title, word))
+        || software_type(title) && !add_on_pack(title);
+    // Rooms sold with their scripts are still the place, and so are trees and furniture
+    // sold with their shader.
+    let room = world && any_tag(&["部屋", "建物", "住宅", "ホームワールド"]);
+    let scenery = world
+        && (any_tag(&["家具", "インテリア", "ハウス", "植物", "樹木", "自然", "背景", "環境", "小物"])
+            || word_tag(tags, "house")
+            || word_tag(tags, "prop")
+            || word_tag(tags, "props"));
+    let named_world = world && !tool && names_a_world(title);
+    if !tool && !(named_world && (room || scenery)) && sold(&["udon"])
+        || ["udonギミック", "udon用ギミック", "udon gimmick", "ワールドギミック", "world gimmick"]
+            .iter()
+            .any(|word| sold_as(title, word))
+        || system_title
+    {
+        return Some(("Udon", "sourceTitle"));
+    }
+    if system_tag {
+        return Some(("Udon", "sourceTags"));
+    }
     let gimmick = sold(&["ギミック", "gimmick", "기믹", "交互组件", "互動元件"]);
+    // Named as a system or gimmick that a Udon tag explains, even under a world label.
+    if !tool && tagged("Udon") && (gimmick || title.contains("システム") || word_match(title, "system"))
+    {
+        return Some(("Udon", "sourceTitle"));
+    }
+    if named_world {
+        return Some(("World", "sourceCategory"));
+    }
+    // Particles and volumetric light are what a shader draws, whichever word a seller used.
+    if !tool
+        && (shader
+            || world && sold(&["パーティクル", "particle"]) && !names_avatar_build(title)
+            || sold(&["volumetric"]))
+    {
+        return Some(("Shader", "sourceTitle"));
+    }
+    // A tool that works on avatars names the editor; a gimmick goes on the avatar.
+    let editor_tag = any_tag(&["editor拡張", "エディタ拡張", "エディター拡張", "unityeditor", "unity editor"]);
+    // A finished world carries Udon tags for what is inside it.
+    if any_tag(WORLD_GIMMICK_TAGS) && !room
+        || !world
+            && (any_tag(WORLD_BUILD_TAGS)
+                || !tool && !editor_tag && (any_tag(&["udon"]) || word_tag(tags, "u#")))
+    {
+        return Some(("Udon", "sourceTags"));
+    }
+    if tool {
+        return Some(("Tool", "sourceTitle"));
+    }
     let for_worlds = ["ワールド用", "ワールド向け", "for world", "for vrchat world", "for vrc world"]
         .iter()
         .any(|phrase| title.contains(phrase));
-    let named = if tool {
-        Some("Tool")
-    } else if sold(&["udon"]) {
-        Some("Udon")
-    } else if shader {
-        Some("Shader")
-    } else if tagged("Udon")
-        && (gimmick
-            || for_worlds
-            || title.contains("システム")
-            || word_match(&title, "system"))
-    {
-        Some("Udon")
-    } else if gimmick {
-        Some("Gimmick")
-    } else {
-        None
-    };
-    if let Some(kind) = named {
-        return Some((kind, "sourceTitle"));
+    if tagged("Udon") && for_worlds {
+        return Some(("Udon", "sourceTitle"));
     }
-    if stated == "Tool" && !tagged("Tool") && !tags.iter().any(|tag| software_type(tag)) {
+    let avatar_tag = tags.iter().any(|tag| names_avatar_build(tag));
+    let editing_tool = editor_tag && tagged("Tool");
+    if gimmick && !editing_tool {
+        let for_avatar = !for_worlds
+            && (["アバター用", "アバター向け", "アバターギミック", "for avatar", "avatar gimmick"]
+                .iter()
+                .any(|word| title.contains(word))
+                || avatar_tag);
+        return Some((if world && !for_avatar { "Udon" } else { "Gimmick" }, "sourceTitle"));
+    }
+    if world {
+        if avatar_tag {
+            return Some(("Gimmick", "sourceTags"));
+        }
+        let drawn = ["ライト", "エフェクト", "フォグ", "レーザー", "ゴッドレイ"]
+            .iter()
+            .any(|word| title.contains(word) || any_tag(&[word]))
+            || ["light", "effect", "fog", "laser"]
+                .iter()
+                .any(|word| word_match(title, word) || word_tag(tags, word));
+        return Some(if tagged("Shader") && !room && !scenery && drawn {
+            ("Shader", "sourceTags")
+        } else {
+            ("World", "sourceCategory")
+        });
+    }
+    if names_avatar_build(title) && !editor_tag && (!tagged("Tool") || tagged("Gimmick")) {
+        return Some(("Gimmick", "sourceTitle"));
+    }
+    let avatar_opening = ["アバターギミック", "modularavatar", "modular avatar"]
+        .iter()
+        .any(|word| opening.contains(word));
+    if avatar_tag && !editor_tag && (!tagged("Tool") || tagged("Gimmick"))
+        || tagged("Gimmick") && avatar_opening && !editor_tag
+    {
+        return Some(("Gimmick", "sourceTags"));
+    }
+    // Software lists what its output is for, so only the tool category reads the rest.
+    if !software_leaf && !tagged("Tool") && !tags.iter().any(|tag| software_type(tag)) {
         if let Some(kind) = ["Udon", "Shader", "Gimmick"].into_iter().find(|kind| tagged(kind)) {
             return Some((kind, "sourceTags"));
         }
     }
     Some((stated, "sourceCategory"))
+}
+
+fn word_tag(tags: &[String], word: &str) -> bool {
+    tags.iter().any(|tag| word_match(tag, word))
+}
+
+/// A title calling itself a world, not a gimmick for one or something placed in one.
+fn names_a_world(title: &str) -> bool {
+    const NOT_A_PLACE: &[&str] = &[
+        "ギミック", "シェーダ", "用", "向け", "対応", "専用", "設置", "制作", "パーツ", "小物", "アセット", "素材",
+        "キット", "で", "に", "内", "gimmick", "prefab", "asset", "kit", "shader",
+    ];
+    ["ワールド", "world"].iter().any(|word| {
+        title.match_indices(word).any(|(start, word)| {
+            let after = &title[start + word.len()..];
+            let latin_inside = word == "world"
+                && (title[..start].ends_with(|c: char| c.is_ascii_alphanumeric())
+                    || after.starts_with(|c: char| c.is_ascii_alphanumeric()));
+            let after = after.trim_start();
+            !latin_inside
+                && !title[..start].contains("for ")
+                && !NOT_A_PLACE.iter().any(|stop| after.starts_with(stop))
+        })
+    })
+}
+
+/// A title that ends by naming a texture sells one; a bonus after + or with does not.
+fn sells_texture(title: &str) -> bool {
+    let core = title.trim_end_matches([' ', '】', '」', '』', '）', ')', ']']);
+    !title.contains('+')
+        && !word_match(title, "with")
+        && [
+            "テクスチャ",
+            "テクスチャセット",
+            "テクスチャパック",
+            "テクスチャ集",
+            "texture",
+            "textures",
+            "texture set",
+            "texture pack",
+        ]
+        .iter()
+        .any(|ending| core.ends_with(ending))
 }
 
 /// A word for what is sold, not for something the product comes with or suits.
@@ -746,7 +954,7 @@ fn sold_as(title: &str, word: &str) -> bool {
         !title[..start].ends_with("with ")
             && ![
                 "付", "つき", "搭載", "あり", "有り", "多数", "満載", "入り", "同梱", "対応", "専用",
-                "用", "向け",
+                "用", "向け", "込み", "使用", "不使用", "なし", "無し", "非対応",
             ]
             .iter()
             .any(|suffix| after.starts_with(suffix))
@@ -2470,13 +2678,83 @@ mod tests {
     }
 
     #[test]
-    fn booth_3d_categories_outrank_tags() {
+    fn booth_categories_and_what_a_product_is_built_on_decide_its_type() {
         // Independently authored structures of what sellers file in each category.
         for (leaf, title, tags, expected) in [
             ("3D環境・ワールド", "【販売ワールド】Authored Hotel", &["VRChat", "Udon", "シェーダー", "ギミック"][..], "World"),
             ("3D環境・ワールド", "【販売ワールド】Authored Bar ギミック シェーダー", &["VRChat", "Udon"], "World"),
             ("3D環境・ワールド", "Authored Room", &["VRChat", "Udon", "UdonSharp"], "World"),
-            ("3D環境・ワールド", "Authored Room", &["シェーダー", "小物"], "World"),
+            ("3D環境・ワールド", "Authored Room", &["小物"], "World"),
+            ("3D環境・ワールド", "Authored ワールド", &["シェーダー", "小物"], "World"),
+            // Built for a world, an avatar or the renderer, whatever the store called it.
+            ("3D環境・ワールド", "Authored Light", &["VRChat", "シェーダー"], "Shader"),
+            ("3D環境・ワールド", "Authored フォグパーティクル", &["VRChat"], "Shader"),
+            ("3D環境・ワールド", "AuthoredVolumetricFog", &["VRChat"], "Shader"),
+            ("3D環境・ワールド", "Authored Table", &["VRChat", "ワールドギミック"], "Udon"),
+            ("3D環境・ワールド", "[CVS2] Authored Car", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "Authored Meter", &["チクワカーシステム"], "Udon"),
+            ("3D環境・ワールド", "【ワールド用】Authored 表示ギミック", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "Authored アバターギミック", &["VRChat"], "Gimmick"),
+            ("3D環境・ワールド", "【VRC向けワールド】Authored", &["VRChat", "ワールドギミック", "Udon"], "World"),
+            ("3D環境・ワールド", "Authored Room", &["VRChat", "VRChatワールド"], "World"),
+            // A place keeps its tags to itself, and a word beside "with" is not what is sold.
+            ("3D環境・ワールド", "Authored Hotel【PCVR／Quest】", &["部屋", "ホームワールド", "Udon", "ワールドギミック"], "World"),
+            ("3D環境・ワールド", "Authored Beach Club", &["VRChatワールド", "シェーダー"], "World"),
+            ("3D環境・ワールド", "VRChat World Authored Mansion udon", &["家具", "ワールド", "udon"], "World"),
+            ("3D環境・ワールド", "[Udon] Authored Door", &["Udon", "家具"], "Udon"),
+            ("3D環境・ワールド", "Authored Kotatsu", &["インテリア", "ワールドギミック"], "Udon"),
+            ("3D環境・ワールド", "Authored Clock【VRChat Worldギミック】", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "VRChat World用 Authored Water Shader", &["VRChat"], "Shader"),
+            ("3D環境・ワールド", "Authored アバターペデスタルギミック", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "Authored Tail", &["アバターギミック", "ModularAvatar"], "Gimmick"),
+            ("3D環境・ワールド", "【VRChatアバターギミック】Authored パーティクル", &["VRChat"], "Gimmick"),
+            ("3D環境・ワールド", "VRChat World Authored Heights", &["家具", "ワールドギミック"], "World"),
+            ("3D環境・ワールド", "Authored Cafe with Volumetric Lighting", &["VRChat"], "World"),
+            ("3D環境・ワールド", "【VRCワールド】Authored Stage パーティクル演出", &["VRChat"], "World"),
+            ("3D環境・ワールド", "Authored Room【Udon不使用】", &["VRChat"], "World"),
+            ("3D環境・ワールド", "VRChatワールド軽量化ツール", &["VRChat"], "Tool"),
+            ("3D環境・ワールド", "【Udon】Authored 花火パーティクル", &["VRChat"], "Udon"),
+            ("3D環境・ワールド", "プリ機 ワールドギミック Authored", &["インテリア", "ワールド"], "Udon"),
+            ("3D環境・ワールド", "Authored しっぽギミック", &["アバターギミック", "ModularAvatar"], "Gimmick"),
+            ("3D環境・ワールド", "アバター用 Authored ギミック", &["VRChat"], "Gimmick"),
+            ("3D環境・ワールド", "Authored ギミック付き家電", &["VRChat", "ギミック"], "World"),
+            ("3Dツール・システム", "Authored NPC セットアップツール", &["VRChat", "ワールドアセット"], "Udon"),
+            ("3Dツール・システム", "Authored Addon", &["VRChat", "VRChatギミック"], "Gimmick"),
+            ("3Dツール・システム", "Authored Scene Cleaner Tool", &["VRChat", "Udon", "エディタ拡張"], "Tool"),
+            ("3Dツール・システム", "Authored Scene Cleaner", &["VRChat", "UdonSharp", "エディタ拡張"], "Tool"),
+            ("3Dツール・システム", "ギミック作成ツール Authored", &["VRChat", "Udon"], "Tool"),
+            ("3Dツール・システム", "Authored 撫でギミック", &["VRChat", "UnityEditor"], "Gimmick"),
+            ("3Dツール・システム", "【MA対応】Authored Tailor", &["VRChat", "ツール"], "Tool"),
+            ("3Dツール・システム", "UdonSharp Refactor Tool", &["VRChat", "UdonSharp"], "Tool"),
+            ("3Dツール・システム", "「Authored つく～る」アバターギミックを作るギミック", &["VRChat", "エディター拡張", "ツール"], "Tool"),
+            ("3Dツール・システム", "【Authored】【ModularAvatar対応】", &["VRChat"], "Gimmick"),
+            ("3Dツール・システム", "Authored VRM Exporter", &["VRChat", "VRMA対応"], "Tool"),
+            ("3Dツール・システム", "Authored Tracker", &["VRChat", "ツール", "ギミック", "ModularAvatar"], "Gimmick"),
+            ("3Dツール・システム", "Authored Mesh", &["VRChat", "便利ツール", "MA対応"], "Tool"),
+            ("3Dモデル（その他）", "Authored Table", &["VRChat", "ワールドギミック"], "Udon"),
+            ("3Dツール・システム", "Authored Fixer", &["VRChat", "ModularAvatar", "Editor拡張"], "Tool"),
+            ("ソフトウェア", "Authored Panel", &["VRChat", "udonギミック"], "Udon"),
+            ("ソフトウェア", "Authored script", &["Udon", "UdonSharp"], "Udon"),
+            ("ソフトウェア", "Authored Kit", &["VRChat", "ModularAvatar対応"], "Gimmick"),
+            ("ソフトウェア", "Authored Light Tool", &["VRChat", "ModularAvatar"], "Tool"),
+            ("ソフトウェア", "Authored Volumetric Light", &["VRChat", "Unity"], "Shader"),
+            ("ソフトウェア", "Authored Camera", &["VRChat", "ギミック"], "Tool"),
+            ("3D小道具", "VRChat Udon用ギミック「Authored」", &["VRChat"], "Udon"),
+            ("3D小道具", "【VRChat向け】Authored Drink【ワールド小物】", &["VRChat", "アバター用小物"], "World"),
+            ("3D小道具", "Authored Coffee セット（Worldギミック）", &["VRChat"], "Udon"),
+            ("3D小道具", "Authored Underworld Props", &["VRChat"], "Accessory"),
+            ("3D小道具", "【ワールド小物】Authored Add-on", &["VRChat"], "World"),
+            ("ゲーム関連商品", "Authored Cafe World Prefab", &["VRChat"], "World"),
+            ("3Dモデル（その他）", "Authored Sign", &["VRChat", "ワールド", "3dモデル 小物"], "World"),
+            ("3Dモデル（その他）", "Authored Cup", &["VRChat", "ワールド", "小物", "アバター"], "Accessory"),
+            ("3Dキャラクター", "Authored専用テクスチャ", &["VRChat"], "Texture"),
+            ("3Dキャラクター", "オリジナル3Dモデル「Authored」", &["VRChat", "テクスチャ"], "Base"),
+            ("3Dキャラクター", "オリジナル3Dモデル「Authored」+追加テクスチャ", &["VRChat"], "Base"),
+            ("3Dキャラクター", "Authored Model with Textures", &["VRChat"], "Base"),
+            ("3Dキャラクター", "Authored専用テクスチャセット", &["VRChat"], "Texture"),
+            ("3Dキャラクター", "Authored Model", &["チクワカーシステム", "VRChat"], "Base"),
+            ("3Dキャラクター", "【販売ワールド】Authored", &["VRChat"], "Base"),
+            ("3Dモデル（その他）", "Authored Pin", &["VRChat", "ワールド固定", "小物"], "Accessory"),
             ("3D環境・ワールド", "ギミック付き Authored Room", &["VRChat", "Udon"], "World"),
             ("3D環境・ワールド", "Authored Room ギミック有り", &["VRChat"], "World"),
             ("3D環境・ワールド", "Authored Room（Udonギミック付き）", &["VRChat"], "World"),
@@ -2495,7 +2773,6 @@ mod tests {
             ("3D環境・ワールド", "【VRChatワールドギミック】Authored Camera", &["VRChat", "Udon"], "Udon"),
             ("3D環境・ワールド", "[VRCワールド] AUTHORED CAR SYSTEM", &["udon"], "Udon"),
             ("3D環境・ワールド", "Authored Lift for VRChat Worlds", &["Udon"], "Udon"),
-            ("3D環境・ワールド", "【ワールド用】Authored 表示ギミック", &["VRChat"], "Gimmick"),
             ("3D環境・ワールド", "ワールド制作支援ツール", &["VRChat"], "Tool"),
             ("3Dツール・システム", "Authored 影シェーダー【導入ツール同梱】", &["VRChat"], "Shader"),
             ("3Dツール・システム", "シェーダー変換ツール", &["VRChat"], "Tool"),
@@ -2572,6 +2849,18 @@ mod tests {
         assert_eq!(shader["evidence"], json!([{"field":"sourceTitle","value":"Authored シェーダー"}]));
         let world = infer_product_category(&booth_listing("3Dモデル", "3D環境・ワールド", "Authored", &["Udon"]));
         assert_eq!(world["evidence"], json!([{"field":"sourceCategory.name","value":"3D環境・ワールド"}]));
+        // A decision from a tag cites the tag that made it.
+        for (leaf, tags, tag, kind) in [
+            ("3D環境・ワールド", vec!["VRChat", "ワールドギミック"], "ワールドギミック", "Udon"),
+            ("3D環境・ワールド", vec!["VRChat", "チクワカーシステム"], "チクワカーシステム", "Udon"),
+            ("ソフトウェア", vec!["VRChat", "ModularAvatar対応"], "ModularAvatar対応", "Gimmick"),
+            ("ソフトウェア", vec!["VRChat", "U#"], "U#", "Udon"),
+        ] {
+            let result = infer_product_category(&booth_listing("3Dモデル", leaf, "Authored", &tags));
+            assert_eq!(result["category"], kind, "{leaf}");
+            assert_eq!(result["basis"], "sourceTags", "{leaf}");
+            assert_eq!(result["evidence"], json!([{"field":"sourceTags","value":tag}]), "{leaf}");
+        }
     }
 
     #[test]
@@ -2583,6 +2872,8 @@ mod tests {
             (json!({"provider":"local","sourceTitle":"Authored Walk Animation"}), "Motion"),
             (json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"VRChat Authored","sourceTags":["Udon"]}), "Udon"),
             (json!({"provider":"gumroad","sourceCategory":{"name":"3D環境・ワールド"},"sourceTitle":"Authored"}), "NonVRChat"),
+            (json!({"provider":"gumroad","sourceTitle":"VRChat Authored","sourceTags":["ワールドギミック"]}), "Gimmick"),
+            (json!({"provider":"jinxxy","sourceTitle":"[CVS2] Authored"}), "Gimmick"),
         ] {
             assert_eq!(infer_product_category(&source)["category"], expected, "{source}");
         }
