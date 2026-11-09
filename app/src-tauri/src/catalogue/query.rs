@@ -26,8 +26,11 @@ macro_rules! unavailable_sql {
         "(COALESCE(json_extract(p.summary,'$.provider'),'') IN('booth','gumroad','jinxxy') AND COALESCE(json_extract(p.summary,'$.total'),1)=0 AND NOT EXISTS(SELECT 1 FROM entities x WHERE x.kind='artifact' AND x.product_id=p.id AND (json_extract(x.body,'$.originalAvailable')=1 OR json_extract(x.body,'$.extractedPath') IS NOT NULL)))"
     };
 }
+/// How acquisition row `a` was obtained. A row with no proof of payment says nothing
+/// when another row of that account does, and otherwise follows that account's current price.
+const ACQUISITION_KIND: &str = "CASE WHEN json_extract(a.value,'$.source')='gift' THEN 'gift' WHEN json_extract(a.value,'$.source')='free' OR json_extract(a.value,'$.paidPrice')=0 THEN 'free' WHEN json_extract(a.value,'$.paidPrice')>0 THEN 'paid' WHEN EXISTS(SELECT 1 FROM json_each(p.provenance) o WHERE json_extract(o.value,'$.accountId') IS json_extract(a.value,'$.accountId') AND (json_extract(o.value,'$.source') IN('gift','free') OR json_extract(o.value,'$.paidPrice') IS NOT NULL)) THEN '' WHEN COALESCE((SELECT MAX(json_extract(v.value,'$.price')) FROM json_each(p.prices) v,json_each(v.value,'$.accountIds') x WHERE x.value=json_extract(a.value,'$.accountId')),p.price)=0 THEN 'free' ELSE 'paid' END";
 // Keep the effective values of the former summary predicates and ordering.
-const LIST_COLUMNS: &str = concat!("id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),", unavailable_sql!(), ",summary");
+const LIST_COLUMNS: &str =concat!("id,category,status,sensitive,downloaded,title,acquired,price,search,in_all,COALESCE(json_extract(summary,'$.hidden'),0),COALESCE(json_extract(summary,'$.priceCurrency'),'JPY'),COALESCE(json_extract(summary,'$.provider'),'')='local',json_extract(summary,'$.accountIds'),json_extract(summary,'$.ownedAvatarEvidence'),json_extract(summary,'$.provenance'),json_extract(summary,'$.ownedCurrentPrices'),json_extract(summary,'$.newlyDiscovered'),", unavailable_sql!(), ",summary");
 // The UPDATE condition matches products_changed_update, so each recorded event is one revision.
 // Trigger steps inherit an upsert's conflict policy, so the change log has no key and may repeat ids.
 const LIST_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS list_rows(id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,sensitive INTEGER NOT NULL,downloaded INTEGER NOT NULL,title TEXT NOT NULL,acquired TEXT,price REAL,search TEXT NOT NULL,in_all INTEGER NOT NULL,hidden,currency,local INTEGER NOT NULL,accounts,evidence,provenance,prices,newly,unavailable INTEGER NOT NULL,summary TEXT NOT NULL);
@@ -215,6 +218,23 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         } else {
             account_scope
         });
+    }
+    if let Some(kinds) = args["acquisition"].as_array() {
+        let listed = ["paid", "free", "gift"]
+            .into_iter()
+            .filter(|kind| kinds.iter().any(|value| value == kind))
+            .map(|kind| format!("'{kind}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let scope = match account_ids {
+            None => "1=1".to_owned(),
+            Some(_) if account_placeholders.is_empty() => "0=1".to_owned(),
+            Some(_) => format!(
+                "json_extract(a.value,'$.accountId') IN({})",
+                account_placeholders.join(",")
+            ),
+        };
+        conditions.push(format!("{local_product}=0 AND (EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope} AND {} IN({listed})) OR (NOT EXISTS(SELECT 1 FROM json_each(p.provenance) a WHERE {scope}) AND CASE WHEN p.price=0 THEN 'free' ELSE 'paid' END IN({listed})))", ACQUISITION_KIND));
     }
     let avatar = text(args, "avatar");
     let mut pinned = vec![];

@@ -1322,6 +1322,7 @@ async fn local_import_retry_clears_cancellation_without_creating_another_job() {
     let mut job = local_job(&f, &[source], "single");
     let id = job["id"].as_str().unwrap().to_owned();
     job["cancelRequested"] = json!(true);
+    job["attentionDismissed"] = json!(["authored"]);
     f.service.put_job(&mut job, "cancelled", None).unwrap();
     f.service.cancellation(&id).store(true, Ordering::Release);
     let response = f.service.retry_local_import(&id).await.unwrap();
@@ -1329,6 +1330,7 @@ async fn local_import_retry_clears_cancellation_without_creating_another_job() {
     let mut resumed = f.service.catalogue.get("job", &id).unwrap().unwrap();
     assert_eq!(resumed["state"], "queued");
     assert_eq!(resumed["cancelRequested"], false);
+    assert!(resumed.get("attentionDismissed").is_none());
     assert!(!f.service.cancellation(&id).load(Ordering::Acquire));
     f.service
         .run_local_import(
@@ -2842,6 +2844,68 @@ async fn automatic_jobs_exclude_explicitly_disconnected_account_files() {
         .unwrap();
     assert_eq!(job["fileIds"], json!(["test-file-0"]));
     assert_eq!(job["automatic"], true);
+}
+
+#[tokio::test]
+async fn bulk_and_automatic_downloads_leave_out_ended_free_offers_until_asked_for_alone() {
+    let f = Fixture::new();
+    f.seed(2, true);
+    let c = &f.service.catalogue;
+    c.put("product","43",json!({"id":"43","title":"Other synthetic product"})).unwrap();
+    c.put("remote_file","other-file",json!({"id":"other-file","productId":"43","accountId":"test-account","name":"other.psd","revision":"r1"})).unwrap();
+    c.put("entitlement","other-entitlement",json!({"id":"other-entitlement","productId":"43","accountId":"test-account","fileIds":["other-file"],"manifestComplete":true})).unwrap();
+    let end = |file: &str| {
+        let id = format!("pending-{}", io::key(file));
+        c.put("artifact",&id,json!({"id":id,"productId":"42","fileId":file,"revision":null,"status":"notDownloaded","errorCode":"free_offer_unavailable","originalAvailable":false})).unwrap();
+    };
+    let settle = || {
+        for mut job in c.list("job").unwrap() {
+            f.service.put_job(&mut job, "cancelled", None).unwrap();
+        }
+    };
+    let jobs_of = |product: &str| {
+        c.related("job", product)
+            .unwrap()
+            .into_iter()
+            .filter(|job| job["state"] == "queued")
+            .collect::<Vec<_>>()
+    };
+    let (listed, _) = f.service.remote_files("42").unwrap();
+
+    // One ended file: the rest of the product still goes, and the job remembers why.
+    end("test-file-0");
+    f.service.enqueue(&json!({"productIds":["42","43"]})).await.unwrap();
+    let job = jobs_of("42").remove(0);
+    assert_eq!(job["fileIds"], json!(["test-file-1"]));
+    assert_eq!(job["skipEndedOffers"], true);
+    assert_eq!(f.service.job_files(&job, listed.clone()).unwrap().len(), 1);
+    assert_eq!(f.service.job_files(&json!({}), listed).unwrap().len(), 2);
+    settle();
+
+    // The job that found the offer closed held the whole list, and nothing more queues for it.
+    c.command("preferences", json!({"patch":{"autoDownloadAll":true}})).unwrap();
+    let (whole, _) = f.service.remote_files("42").unwrap();
+    let mut failed = c.related("job", "42").unwrap().remove(0);
+    failed["manifestFingerprint"] = json!(fingerprint(&whole));
+    f.service.put_job(&mut failed, "needsAction", Some("free_offer_unavailable")).unwrap();
+    f.service.source_products_changed(&["42".into()]).await.unwrap();
+    assert!(jobs_of("42").is_empty());
+    // Every file ended: no job, whether in a batch, automatic or after a source change.
+    end("test-file-1");
+    f.service.enqueue(&json!({"productIds":["42","43"]})).await.unwrap();
+    assert!(jobs_of("42").is_empty());
+    assert_eq!(jobs_of("43").len(), 1);
+    settle();
+    let automatic = f.service.enqueue(&json!({"productIds":["42"],"automatic":true})).await.unwrap();
+    assert_eq!(automatic["jobIds"], json!([]));
+    f.service.source_products_changed(&["42".into()]).await.unwrap();
+    assert!(jobs_of("42").is_empty());
+
+    // Asking for this product alone tries every file again.
+    f.service.enqueue(&json!({"productIds":["42"]})).await.unwrap();
+    let job = jobs_of("42").remove(0);
+    assert_eq!(job["fileIds"], json!(["test-file-0", "test-file-1"]));
+    assert_eq!(job["skipEndedOffers"], false);
 }
 
 #[tokio::test]

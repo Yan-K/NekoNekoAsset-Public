@@ -512,6 +512,8 @@ impl StorageService {
                             missing += 1;
                             if artifact["status"] != "missing" {
                                 artifact["previousStatus"] = artifact["status"].clone();
+                                // Newly missing is a new failure, whatever was cleared before.
+                                artifact.as_object_mut().unwrap().remove("attentionDismissed");
                             }
                             artifact["status"] = json!("missing");
                             artifact["errorCode"] = json!("file_integrity_failed");

@@ -863,7 +863,7 @@ fn store_type(
                 .iter()
                 .any(|word| title.contains(word))
                 || avatar_tag);
-        return Some((if world && !for_avatar { "Udon" } else { "Gimmick" }, "sourceTitle"));
+        return Some((if (world || for_worlds) && !for_avatar { "Udon" } else { "Gimmick" }, "sourceTitle"));
     }
     if world {
         if avatar_tag {
@@ -2719,6 +2719,7 @@ mod tests {
             ("3D環境・ワールド", "アバター用 Authored ギミック", &["VRChat"], "Gimmick"),
             ("3D環境・ワールド", "Authored ギミック付き家電", &["VRChat", "ギミック"], "World"),
             ("3Dツール・システム", "Authored NPC セットアップツール", &["VRChat", "ワールドアセット"], "Udon"),
+            ("3Dツール・システム", "【ワールド用】Authored 時計ギミック", &["VRChat"], "Udon"),
             ("3Dツール・システム", "Authored Addon", &["VRChat", "VRChatギミック"], "Gimmick"),
             ("3Dツール・システム", "Authored Scene Cleaner Tool", &["VRChat", "Udon", "エディタ拡張"], "Tool"),
             ("3Dツール・システム", "Authored Scene Cleaner", &["VRChat", "UdonSharp", "エディタ拡張"], "Tool"),

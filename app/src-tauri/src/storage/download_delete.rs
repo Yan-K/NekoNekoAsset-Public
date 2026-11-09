@@ -232,6 +232,7 @@ impl StorageService {
             {
                 incomplete.extend(artifact["fileId"].as_str());
                 let mut missing = artifact.clone();
+                missing.as_object_mut().unwrap().remove("attentionDismissed");
                 missing["status"] = json!("missing");
                 missing["errorCode"] = json!("download_delete_incomplete");
                 missing["updatedAt"] = json!(now());

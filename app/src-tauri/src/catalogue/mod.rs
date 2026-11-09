@@ -3113,6 +3113,22 @@ impl Catalogue {
                     .map_err(|_| anyhow::anyhow!("catalogue.lock"))?,
             ),
             "overlay" => self.edit_overlay(args),
+            "dismiss_attention" => {
+                let ids = strings(&args["productIds"]);
+                ensure!(!ids.is_empty(), "catalogue.empty_selection");
+                self.mutate(|tx, projections| {
+                    let local_import_jobs = projection::local_import_jobs(tx)?;
+                    for id in &ids {
+                        for (kind, record) in
+                            projection::dismissed_attention(tx, id, &local_import_jobs)?
+                        {
+                            let key = text(&record, "id").to_owned();
+                            Self::write(tx, projections, kind, &key, Some(record))?;
+                        }
+                    }
+                    Ok(json!({}))
+                })
+            }
             "undo" => self.undo(
                 args["token"]
                     .as_str()

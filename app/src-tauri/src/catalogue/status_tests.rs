@@ -105,6 +105,41 @@ fn genuine_file_or_latest_job_failure_is_attention_and_cancel_does_not_hide_miss
 }
 
 #[test]
+fn dismissing_attention_keeps_file_facts_and_the_next_failure_raises_it_again() {
+    fn dismiss(conn: &Connection) {
+        for (kind, record) in projection::dismissed_attention(conn, "p", &[]).unwrap() {
+            set_raw(conn, kind, text(&record, "id"), &record).unwrap();
+        }
+    }
+    let conn = fixture(1, true);
+    artifact(&conn, 0, "extractionFailed", Some("archive_password_required"));
+    job(&conn, "first", "needsAction", "2026-01-01T00:00:00Z", Some("store_access_denied"));
+    assert_eq!(projected(&conn)["status"], "attention");
+    dismiss(&conn);
+    let product = projected(&conn);
+    assert_eq!(product["status"], "partial");
+    assert_eq!(product["files"][0]["status"], "extractionFailed");
+    assert_eq!(product["files"][0]["errorCode"], "archive_password_required");
+    // Clearing Attention keeps the failure itself, even on a file sync asks to verify.
+    let mut file = raw(&conn, "remote_file", "f0").unwrap().unwrap();
+    file["requiresContentVerification"] = json!(true);
+    set_raw(&conn, "remote_file", "f0", &file).unwrap();
+    assert_eq!(projected(&conn)["files"][0]["status"], "extractionFailed");
+    file["requiresContentVerification"] = json!(false);
+    set_raw(&conn, "remote_file", "f0", &file).unwrap();
+    // A new attempt that fails is a new job, whatever the earlier one said.
+    job(&conn, "second", "failed", "2026-01-02T00:00:00Z", Some("network_failed"));
+    assert_eq!(projected(&conn)["status"], "attention");
+    dismiss(&conn);
+    assert_eq!(projected(&conn)["status"], "partial");
+    // A download that fails again replaces the artifact, so the mark goes with it.
+    artifact(&conn, 0, "missing", None);
+    assert_eq!(projected(&conn)["status"], "attention");
+    dismiss(&conn);
+    assert_eq!(projected(&conn)["status"], "notDownloaded");
+}
+
+#[test]
 fn cancelled_extraction_retains_bytes_without_claiming_ready_or_failure() {
     let conn = fixture(1, true);
     artifact(&conn, 0, "extractionFailed", Some("cancelled"));

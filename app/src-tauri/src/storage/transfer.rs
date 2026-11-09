@@ -481,11 +481,7 @@ impl StorageService {
         let _empty_partials = io::EmptyDirectoryGuard(io::safe_join(&root_path, ".nna-partials")?);
         let product = io::required_string(job, "productId")?.to_owned();
         let (files, complete) = self.remote_files(&product)?;
-        let files = if job["automatic"] == true {
-            self.enabled_files(files)?
-        } else {
-            files
-        };
+        let files = self.job_files(job, files)?;
         let files = selected_download_files(files, &job["selectedFileIds"])?;
         let attempted_files = files.clone();
         ensure!(!files.is_empty(), "manifest_incomplete");
@@ -500,11 +496,7 @@ impl StorageService {
                 .await?
         {
             let (current, complete_after) = self.remote_files(&product)?;
-            let current = if job["automatic"] == true {
-                self.enabled_files(current)?
-            } else {
-                current
-            };
+            let current = self.job_files(job, current)?;
             if complete_after && fingerprint(&current) == fingerprint(&files) {
                 job["manifestFingerprint"] = json!(fingerprint(&current));
                 job["progress"] = json!(100.0);
@@ -578,11 +570,7 @@ impl StorageService {
             job["fileProgress"] = latest["fileProgress"].clone();
         }
         let (all_files, _) = self.remote_files(&product)?;
-        let files = if job["automatic"] == true {
-            self.enabled_files(all_files.clone())?
-        } else {
-            all_files.clone()
-        };
+        let files = self.job_files(job, all_files.clone())?;
         let files = selected_download_files(files, &job["selectedFileIds"])?;
         let mut processed = Vec::new();
         for before in &attempted_files {
@@ -1458,7 +1446,10 @@ impl StorageService {
                 }
                 Err(e) => {
                     let code = io::stable_error(&e);
-                    if matches!(code, "cancelled" | "low_space" | "permission_denied") {
+                    if matches!(
+                        code,
+                        "cancelled" | "low_space" | "permission_denied" | "store_access_denied"
+                    ) {
                         return Err(e);
                     }
                     last = e;
@@ -1482,6 +1473,7 @@ impl StorageService {
             .extract_one(seven_zip, root, artifact, files, cancel)
             .await;
         if let Err(error) = &result {
+            artifact.as_object_mut().unwrap().remove("attentionDismissed");
             artifact["status"] = json!("extractionFailed");
             artifact["errorCode"] = json!(io::stable_error(error));
             self.catalogue.put(

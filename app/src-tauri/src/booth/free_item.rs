@@ -1139,6 +1139,25 @@ mod tests {
         )
     }
     #[test]
+    fn a_refused_free_file_reads_as_ended_only_when_its_page_says_so() {
+        use super::super::free_offer_closed;
+        let start = HTML.find("<li class='variation-item'>").unwrap();
+        let end = start + HTML[start..].find("</li>").unwrap() + "</li>".len();
+        let paid = format!("{}{}", &HTML[..start], &HTML[end..]).replace(
+            "<form><button",
+            "<div class='variation-price'>¥ 1,200</div><form><button",
+        );
+        assert!(free_offer_closed(200, &paid, "900001"));
+        assert!(free_offer_closed(404, "", "900001"));
+        assert!(free_offer_closed(410, "", "900001"));
+        // Still offered, unreadable, or a status that says nothing about the offer.
+        assert!(!free_offer_closed(200, HTML, "900001"));
+        assert!(!free_offer_closed(200, "<html></html>", "900001"));
+        assert!(!free_offer_closed(200, &paid, "900002"));
+        assert!(!free_offer_closed(403, &paid, "900001"));
+        assert!(!free_offer_closed(500, &paid, "900001"));
+    }
+    #[test]
     fn settled_free_offer_absence_requires_positive_paid_rows_and_all_guards() {
         let start = HTML.find("<li class='variation-item'>").unwrap();
         let end = start + HTML[start..].find("</li>").unwrap() + "</li>".len();

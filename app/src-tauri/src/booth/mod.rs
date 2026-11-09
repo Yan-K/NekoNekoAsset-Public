@@ -69,6 +69,14 @@ pub fn validate_download_response(response: &reqwest::Response) -> Result<()> {
     }
     Ok(())
 }
+/// A free item's page proves its offer ended: no file controls left, or no page.
+fn free_offer_closed(status: u16, body: &str, id: &str) -> bool {
+    matches!(status, 404 | 410)
+        || (200..300).contains(&status)
+            && free_item::parse(body, id).is_ok_and(|evidence| {
+                evidence.error_code.as_deref() == Some("FREE_OFFER_UNAVAILABLE")
+            })
+}
 /// Unsigned route for one catalogue file: its bound variant and, for an audio
 /// track, the MP3 rendition.
 fn download_route(file: &Value) -> Result<String> {
@@ -1187,6 +1195,20 @@ impl BoothService {
         .await?;
         http::build_client(jar, download)
     }
+    /// Whether a refused file came from a free offer its public page says has ended,
+    /// the same reading a sync counts. Any other answer leaves the refusal as it was.
+    async fn free_offer_ended(&self, client: &reqwest::Client, file: &Value) -> bool {
+        let Some(route) = file["resolverPage"].as_str().filter(|_| file["source"] == "free") else {
+            return false;
+        };
+        let (Some(id), Ok(url)) = (safety::free_item_id(route), url::Url::parse(route)) else {
+            return false;
+        };
+        match self.inner.http.get(client, url).await {
+            Ok((status, body)) => free_offer_closed(status.as_u16(), &body, id),
+            Err(_) => false,
+        }
+    }
     pub async fn download_ticket(&self, app: &AppHandle, file_id: &str) -> Result<DownloadTicket> {
         let file = self
             .inner
@@ -1197,12 +1219,21 @@ impl BoothService {
         let route = download_route(&file)?;
         let client = self.client(app, account, true).await?;
         // Resolve anew for each attempt; signed destinations are never catalogue fields.
-        let response = self
+        let resolved = self
             .inner
             .http
             .resolve(&client, url::Url::parse(&route).unwrap())
-            .await?;
-        validate_download_response(&response)?;
+            .await
+            .and_then(|response| validate_download_response(&response).map(|()| response));
+        let response = match resolved {
+            Err(error)
+                if matches!(code(&error).as_str(), "PERMISSION_DENIED" | "FILE_UNAVAILABLE")
+                    && self.free_offer_ended(&client, &file).await =>
+            {
+                bail!("FREE_OFFER_UNAVAILABLE")
+            }
+            resolved => resolved?,
+        };
         let final_url = response.url().clone();
         // The first body is dropped; storage streams a fresh GET to the ephemeral destination.
         // Only this response proves the current size; saved listing bytes can

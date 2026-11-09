@@ -349,6 +349,10 @@ pub fn stable_error(err: &anyhow::Error) -> &'static str {
         // replaces the saved list. Local bytes stay `file_missing`, and other
         // FILE_UNAVAILABLE callers outside downloads keep their own mapping.
         "file_unavailable" => return "store_file_unavailable",
+        // A free offer that ended stays listed, so an update cannot help.
+        "free_offer_unavailable" => return "free_offer_unavailable",
+        // The store answering no; a disk refusing a write is an io error below.
+        "permission_denied" => return "store_access_denied",
         "source_tree_incomplete" => return "source_tree_incomplete",
         "network_unavailable" => return "network_failed",
         "download_failed" => return "download_http_failed",
@@ -598,7 +602,8 @@ mod launch_path_tests {
             ("FILE_UNAVAILABLE", "store_file_unavailable"),
             ("file_missing", "file_missing"),
             ("SIGNED_LINK_EXPIRED", "link_expired"),
-            ("PERMISSION_DENIED", "permission_denied"),
+            ("PERMISSION_DENIED", "store_access_denied"),
+            ("FREE_OFFER_UNAVAILABLE", "free_offer_unavailable"),
             ("archive_corrupt", "archive_corrupt"),
             ("archive_listing_invalid", "archive_listing_invalid"),
             ("archive_inventory_mismatch", "archive_inventory_mismatch"),

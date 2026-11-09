@@ -10,7 +10,7 @@ const labels = {
   'zh-Hant': { tagInput:'尋找或建立標籤', createTag:'建立標籤', addTagChoice:'加入標籤', removeTagChoice:'移除標籤', tagSuggestions:'標籤建議', themeName:'主題名稱', existingCollections:'收藏集', newCollection:'新增收藏集', chooseCollection:'選擇收藏集', createAndAdd:'建立並加入', addToExisting:'加入', collectionRequired:'請選擇收藏集或輸入新名稱。', collectionExists:'此收藏集已存在，請從清單中選擇。', themeNameRequired:'請輸入主題名稱。' },
 } satisfies Record<Locale, Record<string, string>>;
 const extra:Record<string,[string,string,string,string,string]>={
-  uploadThumbnail:['Upload','アップロード','업로드','上传','上傳'],
+  uploadThumbnail:['Upload thumbnail','サムネイルをアップロード','썸네일 업로드','上传缩略图','上傳縮圖'],
   invalidThumbnail:['Choose a PNG, JPEG or WebP image up to 10 MB.','10 MB 以下の PNG・JPEG・WebP 画像を選択してください。','10 MB 이하의 PNG, JPEG 또는 WebP 이미지를 선택하세요.','请选择不超过 10 MB 的 PNG、JPEG 或 WebP 图片。','請選擇不超過 10 MB 的 PNG、JPEG 或 WebP 圖片。'],
   manageCollections:['Collections','コレクション','컬렉션','收藏集','收藏集'],
   createCollection:['Create collection','コレクションを作成','컬렉션 만들기','创建收藏集','建立收藏集'],

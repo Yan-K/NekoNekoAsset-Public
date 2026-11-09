@@ -266,6 +266,10 @@ impl StorageService {
         ))
     }
     fn put_job(&self, job: &mut Value, state: &str, error: Option<&str>) -> Result<()> {
+        if state == "queued" {
+            // A retry reuses this record, and its failure must raise Attention again.
+            job.as_object_mut().unwrap().remove("attentionDismissed");
+        }
         job["state"] = json!(state);
         job["updatedAt"] = json!(now());
         job["errorCode"] = json!(error);
@@ -417,6 +421,35 @@ impl StorageService {
             .into_iter()
             .filter(|f| f["accountId"].as_str().is_some_and(|a| enabled.contains(a)))
             .collect())
+    }
+    /// Leaves out files whose last download found their free offer closed. Asking for
+    /// that one product tries again; bulk and automatic runs do not.
+    fn without_ended_offers(&self, files: Vec<Value>) -> Result<Vec<Value>> {
+        let mut remaining = Vec::with_capacity(files.len());
+        for file in files {
+            let last = format!("pending-{}", io::key(file["id"].as_str().unwrap_or("")));
+            if self
+                .catalogue
+                .get("artifact", &last)?
+                .is_none_or(|artifact| artifact["errorCode"] != "free_offer_unavailable")
+            {
+                remaining.push(file);
+            }
+        }
+        Ok(remaining)
+    }
+    /// What a download job covers of its product's current list.
+    fn job_files(&self, job: &Value, files: Vec<Value>) -> Result<Vec<Value>> {
+        let files = if job["automatic"] == true {
+            self.enabled_files(files)?
+        } else {
+            files
+        };
+        if job["skipEndedOffers"] == true {
+            self.without_ended_offers(files)
+        } else {
+            Ok(files)
+        }
     }
     fn available_download_accounts(&self) -> Result<HashSet<String>> {
         Ok(self
@@ -590,8 +623,10 @@ impl StorageService {
                                             | "low_space"
                                             | "auth_required"
                                             | "permission_denied"
+                                            | "store_access_denied"
                                             | "manifest_incomplete"
                                             | "store_file_unavailable"
+                                            | "free_offer_unavailable"
                                             | "archive_password_required"
                                             | "archive_missing_volume"
                                             | "source_tree_incomplete"
@@ -707,17 +742,19 @@ impl StorageService {
                         .is_some_and(|a| accounts.contains(a))
                 })
                 .collect();
+            // The job that found an offer closed recorded the list still holding its file.
+            let with_ended = fingerprint(&files);
+            let files = self.without_ended_offers(files)?;
             if files.is_empty() {
                 continue;
             }
             let fingerprint = fingerprint(&files);
             // Failed/cancelled work requires an explicit retry; only a changed manifest queues again.
-            if self
-                .catalogue
-                .related("job", id)?
-                .iter()
-                .any(|job| job["type"] == "download" && job["manifestFingerprint"] == fingerprint)
-            {
+            if self.catalogue.related("job", id)?.iter().any(|job| {
+                job["type"] == "download"
+                    && (job["manifestFingerprint"] == fingerprint
+                        || job["manifestFingerprint"] == with_ended)
+            }) {
                 continue;
             }
             pending.push(id.clone());
@@ -786,6 +823,11 @@ impl StorageService {
             } else {
                 files
             };
+            let files = if automatic || bulk {
+                self.without_ended_offers(files)?
+            } else {
+                files
+            };
             if (automatic || bulk) && files.is_empty() {
                 continue;
             }
@@ -816,7 +858,7 @@ impl StorageService {
             }
             let fingerprint = fingerprint(&files);
             let job_id = uuid::Uuid::new_v4().to_string();
-            let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
+            let job = json!({"id":job_id,"type":"download","productId":id,"rootId":root["id"],"automatic":args["automatic"]==true,"skipEndedOffers":automatic||bulk,"selectedFileIds":selected,"redownload":args["redownload"]==true,"fileIds":files.iter().map(|f|f["id"].clone()).collect::<Vec<_>>(),"manifestComplete":complete,"manifestFingerprint":fingerprint,"state":if files.is_empty(){"needsAction"}else{"queued"},"errorCode":if files.is_empty(){Some("manifest_incomplete")}else{None},"progress":0,"createdAt":now(),"updatedAt":now()});
             writes.push(("job".into(), job_id.clone(), job));
             result.push(json!(job_id));
         }

@@ -48,6 +48,7 @@ const labels:Record<string,string[]>={
  network_failed:['Download connection failed; retry','ダウンロード接続に失敗しました。再試行してください','다운로드 연결 실패 · 다시 시도하세요','下载连接失败，请重试','下載連線失敗，請重試'],
  network_timeout:['Download connection timed out; retry','ダウンロード接続がタイムアウトしました。再試行してください','다운로드 연결 시간 초과 · 다시 시도하세요','下载连接超时，请重试','下載連線逾時，請重試'],
  rate_limited:['Store rate limit reached; retry later','ストアのリクエスト制限に達しました。後で再試行してください','스토어 요청 제한 · 나중에 다시 시도하세요','商店请求达到频率限制，请稍后重试','商店請求達到頻率限制，請稍後重試'],
+ store_access_denied:['The store refused this download; sign in again and retry','ストアにダウンロードを拒否されました。再ログインしてもう一度お試しください','스토어에서 다운로드를 거부했습니다. 다시 로그인한 후 시도하세요','商店拒绝了此下载，请重新登录后再试','商店拒絕了此下載，請重新登入後再試'],
  store_file_unavailable:['The store no longer offers this file; update the asset','ストアでこのファイルが提供されていません。アセットを更新してください','스토어에서 더 이상 이 파일을 제공하지 않습니다. 에셋을 업데이트하세요','商店已不再提供此文件，请更新资产','商店已不再提供此檔案，請更新資產'],
  source_changed:['File information changed during download; update and retry','ダウンロード中にファイル情報が変更されました。更新して再試行してください','다운로드 중 파일 정보 변경 · 업데이트 후 다시 시도하세요','下载期间文件信息已更改，请更新后重试','下載期間檔案資訊已變更，請更新後重試'],
  download_size_mismatch:['Downloaded size does not match the file; retry','ダウンロードしたサイズが一致しません。再試行してください','다운로드 파일 크기 불일치 · 다시 시도하세요','下载文件大小不符，请重试','下載檔案大小不符，請重試'],

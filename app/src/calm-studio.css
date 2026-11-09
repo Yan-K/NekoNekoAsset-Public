@@ -448,6 +448,10 @@ html:is(.box-selecting,.dragging-products) .app .product-card{transform:none!imp
 .app .asset-inspector-status{gap:8px;font-size:12px;}
 .app .asset-inspector-state{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 9px 0 7px;border-radius:99px;background:var(--hover);color:var(--muted);font-size:11.5px;font-weight:700;white-space:nowrap;}
 .app .asset-inspector-state>svg{width:13px;height:13px;stroke-width:2.2;}
+.app .asset-inspector-state:has(.asset-inspector-dismiss){padding-right:3px;}
+.app .asset-inspector-dismiss{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;min-height:0;margin-left:1px;padding:0;border:0;border-radius:99px;background:transparent;color:inherit;}
+.app .asset-inspector-dismiss:hover{background:color-mix(in oklab,currentColor 18%,transparent);}
+.app .asset-inspector-dismiss:focus-visible{outline:2px solid var(--acc-ring);outline-offset:0;}
 .app .asset-inspector-state[data-status="ready"]{background:var(--ok-1);color:var(--ok-ink);}
 .app .asset-inspector-state[data-status="attention"]{background:var(--warn-1);color:var(--warn-ink);}
 .app .asset-inspector-state[data-status="processing"]{background:var(--acc-1);color:var(--acc-ink);}

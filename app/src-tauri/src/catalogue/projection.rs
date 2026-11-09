@@ -350,6 +350,10 @@ fn offered_sources(
         .collect()
 }
 fn artifact_needs_attention(artifact: &Value) -> bool {
+    artifact["attentionDismissed"] != true && artifact_failed(artifact)
+}
+
+fn artifact_failed(artifact: &Value) -> bool {
     let status = text(artifact, "status");
     let error = text(artifact, "errorCode");
     if matches!(status, "missing" | "corrupt") {
@@ -372,9 +376,9 @@ fn file_job(job: &Value) -> bool {
     text(job, "type").contains("download") || text(job, "type") == "storage:import_local"
 }
 
-fn local_import_jobs(conn: &Connection) -> Result<Vec<Value>> {
+pub(super) fn local_import_jobs(conn: &Connection) -> Result<Vec<Value>> {
     // Keep large import plans out of the transaction-local status snapshot.
-    let mut statement = conn.prepare("SELECT json_object('id',id,'productId',product_id,'productIds',json_extract(body,'$.productIds'),'completedProductIds',json_extract(body,'$.completedProductIds'),'type',json_extract(body,'$.type'),'state',json_extract(body,'$.state'),'stage',json_extract(body,'$.stage'),'updatedAt',json_extract(body,'$.updatedAt'),'errorCode',json_extract(body,'$.errorCode')) FROM entities WHERE kind='job' AND json_extract(body,'$.type')='storage:import_local'")?;
+    let mut statement = conn.prepare("SELECT json_object('id',id,'productId',product_id,'productIds',json_extract(body,'$.productIds'),'completedProductIds',json_extract(body,'$.completedProductIds'),'type',json_extract(body,'$.type'),'state',json_extract(body,'$.state'),'stage',json_extract(body,'$.stage'),'updatedAt',json_extract(body,'$.updatedAt'),'errorCode',json_extract(body,'$.errorCode'),'attentionDismissed',json_extract(body,'$.attentionDismissed')) FROM entities WHERE kind='job' AND json_extract(body,'$.type')='storage:import_local'")?;
     let bodies = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -432,13 +436,48 @@ pub(super) fn job_changes_product(before: Option<&Value>, after: Option<&Value>)
     }
 }
 
+fn latest_file_job(jobs: &[Value]) -> Option<&Value> {
+    jobs.iter()
+        .filter(|job| file_job(job))
+        .max_by_key(|job| text(job, "updatedAt"))
+}
+
+fn job_needs_attention(job: &Value, product: &str) -> bool {
+    matches!(text(job, "state"), "failed" | "needsAction")
+        && !matches!(text(job, "errorCode"), "cancelled" | "manifest_incomplete")
+        && !strings(&job["attentionDismissed"]).iter().any(|id| id == product)
+}
+
+/// Records to rewrite so one product's current failures stop raising Attention. No
+/// file fact changes, and a later failure writes a job or artifact without the mark.
+pub(super) fn dismissed_attention(
+    conn: &Connection,
+    id: &str,
+    local_import_jobs: &[Value],
+) -> Result<Vec<(&'static str, Value)>> {
+    let mut records = vec![];
+    for mut artifact in related(conn, "artifact", id)? {
+        if artifact_needs_attention(&artifact) {
+            artifact["attentionDismissed"] = json!(true);
+            records.push(("artifact", artifact));
+        }
+    }
+    let jobs = product_jobs(conn, id, local_import_jobs)?;
+    let failed = latest_file_job(&jobs).filter(|job| job_needs_attention(job, id));
+    // Local import summaries are partial, and one import can hold several products.
+    if let Some(mut job) = failed.map(|job| raw(conn, "job", text(job, "id"))).transpose()?.flatten() {
+        let mut products = strings(&job["attentionDismissed"]);
+        products.push(id.to_owned());
+        job["attentionDismissed"] = json!(products);
+        records.push(("job", job));
+    }
+    Ok(records)
+}
+
 fn update_status(product: &mut Value, jobs: &[Value]) {
     let empty = vec![];
     let files = product["files"].as_array().unwrap_or(&empty);
-    let latest = jobs
-        .iter()
-        .filter(|job| file_job(job))
-        .max_by_key(|job| text(job, "updatedAt"));
+    let latest = latest_file_job(jobs);
     let downloaded = files.iter().filter(|file| byte_complete(file)).count();
     let all_ready = !files.is_empty() && files.iter().all(|file| text(file, "status") == "ready");
     let status = if jobs.iter().any(|job| {
@@ -456,10 +495,7 @@ fn update_status(product: &mut Value, jobs: &[Value]) {
         "attention"
     } else if all_ready {
         "ready"
-    } else if latest.is_some_and(|job| {
-        matches!(text(job, "state"), "failed" | "needsAction")
-            && !matches!(text(job, "errorCode"), "cancelled" | "manifest_incomplete")
-    }) {
+    } else if latest.is_some_and(|job| job_needs_attention(job, text(product, "id"))) {
         "attention"
     } else if downloaded > 0 {
         "partial"
@@ -553,7 +589,7 @@ fn refresh_local(
             } else {
                 by_revision.get(&(fid, revision)).copied()
             };
-            let failed = artifact.is_some_and(artifact_needs_attention);
+            let failed = artifact.is_some_and(artifact_failed);
             let state =
                 artifact
                     .map(|artifact| text(artifact, "status"))
@@ -587,6 +623,7 @@ fn refresh_local(
                 "extractedPath",
                 "extractedInventory",
                 "errorCode",
+                "attentionDismissed",
                 "verifiedHash",
                 "rootStatus",
             ] {
@@ -601,6 +638,7 @@ fn refresh_local(
                     "extractedPath",
                     "extractedInventory",
                     "errorCode",
+                    "attentionDismissed",
                 ] {
                     if let Some(value) = artifact.get(field) {
                         file[field] = value.clone();
@@ -1024,7 +1062,7 @@ fn effective_with_jobs(
         } else {
             artifact_map.get(&(fid.as_str(), revision)).copied()
         };
-        let failed = artifact.is_some_and(artifact_needs_attention);
+        let failed = artifact.is_some_and(artifact_failed);
         let artifact_status = artifact.map(|a| text(a, "status")).unwrap_or(if known {
             "notDownloaded"
         } else {
@@ -1077,6 +1115,7 @@ fn effective_with_jobs(
                 "extractedPath",
                 "extractedInventory",
                 "errorCode",
+                "attentionDismissed",
             ] {
                 if let Some(value) = a.get(key) {
                     file[key] = value.clone();

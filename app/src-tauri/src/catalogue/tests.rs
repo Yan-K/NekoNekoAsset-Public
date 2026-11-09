@@ -4300,6 +4300,10 @@ fn local_manifest_and_batch_jobs_preserve_required_files_without_accounts() {
     c.put("job", "local-import:synthetic", job).unwrap();
     assert_eq!(dynamic_details(&c, "local:one")["status"], "ready");
     assert_eq!(dynamic_details(&c, "local:two")["status"], "attention");
+    // One import holds both products: dismissing one leaves the job's own facts alone.
+    c.command("dismiss_attention", json!({"productIds":["local:two"]})).unwrap();
+    assert_eq!(dynamic_details(&c, "local:two")["status"], "notDownloaded");
+    assert_eq!(c.get("job", "local-import:synthetic").unwrap().unwrap()["state"], "failed");
     assert_eq!(
         c.command("query", json!({"accountIds":["unrelated"]}))
             .unwrap()["matched"],
@@ -4346,6 +4350,71 @@ fn local_manifest_and_batch_jobs_preserve_required_files_without_accounts() {
     assert!(other.list("job").unwrap().is_empty());
     let invalid = local("local:empty", json!([]));
     assert!(other.put("product", "local:empty", invalid).is_err());
+}
+
+#[test]
+fn acquisition_filter_reads_each_accounts_own_route_before_paging() {
+    let f = Fixture::new();
+    let c = f.open();
+    let proven = |amount: f64| json!({"paidPrice":amount,"paidCurrency":"JPY","paidPriceBasis":"productLineTotal"});
+    let unproven = json!({});
+    for (product, account, source, facts) in [
+        ("bought", "a", "purchase", proven(500.0)),
+        // The Library row beside a proven order adds nothing of its own.
+        ("bought", "a", "library", unproven.clone()),
+        ("zero-order", "a", "purchase", proven(0.0)),
+        ("zero-order", "a", "library", unproven.clone()),
+        ("free-history", "a", "free", unproven.clone()),
+        ("gifted", "b", "gift", unproven.clone()),
+        ("library-only", "a", "library", unproven.clone()),
+        ("two-routes", "a", "purchase", proven(800.0)),
+        ("two-routes", "b", "gift", unproven.clone()),
+    ] {
+        let id = format!("{product}:{account}:{source}");
+        let mut row = json!({"id":id,"productId":product,"accountId":account,"source":source});
+        row.as_object_mut().unwrap().extend(facts.as_object().unwrap().clone());
+        c.put("acquisition", &id, row).unwrap();
+    }
+    for id in ["bought", "zero-order", "free-history", "gifted", "library-only", "two-routes", "no-record"] {
+        c.put("product",id,json!({"id":id,"provider":"booth","title":id,"sourceCategory":{"name":"Hair"}})).unwrap();
+    }
+    c.put("product","local:file",json!({"id":"local:file","provider":"local","store":"Local Files","custom":true,"title":"local:file","sourceCategory":{"name":"Hair"}})).unwrap();
+    let matched = |args: Value| {
+        let mut args = args;
+        args["sort"] = json!("title");
+        args["direction"] = json!("asc");
+        strings(&c.command("query", args).unwrap()["matchedIds"])
+    };
+    assert_eq!(matched(json!({})).len(), 8);
+    assert_eq!(matched(json!({"acquisition":null})).len(), 8);
+    assert_eq!(matched(json!({"acquisition":[]})), Vec::<String>::new());
+    assert_eq!(matched(json!({"acquisition":["free"]})), ["free-history", "zero-order"]);
+    assert_eq!(matched(json!({"acquisition":["gift"]})), ["gifted", "two-routes"]);
+    assert_eq!(matched(json!({"acquisition":["paid"]})), ["bought", "library-only", "no-record", "two-routes"]);
+    assert_eq!(matched(json!({"acquisition":["free","gift"]})), ["free-history", "gifted", "two-routes", "zero-order"]);
+    // Only the selected account's own route counts; another account's gift does not.
+    assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["a"]})), Vec::<String>::new());
+    assert_eq!(matched(json!({"acquisition":["paid"],"accountIds":["b"]})), Vec::<String>::new());
+    assert_eq!(matched(json!({"acquisition":["gift"],"accountIds":["b"]})), ["gifted", "two-routes"]);
+    assert_eq!(matched(json!({"acquisition":["free"],"accountIds":[]})), Vec::<String>::new());
+    // An unproven row follows the price it can still show.
+    let mut row = c.get("acquisition", "library-only:a:library").unwrap().unwrap();
+    row["variantIds"] = json!(["800001"]);
+    c.put("acquisition", "library-only:a:library", row).unwrap();
+    let mut listing = c.get("product", "library-only").unwrap().unwrap();
+    listing["publicVariants"] = json!([{"id":"800001","name":"","price":0,"currency":"JPY"}]);
+    c.put("product", "library-only", listing).unwrap();
+    assert_eq!(matched(json!({"acquisition":["free"]})), ["free-history", "library-only", "zero-order"]);
+    // Two accounts holding different variants: each row follows its own account's price.
+    for (account, variant) in [("a", "800002"), ("b", "800003")] {
+        let id = format!("split:{account}:library");
+        c.put("acquisition",&id,json!({"id":id,"productId":"split","accountId":account,"source":"library","variantIds":[variant]})).unwrap();
+    }
+    c.put("product","split",json!({"id":"split","provider":"booth","title":"split","sourceCategory":{"name":"Hair"},"publicVariants":[{"id":"800002","name":"Free","price":0,"currency":"JPY"},{"id":"800003","name":"Paid","price":500,"currency":"JPY"}]})).unwrap();
+    assert!(matched(json!({"acquisition":["free"],"accountIds":["a"]})).contains(&"split".to_owned()));
+    assert!(!matched(json!({"acquisition":["paid"],"accountIds":["a"]})).contains(&"split".to_owned()));
+    assert!(matched(json!({"acquisition":["paid"],"accountIds":["b"]})).contains(&"split".to_owned()));
+    assert!(!matched(json!({"acquisition":["free"],"accountIds":["b"]})).contains(&"split".to_owned()));
 }
 
 #[test]
