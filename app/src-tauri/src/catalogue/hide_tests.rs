@@ -431,3 +431,42 @@ fn unavailable_store_products_follow_the_list_preference_and_keep_their_records(
         json!(["a-file", "b-empty", "c-kept", "d-local"])
     );
 }
+
+#[test]
+fn all_lists_unclassified_products_unless_the_user_hides_them_there() {
+    let fixture = Fixture::new();
+    let c = fixture.open();
+    product(&c, "a-hair", "local");
+    c.put("product", "b-print", json!({"id":"b-print","title":"Authored unrelated print"}))
+        .unwrap();
+    let all = |hide: Option<bool>| {
+        let mut args = json!({"sort":"title","includeFiles":false,"presentation":"list"});
+        if let Some(hide) = hide {
+            args["hideUnclassified"] = json!(hide);
+        }
+        let result = c.command("query", args).unwrap();
+        (result["matchedIds"].clone(), result["counts"]["all"].clone())
+    };
+    assert_eq!(all(None), (json!(["a-hair", "b-print"]), json!(2)));
+    assert_eq!(all(Some(false)), all(None));
+    assert_eq!(all(Some(true)), (json!(["a-hair"]), json!(1)));
+    // Unclassified itself keeps its products either way.
+    let unclassified = c
+        .command("query", json!({"category":"NonVRChat","hideUnclassified":true}))
+        .unwrap();
+    assert_eq!(unclassified["matchedIds"], json!(["b-print"]));
+    assert_eq!(unclassified["counts"]["categories"]["NonVRChat"], 1);
+    // Bootstrap counts follow the saved preference, off by default.
+    let saved = || {
+        c.command("bootstrap", json!({"includeProducts":false}))
+            .unwrap()["counts"]["all"]
+            .clone()
+    };
+    assert_eq!(saved(), json!(2));
+    c.command("preferences", json!({"patch":{"hideUnclassified":true}}))
+        .unwrap();
+    assert_eq!(saved(), json!(1));
+    assert!(c
+        .command("preferences", json!({"patch":{"hideUnclassified":"yes"}}))
+        .is_err());
+}

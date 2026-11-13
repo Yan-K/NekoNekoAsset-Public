@@ -76,10 +76,10 @@ export function fileCountLabel(product:Pick<Product,'manifestComplete'|'download
  if(!count)return '—';
  return `${ratio?product.downloaded+'/':''}${count}+`;
 }
-/** All assets is the intended VRChat default; explicit shortcuts retain their scopes. */
-export function libraryCategoryMatches(product: Product, category: string, quick = 'all', collection = ''): boolean {
+/** All assets lists Unclassified unless the user hides it there; explicit shortcuts retain their scopes. */
+export function libraryCategoryMatches(product: Product, category: string, quick = 'all', collection = '', hideUnclassified = false): boolean {
   if (category !== 'all') return product.category === category;
-  return !!collection || quick !== 'all' || product.category !== 'NonVRChat';
+  return !hideUnclassified || !!collection || quick !== 'all' || product.category !== 'NonVRChat';
 }
 export function isFileDownloaded(file: AssetFile): boolean {
   return ['ready', 'downloaded', 'extracting', 'extractionFailed'].includes(file.status);

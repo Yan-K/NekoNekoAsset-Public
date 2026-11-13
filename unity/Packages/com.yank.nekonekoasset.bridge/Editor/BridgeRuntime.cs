@@ -317,6 +317,7 @@ namespace NekoNekoAsset.Bridge
                 hello.bridgeVersion = registry.bridgeVersion;
                 return Reply(hello);
             }
+            if (command.command == "nativeImport") return BeginNativeImport(command);
             if (command.command != "submit" && command.command != "status" && command.command != "cancel")
                 return Reply(Response("invalidRequest", false));
             if (!BridgeFiles.IsUuid(command.requestId) || !BridgeFiles.IsHash(command.fingerprint))
@@ -353,6 +354,38 @@ namespace NekoNekoAsset.Bridge
             {
                 return Reply(Response("invalidRequest", false, command.requestId));
             }
+        }
+
+        // One package the App selected alone opens in Unity's own Import Unity Package
+        // window, which reads the file in place and asks for confirmation itself. There is
+        // no request, receipt or transfer; anything this refuses uses submit instead.
+        private static BridgeSubmission BeginNativeImport(BridgeCommand command)
+        {
+            if (command.sessionId != registry.sessionId) return Reply(Response("invalidRequest", false));
+            if (!registry.enabled) return Reply(Response("disabled", false));
+            if (active != null) return Reply(Response("busy", false));
+            string package = command.path;
+            try
+            {
+                // Unity's importer cannot decompress a package whose file name is not ASCII
+                // ("Couldn't decompress package"), and may not open a path past MAX_PATH.
+                if (string.IsNullOrEmpty(package) || package.Length >= 260 || !Path.IsPathRooted(package)
+                    || !package.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)
+                    || Path.GetFileName(package).Any(c => c < ' ' || c > '~'))
+                    return Reply(Response("invalidRequest", false));
+                if (!File.Exists(package)) return Reply(Response("notFound", false));
+            }
+            catch (Exception) { return Reply(Response("invalidRequest", false)); }
+            // Runs next in this main-thread queue while the listener thread sends the reply.
+            MainActions.Enqueue(() =>
+            {
+                try { AssetDatabase.ImportPackage(package, true); }
+                catch (Exception error)
+                {
+                    UnityEngine.Debug.LogError("NekoNekoAsset Bridge could not open Unity's package import (" + error.GetType().Name + ").");
+                }
+            });
+            return Reply(Response("accepted", true));
         }
 
         private static BridgeManifest ValidateManifest(BridgeCommand command)

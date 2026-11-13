@@ -178,6 +178,8 @@ struct Command<'a> {
     fingerprint: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manifest_json: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
 }
 
 pub(crate) fn is_hash(value: &str) -> bool {
@@ -241,6 +243,7 @@ fn command<'a>(
         request_id: request.map(|r| r.request_id.as_str()),
         fingerprint: request.map(|r| r.fingerprint.as_str()),
         manifest_json: manifest,
+        path: None,
     })
 }
 
@@ -435,6 +438,14 @@ pub async fn hello(registry: &Registry) -> Result<LiveEditor> {
         bridge_version: response.bridge_version,
         busy: response.busy,
     })
+}
+
+/// Opens one App-managed unitypackage in Unity's own Import Unity Package window.
+/// No request, receipt or payload is involved; older Bridges answer invalidRequest.
+pub async fn native_import(registry: &Registry, path: &str) -> Result<BridgeResponse> {
+    let mut command = command(registry, "nativeImport", None, None)?;
+    command.path = Some(path);
+    Ok(exchange(registry, &command, None).await?.1)
 }
 
 pub async fn status(registry: &Registry, request: &RequestIdentity) -> Result<BridgeResponse> {
@@ -908,6 +919,36 @@ mod tests {
         .await;
         tokio::fs::remove_file(path).await.unwrap();
         assert!(result.unwrap().receipt.unwrap().staged);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_import_names_one_path_and_returns_the_bridge_answer() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let registry = registry(listener.local_addr().unwrap().port());
+        let path = r"E:\Authored Library\Outfit.unitypackage";
+        let reply = |code: &str| -> BridgeResponse {
+            serde_json::from_value(json!({"version":1,"ok":code=="accepted","code":code,"instanceId":registry.instance_id,"sessionId":registry.session_id,"requestId":"","enabled":true,"busy":false})).unwrap()
+        };
+        let replies = [reply("accepted"), reply("invalidRequest")];
+        let task = tokio::spawn(async move {
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let command = read_command(&mut socket).await;
+                assert_eq!(command["command"], "nativeImport");
+                assert_eq!(command["path"], path);
+                for absent in ["requestId", "fingerprint", "manifestJson"] {
+                    assert!(command.get(absent).is_none(), "{absent}");
+                }
+                write_frame(&mut socket, &reply).await.unwrap();
+            }
+        });
+        // An older Bridge's refusal is an answer, not a failure, so the App can fall back.
+        for code in ["accepted", "invalidRequest"] {
+            assert_eq!(native_import(&registry, path).await.unwrap().code, code);
+        }
         task.await.unwrap();
     }
 

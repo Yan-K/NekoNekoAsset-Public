@@ -33,6 +33,8 @@ namespace NekoNekoAsset.Bridge
         public string requestId;
         public string fingerprint;
         public string manifestJson;
+        // nativeImport only: one App-managed unitypackage for Unity's own importer.
+        public string path;
     }
 
     [Serializable]

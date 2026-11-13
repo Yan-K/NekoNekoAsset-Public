@@ -79,6 +79,15 @@ fn error_code(error: anyhow::Error) -> String {
 fn terminal(phase: &str) -> bool {
     matches!(phase, "completed" | "cancelled" | "failed" | "interrupted")
 }
+/// Unity's importer takes an ordinary path, not the verbatim form of canonical roots.
+fn plain_path(path: &str) -> String {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) => rest
+            .strip_prefix(r"UNC\")
+            .map_or_else(|| rest.to_owned(), |share| format!(r"\\{share}")),
+        None => path.to_owned(),
+    }
+}
 fn identity(record: &RequestRecord) -> RequestIdentity {
     RequestIdentity {
         request_id: record.request_id.clone(),
@@ -192,6 +201,33 @@ impl UnityService {
                     })
                     .ok_or_else(|| anyhow::anyhow!("UNITY_UNAVAILABLE"))?;
                 ensure!(!editor.summary().busy, "UNITY_BUSY");
+                // One package opens in Unity's own importer, which reads the managed file in
+                // place. An older Bridge, or a package Unity's importer cannot open, uses the transfer.
+                if let [leaf] = args.leaf_refs.as_slice() {
+                    let path = self
+                        .storage
+                        .unity_package_path(&args.product_ids, leaf)
+                        .await?
+                        .and_then(|path| path.to_str().map(plain_path));
+                    if let Some(path) = path {
+                        // The App holds the foreground after the click; let Unity show its window.
+                        #[cfg(windows)]
+                        let _ = unsafe {
+                            windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                                editor.registry().process_id,
+                            )
+                        };
+                        let response = wire::native_import(editor.registry(), &path)
+                            .await
+                            .map_err(|_| anyhow::anyhow!("UNITY_NO_RESPONSE"))?;
+                        match response.code.as_str() {
+                            "accepted" => return Ok(json!({"native":true})),
+                            "busy" => bail!("UNITY_BUSY"),
+                            "disabled" => bail!("UNITY_DISABLED"),
+                            _ => {}
+                        }
+                    }
+                }
                 let request_id = uuid::Uuid::new_v4().to_string();
                 let stamp = now();
                 let record = RequestRecord {
@@ -648,6 +684,17 @@ fn validate_result_entries(manifest_json: &str, receipt: &wire::Receipt) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unity_receives_ordinary_paths_for_verbatim_roots() {
+        for (verbatim, plain) in [
+            (r"\\?\E:\Library\A.unitypackage", r"E:\Library\A.unitypackage"),
+            (r"\\?\UNC\nas\share\A.unitypackage", r"\\nas\share\A.unitypackage"),
+            (r"E:\Library\A.unitypackage", r"E:\Library\A.unitypackage"),
+        ] {
+            assert_eq!(plain_path(verbatim), plain);
+        }
+    }
 
     #[test]
     fn receipt_results_bind_to_selection_and_allow_package_children() {

@@ -13,9 +13,8 @@ use std::hash::{Hash, Hasher};
 pub(super) struct ListSnapshot {
     revision: Option<i64>,
     total: i64,
-    counts: Value,
-    /// Counts without unavailable products, for the default list.
-    available_counts: Value,
+    /// Sidebar counts by whether unavailable, then Unclassified, products are hidden.
+    counts: [[Value; 2]; 2],
     summaries: HashMap<String, u64>,
 }
 
@@ -112,12 +111,12 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
             }
             hidden += count * i64::from(row.get::<_, bool>(5)?);
         }
-        let [every, available] = sets.map(|(categories, statuses, all, downloaded)| {
+        next.counts = sets.map(|(categories, statuses, all, downloaded)| {
             let attention = statuses.get("attention").copied().unwrap_or(0);
-            json!({"all":all,"downloaded":downloaded,"attention":attention,"hidden":hidden,"categories":categories,"statuses":statuses})
+            // All lists every product unless Unclassified ones are hidden from it.
+            let listed: i64 = statuses.values().sum();
+            [listed, all].map(|all| json!({"all":all,"downloaded":downloaded,"attention":attention,"hidden":hidden,"categories":categories,"statuses":statuses}))
         });
-        next.counts = every;
-        next.available_counts = available;
         Ok(next)
     })();
     match filled {
@@ -143,6 +142,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     if hide_unavailable {
         conditions.push("p.unavailable=0".to_owned());
     }
+    let hide_unclassified = args["hideUnclassified"] == true;
     let mut binds: Vec<Sql> = vec![];
     let mut bind = |value: Sql| {
         binds.push(value);
@@ -159,7 +159,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
             "p.category={}",
             bind(Sql::Text(category.to_owned()))
         ));
-    } else if quick == "all" && collection.is_empty() && !hidden_only {
+    } else if hide_unclassified && quick == "all" && collection.is_empty() && !hidden_only {
         conditions.push("p.in_all=1".to_owned());
     }
     if quick == "downloaded" {
@@ -468,12 +468,9 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
         }
         products.push(product);
     }
-    // Sidebar counts follow the preference in every scope, including Hidden.
-    let counts = if args["hideUnavailable"] == true {
-        &list.available_counts
-    } else {
-        &list.counts
-    };
+    // Sidebar counts follow the preferences in every scope, including Hidden.
+    let counts = &list.counts[usize::from(args["hideUnavailable"] == true)]
+        [usize::from(hide_unclassified)];
     let mut result = json!({"products":products,"total":list.total,"matchedIds":ids,"matched":ids.len(),"counts":counts,"allDownloaded":all_downloaded});
     if known.is_some() {
         result["fingerprints"] = Value::Object(fingerprints);
@@ -481,9 +478,14 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     Ok(result)
 }
 
-/// The saved list preference; unavailable products are hidden unless turned off.
-fn hides_unavailable(conn: &Connection) -> Result<bool> {
-    Ok(raw(conn, "preferences", "app")?.is_none_or(|p| p["hideUnavailable"] != false))
+/// The saved list preferences: unavailable products are hidden unless turned off,
+/// Unclassified ones are hidden from All only when turned on.
+fn list_preferences(conn: &Connection) -> Result<(bool, bool)> {
+    let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
+    Ok((
+        preferences["hideUnavailable"] != false,
+        preferences["hideUnclassified"] == true,
+    ))
 }
 
 /// Visible account totals are independent of query filters and visited pages.
@@ -493,7 +495,7 @@ pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
     for id in known.query_map([], |row| row.get::<_, String>(0))? {
         accounts.insert(id?, json!(0));
     }
-    let visible = if hides_unavailable(conn)? {
+    let visible = if list_preferences(conn)?.0 {
         concat!("COALESCE(json_extract(p.summary,'$.hidden'),0)=0 AND NOT ", unavailable_sql!())
     } else {
         "COALESCE(json_extract(p.summary,'$.hidden'),0)=0"
@@ -510,12 +512,10 @@ pub(super) fn account_counts(conn: &Connection) -> Result<Value> {
 }
 
 pub(super) fn counts(conn: &Connection, cache: &mut ListSnapshot) -> Result<(i64, Value)> {
-    let hide = hides_unavailable(conn)?;
+    let (unavailable, unclassified) = list_preferences(conn)?;
     let list = snapshot(conn, cache)?;
-    let counts = if hide {
-        &list.available_counts
-    } else {
-        &list.counts
-    };
-    Ok((list.total, counts.clone()))
+    Ok((
+        list.total,
+        list.counts[usize::from(unavailable)][usize::from(unclassified)].clone(),
+    ))
 }

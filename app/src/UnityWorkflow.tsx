@@ -36,7 +36,7 @@ export default function UnityWorkflow({locale,products,seed,onClose,onSubmitted,
  const duplicate=editor&&editors.filter(item=>item.projectName===editor.projectName).length>1;
  async function send(){
   if(!editor)return;setSending(true);setError('');
-  try{const result=await submitUnity({locale,productIds:seed.productIds,leafRefs:orderedFiles.filter(file=>selected.has(file.leafRef)).map(file=>file.leafRef),instanceId:editor.instanceId,sessionId:editor.sessionId});onSubmitted(result.jobId);}catch(error){setError(errorCode(error));setSending(false);}
+  try{const result=await submitUnity({locale,productIds:seed.productIds,leafRefs:orderedFiles.filter(file=>selected.has(file.leafRef)).map(file=>file.leafRef),instanceId:editor.instanceId,sessionId:editor.sessionId});if(result.jobId)onSubmitted(result.jobId);else onClose();}catch(error){setError(errorCode(error));setSending(false);}
  }
  const bytes=(size:number)=>{const unit=size>=1024**3?3:size>=1024**2?2:size>=1024?1:0;return new Intl.NumberFormat(locale,{maximumFractionDigits:1}).format(size/1024**unit)+' '+['B','KB','MB','GB'][unit];};
  const fileList=(kind:UnityLeaf['kind'])=>{

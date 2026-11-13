@@ -167,6 +167,29 @@ impl StorageService {
         .await?
     }
 
+    /// The managed file of one selected unitypackage, which Unity's own importer reads
+    /// in place. Other kinds return None; they always use the verified transfer.
+    pub async fn unity_package_path(
+        &self,
+        product_ids: &[String],
+        leaf_ref: &str,
+    ) -> Result<Option<PathBuf>> {
+        let guard = self.operations.clone().read_owned().await;
+        let service = self.clone();
+        let products = product_ids.to_vec();
+        let leaf_ref = leaf_ref.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let selected = service
+                .resolve_unity_leaves(&products)?
+                .into_iter()
+                .find(|entry| entry.leaf.leaf_ref == leaf_ref)
+                .ok_or_else(|| anyhow!("unity_leaf_stale"))?;
+            Ok((selected.leaf.kind == "unitypackage").then_some(selected.source))
+        })
+        .await?
+    }
+
     /// Caller supplies a request ID only, after protocol-approved receipt proof.
     pub fn cleanup_unity_snapshot(&self, request_id: &str) -> Result<()> {
         clean_snapshot(&self.unity_snapshot_directory(request_id)?)
@@ -581,6 +604,29 @@ mod tests {
             .unwrap();
         assert_ne!(member.leaf_ref, retained.leaf_ref);
         assert_eq!(member.relative_path, "Models/example.fbx");
+        // Only a package is read in place by Unity's own importer.
+        assert_eq!(
+            service
+                .unity_package_path(&products, &package.leaf_ref)
+                .await
+                .unwrap(),
+            Some(root.join(original["relativePath"].as_str().unwrap()))
+        );
+        assert_eq!(
+            service
+                .unity_package_path(&products, &member.leaf_ref)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            service
+                .unity_package_path(&products, "missing")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "unity_leaf_stale"
+        );
         let request = Uuid::new_v4().to_string();
         let snapshot = service
             .prepare_unity_snapshot(

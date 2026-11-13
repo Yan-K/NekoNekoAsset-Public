@@ -113,7 +113,8 @@ export interface UnityReceipt extends UnityPreparation {requestId:string;fingerp
 export interface UnityDetails {jobId:string;projectName:string;projectRoot:string;unityVersion:string;stage:string;errorCode?:string|null;receipt:UnityReceipt|null}
 export const listUnityEditors=()=>invokeAction<{editors:UnityEditor[]}>('unity','list_editors');
 export const unityInventory=(productIds:string[])=>invokeAction<{files:UnityLeaf[]}>('unity','inventory',{productIds});
-export const submitUnity=(input:{productIds:string[];leafRefs:string[];instanceId:string;sessionId:string;locale?:string})=>invokeAction<{jobId:string}>('unity','submit',input);
+/** One package opens in Unity's own importer and leaves no job; anything else is a Bridge request. */
+export const submitUnity=(input:{productIds:string[];leafRefs:string[];instanceId:string;sessionId:string;locale?:string})=>invokeAction<{jobId?:string;native?:true}>('unity','submit',input);
 export const unityDetails=(jobId:string)=>invokeAction<UnityDetails>('unity','details',{jobId});
 export const queryUnity=(jobId:string)=>invokeAction<UnityDetails>('unity','status',{jobId});
 export const cancelUnity=(jobId:string)=>invokeAction<UnityDetails>('unity','cancel',{jobId});

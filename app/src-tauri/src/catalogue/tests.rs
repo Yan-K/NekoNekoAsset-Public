@@ -822,7 +822,9 @@ fn account_counts_include_hidden_products_and_deduplicate_observations() {
     let before = c.change_domains().unwrap();
     let expected = json!({"accounts":{"a":2,"b":1,"zero":0},"unassigned":1});
     assert_eq!(c.command("account_counts", json!({})).unwrap(), expected);
-    let visible = c.command("query", json!({"includeFiles":false})).unwrap();
+    let visible = c
+        .command("query", json!({"includeFiles":false,"hideUnclassified":true}))
+        .unwrap();
     assert!(!strings(&visible["matchedIds"]).contains(&"other".to_owned()));
     c.command(
         "query",
@@ -2700,7 +2702,7 @@ fn indexed_all_scope_excludes_foreign_apps_and_respects_manual_categories() {
     ] {
         c.put("product",id,json!({"id":id,"sourceTitle":"Synthetic product","sourceTags":tags,"sourceDescription":description})).unwrap();
     }
-    let q = c.command("query", json!({})).unwrap();
+    let q = c.command("query", json!({"hideUnclassified":true})).unwrap();
     assert_eq!(q["matched"], 3);
     assert_eq!(q["counts"]["all"], 3);
     assert!(!strings(&q["matchedIds"]).contains(&"windows".to_owned()));
@@ -2719,14 +2721,14 @@ fn indexed_all_scope_excludes_foreign_apps_and_respects_manual_categories() {
         json!({"ids":["unknown-vr"],"patch":{"category":"NonVRChat"}}),
     )
     .unwrap();
-    let q = c.command("query", json!({})).unwrap();
+    let q = c.command("query", json!({"hideUnclassified":true})).unwrap();
     assert_eq!(q["matched"], 3);
     assert_eq!(q["counts"]["all"], 3);
     assert!(strings(&q["matchedIds"]).contains(&"ae-shader".to_owned()));
     assert!(!strings(&q["matchedIds"]).contains(&"unknown-vr".to_owned()));
     drop(c);
     let c = f.open();
-    assert_eq!(c.command("query", json!({})).unwrap()["counts"]["all"], 3);
+    assert_eq!(c.command("query", json!({"hideUnclassified":true})).unwrap()["counts"]["all"], 3);
 }
 
 #[test]
@@ -3157,14 +3159,14 @@ fn source_links_provenance_and_unclassified_vr_scope_preserve_manual_choices() {
     assert_eq!(p["sourceUrlAvailable"], false);
     assert_eq!(p["sources"].as_array().unwrap().len(), 2);
     assert_eq!(p["sources"][0]["label"], "BOOTH – Account a");
-    assert_eq!(c.command("query", json!({})).unwrap()["matched"], 1);
+    assert_eq!(c.command("query", json!({"hideUnclassified":true})).unwrap()["matched"], 1);
     c.command("overlay",json!({"ids":["synthetic"],"patch":{"sourceUrl":"https://example.org/item?view=full#about","category":"NonVRChat"}})).unwrap();
     assert_eq!(projection(&c, "synthetic")["sourceUrlAvailable"], true);
     assert_eq!(
         c.get("product", "synthetic").unwrap().unwrap()["sourceUrl"],
         "https://booth.pm/items/999999"
     );
-    assert_eq!(c.command("query", json!({})).unwrap()["matched"], 0);
+    assert_eq!(c.command("query", json!({"hideUnclassified":true})).unwrap()["matched"], 0);
     assert_eq!(
         c.command("query", json!({"category":"NonVRChat"})).unwrap()["matched"],
         1
@@ -3387,7 +3389,7 @@ fn gumroad_scope_rule_applies_to_new_source_sync_without_reclassifying_on_open()
     source["observedAt"] = json!("2026-10-14T00:00:00Z");
     reopened.put("product", id, source).unwrap();
     assert_eq!(projection(&reopened, id)["category"], "NonVRChat");
-    assert_eq!(reopened.command("query", json!({})).unwrap()["matched"], 0);
+    assert_eq!(reopened.command("query", json!({"hideUnclassified":true})).unwrap()["matched"], 0);
     assert_eq!(reopened.command("query", json!({"category":"NonVRChat"})).unwrap()["matchedIds"], json!([id]));
 }
 #[test]
@@ -3573,6 +3575,10 @@ fn defaults_scope_r18_and_unknown_last() {
     .unwrap();
     assert_eq!(
         c.command("query", json!({})).unwrap()["matchedIds"],
+        json!(["1", "2"])
+    );
+    assert_eq!(
+        c.command("query", json!({"hideUnclassified":true})).unwrap()["matchedIds"],
         json!(["1"])
     );
     assert_eq!(
@@ -3583,7 +3589,7 @@ fn defaults_scope_r18_and_unknown_last() {
         .unwrap();
     assert_eq!(
         c.command("query", json!({"sensitive":"hide"})).unwrap()["matchedIds"],
-        json!([])
+        json!(["2"])
     );
     assert_eq!(
         c.command("query", json!({"sensitive":"only"})).unwrap()["matchedIds"],
@@ -6086,7 +6092,7 @@ fn custom_categories_stay_manual_and_deleting_one_restores_automatic_classificat
         assert!(c.command("overlay", json!({"ids":["hair"],"patch":{"category":missing}})).is_err());
     }
     let category = |id| projection(&c, id)["category"].clone();
-    let in_all = |id| c.command("query", json!({})).unwrap()["matchedIds"].as_array().unwrap().contains(&json!(id));
+    let in_all = |id| c.command("query", json!({"hideUnclassified":true})).unwrap()["matchedIds"].as_array().unwrap().contains(&json!(id));
     assert!(!in_all("plain"));
     c.command("overlay", json!({"ids":["hair","plain"],"patch":{"category":props}})).unwrap();
     assert_eq!(c.command("query", json!({"category":props})).unwrap()["matchedIds"].as_array().unwrap().len(), 2);

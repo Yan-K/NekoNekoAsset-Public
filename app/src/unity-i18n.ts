@@ -42,6 +42,7 @@ const text:Record<string,string[]>={
  UNITY_UNAVAILABLE:['Unity is unavailable. The existing request will be checked again.','Unity に接続できません。同じリクエストを再確認します。','Unity에 연결할 수 없습니다. 기존 요청을 다시 확인합니다.','暂时无法连接 Unity，将再次查询原请求。','暫時無法連線 Unity，將再次查詢原請求。'],
  UNITY_TIMEOUT:['Unity did not respond. Check the existing request.','Unity の応答がありません。同じリクエストを確認してください。','Unity 응답이 없습니다. 기존 요청을 확인하세요.','Unity 未响应，请查询原请求。','Unity 未回應，請查詢原請求。'],
  UNITY_BUSY:['Unity is busy','Unity は処理中です','Unity가 사용 중입니다','Unity 正在忙碌','Unity 正在忙碌'],
+ UNITY_NO_RESPONSE:['Unity did not respond. Try again.','Unity が応答しません。もう一度お試しください。','Unity가 응답하지 않습니다. 다시 시도하세요.','Unity 没有响应，请重试。','Unity 沒有回應，請再試一次。'],
  UNITY_DISABLED:['The Bridge was disabled','Bridge が無効になりました','Bridge가 비활성화되었습니다','Bridge 已停用','Bridge 已停用'],
  UNITY_OTHER_DEVICE:['Check this import’s result on the device that sent it.','送信した端末で、このインポートの結果を確認してください。','이 가져오기를 보낸 기기에서 결과를 확인하세요.','请在发送此导入的设备上查看结果。','請在傳送此匯入的裝置上查看結果。'],
  UNITY_SELECTION_EMPTY:['Select files first','ファイルを選択してください','파일을 선택하세요','请先选择文件','請先選取檔案'],
