@@ -1507,8 +1507,8 @@ async fn updates_install(
     })?;
     let catalogue = update_ready(&host)?.catalogue;
     crate::window_state::flush_app(&app).await;
-    // Exit between catalogue transactions; interrupted store syncs resume from
-    // their checkpoints when the updated App starts. The library's OS lock is
+    // Exit between catalogue transactions; interrupted store syncs, downloads and
+    // local imports resume when the updated App starts. The library's OS lock is
     // held until this process exits.
     tauri::async_runtime::spawn_blocking(move || {
         catalogue.between_transactions(|jobs| match jobs.iter().find_map(updates::blocking_job) {
@@ -1524,7 +1524,7 @@ async fn updates_install(
     .map_err(UiError::from_error)
 }
 
-/// An open library whose active jobs are store syncs only; otherwise the blocking reason.
+/// An open library whose active jobs all resume after the restart; otherwise the blocking reason.
 fn update_ready(host: &LibraryHost) -> Result<Services, UiError> {
     let busy = |code: &str| UiError { code: code.into() };
     if host.opening.load(Ordering::Acquire) || host.active_setup()?.is_some() {

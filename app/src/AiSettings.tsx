@@ -7,12 +7,12 @@ import {aiSettingsText} from './ai-settings-i18n';
 import {DEFAULT_AI_PERSONALIZATION,getAiPersonalities,normalizeAiAvatar,type AiPersonalization} from './ai-personalization';
 import './AiSettings.css';
 
-export interface AiSettingsProps {locale:Locale;nativeState?:NativeState;onUpdateBlockedChange?:(blocked:boolean)=>void}
+export interface AiSettingsProps {locale:Locale;nativeState?:NativeState}
 function savedScopes(value:unknown):AiScopes {
  const saved=value&&typeof value==='object'?value as Partial<AiScopes>:{};
  return {title:saved.title!==false,tags:saved.tags!==false,description:saved.description!==false,files:saved.files!==false,images:saved.images===true};
 }
-export default function AiSettings({locale,nativeState,onUpdateBlockedChange}:AiSettingsProps) {
+export default function AiSettings({locale,nativeState}:AiSettingsProps) {
  const L=(key:string)=>aiSettingsText(locale,key);
  const [list,setList]=useState<AiEntryList>({entries:[],activeEntryId:null}),[presets,setPresets]=useState<AiProviderPreset[]>([]);
  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(''),[testing,setTesting]=useState(false);
@@ -27,8 +27,6 @@ export default function AiSettings({locale,nativeState,onUpdateBlockedChange}:Ai
  const job=nativeState?.jobs.find(value=>value.id===jobId),jobActive=!!jobId&&(!job||['queued','running'].includes(job.state));
  const disabled=loading||busy;
  const personalizationDirty=JSON.stringify(personalization)!==JSON.stringify(savedPersonalization);
- useEffect(()=>{onUpdateBlockedChange?.(editing||personalizationDirty||busy||testing);},[editing,personalizationDirty,busy,testing,onUpdateBlockedChange]);
- useEffect(()=>()=>{onUpdateBlockedChange?.(false);},[onUpdateBlockedChange]);
  const personalizationDisabled=disabled||editing||!personalizationLoaded;
  const invalidate=()=>{draftRevision.current++;setProof('');setResult('');};
  const clearKey=()=>{if(keyInput.current)keyInput.current.value='';setHasKey(false);invalidate();};

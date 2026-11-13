@@ -30,6 +30,10 @@ pub(crate) fn validate_library_path(path: &Path) -> Result<()> {
     archive::validate_no_links(path)
 }
 
+/// Startup queues these again: a download restarts only its unfinished file and a
+/// local import only its uncopied ones, so an App update need not wait for them.
+pub(crate) const RESUMED_AT_STARTUP: [&str; 2] = ["download", "storage:import_local"];
+
 use crate::{catalogue::Catalogue, stores::StoreService};
 use anyhow::{bail, ensure, Result};
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -550,7 +554,7 @@ impl StorageService {
                         self.put_job(&mut job, "needsAction", Some("local_source_required"))?;
                         continue;
                     }
-                    if job["type"] == "download" || job["type"] == "storage:import_local" {
+                    if RESUMED_AT_STARTUP.contains(&job["type"].as_str().unwrap_or("")) {
                         self.put_job(&mut job, "queued", None)?;
                     } else if job["type"]
                         .as_str()

@@ -297,19 +297,21 @@ impl PreparedInstall {
     }
 }
 
-/// Store sync/update jobs resume from their checkpoints when the updated App starts.
-/// Any other active job names why installation has to wait.
+/// Store sync/update jobs resume from their checkpoints when the updated App starts,
+/// and downloads and local imports are queued again. Any other active job names why
+/// installation has to wait.
 pub(crate) fn blocking_job(job: &serde_json::Value) -> Option<&'static str> {
     if !matches!(job["state"].as_str(), Some("queued" | "running")) {
         return None;
     }
     let kind = job["type"].as_str().unwrap_or("");
+    if crate::storage::RESUMED_AT_STARTUP.contains(&kind) {
+        return None;
+    }
     Some(match kind {
         "boothSync" | "boothUpdate" | "gumroadSync" | "gumroadUpdate" | "jinxxySync"
         | "jinxxyUpdate" => return None,
         "boothLogin" | "gumroadLogin" | "jinxxyLogin" => "updates_busy_login",
-        "download" => "updates_busy_download",
-        "storage:import_local" => "updates_busy_import",
         "storage:migrate_root" => "updates_busy_move",
         "storage:export_backup" => "updates_busy_backup",
         "storage:restore_backup" => "updates_busy_restore",
@@ -364,19 +366,20 @@ mod tests {
         assert!(validate_bridge(changed).is_err());
     }
     #[test]
-    fn only_active_non_sync_jobs_block_installation() {
+    fn only_active_jobs_that_do_not_resume_block_installation() {
         let job = |kind: &str, state: &str| serde_json::json!({"type":kind,"state":state});
-        for kind in ["boothSync", "boothUpdate", "gumroadSync", "gumroadUpdate", "jinxxySync", "jinxxyUpdate"] {
+        for kind in ["boothSync", "boothUpdate", "gumroadSync", "gumroadUpdate", "jinxxySync", "jinxxyUpdate", "download", "storage:import_local"] {
             assert_eq!(blocking_job(&job(kind, "running")), None);
             assert_eq!(blocking_job(&job(kind, "queued")), None);
         }
-        assert_eq!(blocking_job(&job("download", "queued")), Some("updates_busy_download"));
+        assert_eq!(blocking_job(&job("storage:export_zip", "queued")), Some("updates_busy_export"));
+        assert_eq!(blocking_job(&job("unity:import", "running")), Some("updates_busy_unity"));
         assert_eq!(blocking_job(&job("boothLogin", "running")), Some("updates_busy_login"));
         assert_eq!(blocking_job(&job("storage:restore_backup", "running")), Some("updates_busy_restore"));
         assert_eq!(blocking_job(&job("ai:classify", "running")), Some("updates_busy_ai"));
         assert_eq!(blocking_job(&job("storage:future", "running")), Some("updates_busy_job"));
         for state in ["completed", "failed", "needsAction", "cancelled"] {
-            assert_eq!(blocking_job(&job("download", state)), None);
+            assert_eq!(blocking_job(&job("storage:export_zip", state)), None);
         }
     }
     #[test]

@@ -82,7 +82,8 @@ export default function AiSuggestions({locale,active=true,frozen=false,onOpenPro
  const [deleting,setDeleting]=useState<DeleteState|null>(null);
  const [historyBusy,setHistoryBusy]=useState(false);
  const [unconfirmed,setUnconfirmed]=useState<UnconfirmedTurn|null>(null);
- useEffect(()=>{onUpdateBlockedChange?.(!!prompt||!!images.length||!!editor||!!renaming||!!deleting||busy||imageBusy||historyBusy||!!unconfirmed);},[prompt,images.length,editor,renaming,deleting,busy,imageBusy,historyBusy,unconfirmed,onUpdateBlockedChange]);
+ // Only a reply in flight holds up an App update; unsent drafts never do.
+ useEffect(()=>{onUpdateBlockedChange?.(busy);},[busy,onUpdateBlockedChange]);
  useEffect(()=>()=>{onUpdateBlockedChange?.(false);},[onUpdateBlockedChange]);
  const currentRequest=useRef<string|null>(null);
  const cancelRequested=useRef(false);
@@ -133,8 +134,8 @@ export default function AiSuggestions({locale,active=true,frozen=false,onOpenPro
    if(!state.active||state.busy||state.loading||state.unconfirmed||imageLock.current)return;
    if(!selected?.visionSupported){setError('ai_images_unavailable');return;}
    if(paths.length+state.images.length>MAX_IMAGES){setError('ai_image_limit');return;}
-   imageLock.current=true;onUpdateBlockedChange?.(true);setImageBusy(true);setError('');const epoch=conversion.current;
-   void readAiDroppedImages(paths).then(value=>{if(mounted.current&&epoch===conversion.current){if(value.length)onUpdateBlockedChange?.(true);setImages(previous=>[...previous,...value]);}}).catch(value=>{if(mounted.current&&epoch===conversion.current)setError(errorCode(value));}).finally(()=>{imageLock.current=false;if(mounted.current)setImageBusy(false);});
+   imageLock.current=true;setImageBusy(true);setError('');const epoch=conversion.current;
+   void readAiDroppedImages(paths).then(value=>{if(mounted.current&&epoch===conversion.current){setImages(previous=>[...previous,...value]);}}).catch(value=>{if(mounted.current&&epoch===conversion.current)setError(errorCode(value));}).finally(()=>{imageLock.current=false;if(mounted.current)setImageBusy(false);});
   }).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
   return()=>{disposed=true;unlisten?.();};
  },[active]);
@@ -167,8 +168,8 @@ export default function AiSuggestions({locale,active=true,frozen=false,onOpenPro
   if(!vision){setError('ai_images_unavailable');return;}
   const accepted=files.filter(file=>file.type.startsWith('image/'));if(!accepted.length){setError('ai_image_invalid');return;}
   if(accepted.length+images.length>MAX_IMAGES){setError('ai_image_limit');return;}
-  imageLock.current=true;onUpdateBlockedChange?.(true);setImageBusy(true);setError('');const epoch=conversion.current;
-  try{const normalized:AiImage[]=[];for(const file of accepted)normalized.push(await normalizeImage(file));if(mounted.current&&epoch===conversion.current){onUpdateBlockedChange?.(true);setImages(previous=>[...previous,...normalized]);}}
+  imageLock.current=true;setImageBusy(true);setError('');const epoch=conversion.current;
+  try{const normalized:AiImage[]=[];for(const file of accepted)normalized.push(await normalizeImage(file));if(mounted.current&&epoch===conversion.current){setImages(previous=>[...previous,...normalized]);}}
   catch(value){if(mounted.current&&epoch===conversion.current)setError(errorCode(value));}
   finally{imageLock.current=false;if(mounted.current)setImageBusy(false);}
  }
@@ -197,7 +198,7 @@ export default function AiSuggestions({locale,active=true,frozen=false,onOpenPro
  }
  function resolveDraft(draft:UnconfirmedTurn,durable:AiStoredTurn[]){
   const recorded=durable.some(turn=>turn.role==='user'&&!draft.priorIds.includes(turn.id)&&turn.content===draft.content&&turn.images.length===draft.images.length);
-  if(!recorded){onUpdateBlockedChange?.(true);setPrompt(draft.content);setImages(draft.images);}setUnconfirmed(null);
+  if(!recorded){setPrompt(draft.content);setImages(draft.images);}setUnconfirmed(null);
  }
  async function checkUnconfirmed(){
   const draft=unconfirmed;if(!draft||busy||chatLoading||frozen)return;setChatLoading(true);setError('');
