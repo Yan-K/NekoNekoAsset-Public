@@ -1180,6 +1180,8 @@ impl BoothService {
         }
         let mut incomplete = false;
         let (mut left_products, mut left_rows) = (BTreeSet::new(), 0);
+        // Purchases whose receipts could not settle them: counted, public page still read.
+        let mut kept = BTreeSet::new();
         let public =
             http::build_client(std::sync::Arc::new(reqwest::cookie::Jar::default()), false)?;
         let mut enriched = BTreeMap::new();
@@ -1222,6 +1224,7 @@ impl BoothService {
                             &mut enriched,
                             &mut publications,
                             &mut left_products,
+                            &mut kept,
                         )
                         .await?,
                     ),
@@ -1285,6 +1288,7 @@ impl BoothService {
                 }
             }
         }
+        left_products.extend(kept);
         record_incomplete(job, &left_products, left_rows);
         if incomplete {
             bail!("SYNC_INCOMPLETE");
@@ -1302,12 +1306,14 @@ impl BoothService {
         enriched: &mut BTreeMap<String, Value>,
         publications: &mut Publications,
         refused: &mut BTreeSet<String>,
+        kept: &mut BTreeSet<String>,
     ) -> Result<BTreeSet<String>> {
         let acquisitions = self.inner.catalogue.list("acquisition")?;
         let remote = self.inner.catalogue.list("remote_file")?;
         let routes = selected_purchase_routes(&acquisitions, &remote, account, selected);
         // A product is settled only by every receipt it was bought on, read in full. Any other
-        // stays as it was: listing every order would only reach the same receipts again.
+        // keeps its account facts as they were: listing every order would only reach the same
+        // receipts again. Its public page is still read at the end of the update.
         let mut left: BTreeSet<String> = selected
             .iter()
             .filter(|product| !routes.values().any(|expected| expected.contains(*product)))
@@ -1341,8 +1347,14 @@ impl BoothService {
                 .filter(|row| parser::product_field_file_keys(row).is_some())
                 .filter_map(|row| row.product_id.clone())
                 .collect();
-            // A row the receipt could not bind may be one of the products expected on it.
-            if page.unresolved != 0 {
+            // A row the receipt could not tie to a product may be one of those expected on it;
+            // a row it did tie holds back only its own product, below.
+            let tied = page
+                .rows
+                .iter()
+                .filter(|row| row.product_id.is_some() && row.error_code.is_some())
+                .count();
+            if page.unresolved > tied {
                 left.extend(expected);
                 continue;
             }
@@ -1367,11 +1379,14 @@ impl BoothService {
             job["progress"] = json!({"stage":"collecting","source":"purchase","detailsCompleted":checkpoint.details_completed,"mode":"selected"});
             self.progress(app, job)?;
         }
-        for row in collected.iter().filter(|row| !row.manifest_complete) {
+        for row in collected
+            .iter()
+            .filter(|row| !row.manifest_complete || row.error_code.is_some())
+        {
             left.extend(row.product_id.clone());
         }
         collected.retain(|row| row.product_id.as_ref().is_some_and(|id| !left.contains(id)));
-        refused.extend(left);
+        kept.extend(left);
         self.stage_selected(app, job, account, "purchase", checkpoint, collected, row_routes, public, enriched, publications, refused)
             .await
     }
@@ -1392,14 +1407,22 @@ impl BoothService {
         refused: &mut BTreeSet<String>,
     ) -> Result<Option<BTreeSet<String>>> {
         let acquisitions = self.inner.catalogue.list("acquisition")?;
+        let histories: Vec<_> = selected
+            .iter()
+            .map(|product| (product, saved_free_history(&acquisitions, account, product)))
+            .collect();
+        if histories.iter().any(|(_, history)| history.is_empty()) {
+            return Ok(None);
+        }
         let mut checkpoint = Checkpoint::fresh(account, "free", "selected")?;
+        // Item pages are public, so the history's first page is what tells a lapsed session:
+        // the job stops there and asks for sign-in, as a sync would.
+        let head = format!("{}?page=1", safety::source_path("free")?);
+        self.read_page(client, "free", &head, None).await?;
+        checkpoint.pages += 1;
         let mut rows = Vec::new();
         let mut row_routes = BTreeMap::new();
-        for product in selected {
-            let history = saved_free_history(&acquisitions, account, product);
-            if history.is_empty() {
-                return Ok(None);
-            }
+        for (product, history) in histories {
             if self.cancelled(job)? {
                 bail!("CANCELLED");
             }
@@ -1476,7 +1499,7 @@ impl BoothService {
                         false
                     }
                     // A refused or unreadable public page keeps this product's metadata
-                    // as it was; its own facts still publish, uncertified.
+                    // as it was; its own account facts still publish.
                     Err(error) if product_local_failure(&super::code(&error)) => {
                         refused.insert(product.clone());
                         true
