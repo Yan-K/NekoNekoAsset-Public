@@ -1201,16 +1201,32 @@ impl BoothService {
                 .collect();
             sources.sort_by_key(|source| if source == "purchase" { 0 } else { 1 });
             for source in sources {
-                if source == "purchase" {
-                    let selected: BTreeSet<_> = owned_sources
-                        .iter()
-                        .filter(|e| e["accountId"] == account && e["source"] == "purchase")
-                        .filter_map(|e| e["productId"].as_str())
-                        .filter(|id| ids.contains(*id))
-                        .map(str::to_owned)
-                        .collect();
-                    if self
-                        .refresh_selected_purchase(
+                let selected: BTreeSet<_> = owned_sources
+                    .iter()
+                    .filter(|e| e["accountId"] == account && e["source"] == source.as_str())
+                    .filter_map(|e| e["productId"].as_str())
+                    .filter(|id| ids.contains(*id))
+                    .map(str::to_owned)
+                    .collect();
+                // Purchases settle from their own receipts and free items from their own pages;
+                // only the Library and gifts are read as lists.
+                let settled = match source.as_str() {
+                    "purchase" => Some(
+                        self.refresh_selected_purchase(
+                            app,
+                            job,
+                            &account,
+                            &client,
+                            &selected,
+                            &public,
+                            &mut enriched,
+                            &mut publications,
+                            &mut left_products,
+                        )
+                        .await?,
+                    ),
+                    "free" => {
+                        self.refresh_selected_free(
                             app,
                             job,
                             &account,
@@ -1222,12 +1238,14 @@ impl BoothService {
                             &mut left_products,
                         )
                         .await?
-                    {
-                        for product in &selected {
-                            self.publish_ready_product(app, job, &mut publications, product)?;
-                        }
-                        continue;
                     }
+                    _ => None,
+                };
+                if let Some(settled) = settled {
+                    for product in &settled {
+                        self.publish_ready_product(app, job, &mut publications, product)?;
+                    }
+                    continue;
                 }
                 let scan = self
                     .scan_source(
@@ -1284,55 +1302,51 @@ impl BoothService {
         enriched: &mut BTreeMap<String, Value>,
         publications: &mut Publications,
         refused: &mut BTreeSet<String>,
-    ) -> Result<bool> {
+    ) -> Result<BTreeSet<String>> {
         let acquisitions = self.inner.catalogue.list("acquisition")?;
         let remote = self.inner.catalogue.list("remote_file")?;
-        let Some(routes) = selected_purchase_routes(&acquisitions, &remote, account, selected)
-        else {
-            return Ok(false);
-        };
-        let mut manifests: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
+        let routes = selected_purchase_routes(&acquisitions, &remote, account, selected);
+        // A product is settled only by every receipt it was bought on, read in full. Any other
+        // stays as it was: listing every order would only reach the same receipts again.
+        let mut left: BTreeSet<String> = selected
+            .iter()
+            .filter(|product| !routes.values().any(|expected| expected.contains(*product)))
+            .cloned()
+            .collect();
+        let mut checkpoint = Checkpoint::fresh(account, "purchase", "selected")?;
         let mut collected = Vec::new();
         let mut row_routes = BTreeMap::new();
+        let mut session_proven = false;
         for (route, expected) in routes {
             if self.cancelled(job)? {
                 bail!("CANCELLED");
             }
-            // A receipt the store refused comes back unresolved, so the update falls
-            // back to the full purchase scan like any other receipt it cannot bind.
-            let page = match self.fetch_page(client, "purchase", &route, None).await {
+            let page = match self.read_page(client, "purchase", &route, None).await {
                 Ok(page) => page,
-                Err(error)
-                    if matches!(
-                        super::code(&error).as_str(),
-                        "AUTH_CHALLENGE" | "NETWORK_UNAVAILABLE" | "RATE_LIMITED"
-                    ) =>
-                {
-                    return Err(error)
+                // A receipt answers a lapsed session as refused; the order list says which it
+                // was, and stops the job if the account must sign in again.
+                Err(error) if product_local_failure(&super::code(&error)) => {
+                    if !session_proven {
+                        self.read_page(client, "purchase", "/orders?page=1", None).await?;
+                        session_proven = true;
+                    }
+                    unreadable_page("purchase", &route, &super::code(&error))?
                 }
-                Err(_) => return Ok(false),
+                Err(error) => return Err(error),
             };
+            checkpoint.details_completed += 1;
             let found: BTreeSet<_> = page
                 .rows
                 .iter()
                 .filter(|row| parser::product_field_file_keys(row).is_some())
                 .filter_map(|row| row.product_id.clone())
                 .collect();
-            if page.unresolved != 0 || !expected.is_subset(&found) {
-                return Ok(false);
+            // A row the receipt could not bind may be one of the products expected on it.
+            if page.unresolved != 0 {
+                left.extend(expected);
+                continue;
             }
-            if self.cancelled(job)? {
-                bail!("CANCELLED");
-            }
-            let rows: Vec<_> = page
-                .rows
-                .iter()
-                .filter(|row| {
-                    row.product_id
-                        .as_ref()
-                        .is_some_and(|id| selected.contains(id))
-                })
-                .collect();
+            left.extend(expected.difference(&found).cloned());
             let journal_id = format!(
                 "booth-selected-page:{}:{}",
                 field(job, "id")?,
@@ -1342,56 +1356,127 @@ impl BoothService {
             self.inner
                 .catalogue
                 .put("checkpoint", &journal_id, journal)?;
-            for row in rows {
+            for row in page.rows.iter().filter(|row| {
+                row.product_id
+                    .as_ref()
+                    .is_some_and(|id| selected.contains(id))
+            }) {
                 row_routes.insert(row.source_record_id.clone(), page.route.clone());
                 collected.push(row.clone());
-                let id = row.product_id.as_ref().unwrap();
-                let manifest = manifests
-                    .entry(id.clone())
-                    .or_insert((BTreeSet::new(), true));
-                manifest.1 &= row.manifest_complete;
-                manifest.0.extend(observed_file_ids(account, [row]));
             }
-            job["progress"] = json!({"stage":"collecting","source":"purchase","products":manifests.len(),"mode":"selected"});
+            job["progress"] = json!({"stage":"collecting","source":"purchase","detailsCompleted":checkpoint.details_completed,"mode":"selected"});
             self.progress(app, job)?;
         }
-        if manifests.values().any(|(_, complete)| !complete) {
-            return Ok(false);
+        for row in collected.iter().filter(|row| !row.manifest_complete) {
+            left.extend(row.product_id.clone());
         }
-        let key = format!("booth-selected:{}:{account}", field(job, "id")?);
-        let checkpoint = Checkpoint::fresh(account, "purchase", "selected")?;
-        for (product, (files, _)) in manifests {
-            let rows: Vec<_> = collected
+        collected.retain(|row| row.product_id.as_ref().is_some_and(|id| !left.contains(id)));
+        refused.extend(left);
+        self.stage_selected(app, job, account, "purchase", checkpoint, collected, row_routes, public, enriched, publications, refused)
+            .await
+    }
+    /// A free item's own page lists everything it offers now, and the download history a
+    /// sync recorded proves the account has it, so its update reads that page and not the
+    /// whole history. An offer that ended or a page that does not read in full goes back to
+    /// the history list, as a sync reads it.
+    async fn refresh_selected_free(
+        &self,
+        app: &AppHandle,
+        job: &mut Value,
+        account: &str,
+        client: &reqwest::Client,
+        selected: &BTreeSet<String>,
+        public: &reqwest::Client,
+        enriched: &mut BTreeMap<String, Value>,
+        publications: &mut Publications,
+        refused: &mut BTreeSet<String>,
+    ) -> Result<Option<BTreeSet<String>>> {
+        let acquisitions = self.inner.catalogue.list("acquisition")?;
+        let mut checkpoint = Checkpoint::fresh(account, "free", "selected")?;
+        let mut rows = Vec::new();
+        let mut row_routes = BTreeMap::new();
+        for product in selected {
+            let history = saved_free_history(&acquisitions, account, product);
+            if history.is_empty() {
+                return Ok(None);
+            }
+            if self.cancelled(job)? {
+                bail!("CANCELLED");
+            }
+            let route = safety::free_item_route(product)?;
+            let page = self.fetch_page(client, "free", &route, None).await?;
+            checkpoint.details_completed += 1;
+            let Some(evidence) = page.free_item.as_ref().filter(|evidence| {
+                evidence.product_id == *product
+                    && evidence.manifest_complete
+                    && !evidence.unavailable
+                    && evidence.error_code.is_none()
+                    && !evidence.files.is_empty()
+            }) else {
+                return Ok(None);
+            };
+            for mut row in history {
+                augment_free_row(&mut row, evidence);
+                row_routes.insert(row.source_record_id.clone(), route.clone());
+                rows.push(row);
+            }
+            job["progress"] = json!({"stage":"collecting","source":"free","detailsCompleted":checkpoint.details_completed,"mode":"selected"});
+            self.progress(app, job)?;
+        }
+        self.stage_selected(app, job, account, "free", checkpoint, rows, row_routes, public, enriched, publications, refused)
+            .await
+            .map(Some)
+    }
+    /// Prepares the products a selected refresh settled for publication, with fresh public
+    /// metadata, and returns them.
+    async fn stage_selected(
+        &self,
+        app: &AppHandle,
+        job: &mut Value,
+        account: &str,
+        source: &str,
+        checkpoint: Checkpoint,
+        rows: Vec<parser::Row>,
+        row_routes: BTreeMap<String, String>,
+        public: &reqwest::Client,
+        enriched: &mut BTreeMap<String, Value>,
+        publications: &mut Publications,
+        refused: &mut BTreeSet<String>,
+    ) -> Result<BTreeSet<String>> {
+        let key = format!("booth-selected:{}:{account}:{source}", field(job, "id")?);
+        let products: BTreeSet<String> = rows.iter().filter_map(|row| row.product_id.clone()).collect();
+        for product in &products {
+            let product_rows: Vec<_> = rows
                 .iter()
-                .filter(|row| row.product_id.as_deref() == Some(&product))
+                .filter(|row| row.product_id.as_ref() == Some(product))
                 .collect();
             let mut batch = super::batch::RecordBatch::new(&self.inner.catalogue);
-            for row in &rows {
+            for row in &product_rows {
                 self.plan_row(
                     &mut batch,
                     account,
-                    "purchase",
+                    source,
                     row,
                     &row_routes[&row.source_record_id],
                     true,
                 )?;
             }
             let mut draft = batch
-                .get("product", &product)?
+                .get("product", product)?
                 .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_INVALID"))?;
-            job["progress"] = json!({"stage":"enriching","source":"purchase","products":selected.len(),"published":checkpoint.published_products.len(),"mode":"selected"});
+            job["progress"] = json!({"stage":"enriching","source":source,"products":products.len(),"detailsCompleted":checkpoint.details_completed,"mode":"selected"});
             self.progress(app, job)?;
-            let needs_enrichment = if let Some(observation) = enriched.get(&product) {
+            let needs_enrichment = if let Some(observation) = enriched.get(product) {
                 draft = observation.clone();
                 false
             } else {
-                match self.enrich_into(public, &product, &mut draft, None).await {
+                match self.enrich_into(public, product, &mut draft, None).await {
                     Ok(()) => {
                         enriched.insert(product.clone(), draft.clone());
                         false
                     }
                     // A refused or unreadable public page keeps this product's metadata
-                    // as it was; its receipt facts still publish, uncertified.
+                    // as it was; its own facts still publish, uncertified.
                     Err(error) if product_local_failure(&super::code(&error)) => {
                         refused.insert(product.clone());
                         true
@@ -1400,16 +1485,17 @@ impl BoothService {
                 }
             };
             let draft_id = format!("booth-product:{}:{product}", checkpoint.run_id);
-            self.save_product_draft(&draft_id, json!({"id":draft_id,"accountId":account,"source":"purchase","runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":!needs_enrichment}))?;
+            self.save_product_draft(&draft_id, json!({"id":draft_id,"accountId":account,"source":source,"runId":checkpoint.run_id,"productId":product,"product":draft,"enriched":!needs_enrichment}))?;
+            let files = observed_file_ids(account, product_rows.iter().copied());
             publications
                 .products
                 .entry(product.clone())
                 .or_default()
                 .push(ProductPublication {
                     account: account.into(),
-                    source: "purchase".into(),
+                    source: source.into(),
                     product: product.clone(),
-                    rows: rows.into_iter().cloned().collect(),
+                    rows: product_rows.into_iter().cloned().collect(),
                     routes: row_routes.clone(),
                     draft,
                     files,
@@ -1419,7 +1505,7 @@ impl BoothService {
                 });
         }
         publications.checkpoints.insert(key, checkpoint);
-        Ok(true)
+        Ok(products)
     }
     async fn fetch_page(
         &self,
@@ -3991,7 +4077,7 @@ fn selected_purchase_routes(
     remote: &[Value],
     account: &str,
     selected: &BTreeSet<String>,
-) -> Option<BTreeMap<String, BTreeSet<String>>> {
+) -> BTreeMap<String, BTreeSet<String>> {
     let mut routes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for product in selected {
         let mut found = BTreeSet::new();
@@ -4026,14 +4112,34 @@ fn selected_purchase_routes(
                 }
             }
         }
-        if found.is_empty() {
-            return None;
-        }
         for route in found {
             routes.entry(route).or_default().insert(product.clone());
         }
     }
-    (!routes.is_empty()).then_some(routes)
+    routes
+}
+/// The download history a sync recorded for one free item, as the rows it read then. The
+/// history only grows, so these still prove the account has the item.
+fn saved_free_history(acquisitions: &[Value], account: &str, product: &str) -> Vec<parser::Row> {
+    acquisitions
+        .iter()
+        .filter(|a| {
+            a["accountId"] == account
+                && a["source"] == "free"
+                && a["observedProductId"].as_str().or(a["productId"].as_str()) == Some(product)
+                && a["unavailable"] != true
+                && a["errorCode"].is_null()
+        })
+        .filter_map(|a| {
+            Some(parser::Row {
+                source_record_id: a["sourceRecordId"].as_str().filter(|id| !id.is_empty())?.into(),
+                product_id: Some(product.into()),
+                acquired_date_text: a["acquiredDateText"].as_str().map(str::to_owned),
+                variant_name: a["variantName"].as_str().map(str::to_owned),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 fn native_product_line_total(row: &parser::Row, source: &str, route: &str) -> Option<u64> {
     if source != "purchase"
@@ -6845,7 +6951,7 @@ mod tests {
         }
     }
     #[test]
-    fn selected_receipts_use_unique_bound_routes_and_fallback_when_unknown() {
+    fn selected_receipts_use_unique_bound_routes_and_leave_unknown_products_out() {
         let acquisitions = vec![
             json!({"accountId":"a","source":"purchase","productId":"900001","orderId":"910001"}),
             json!({"accountId":"a","source":"purchase","productId":"900001","orderId":"910001"}),
@@ -6859,13 +6965,33 @@ mod tests {
         let selected = BTreeSet::from(["900001".into(), "900002".into()]);
         assert_eq!(
             selected_purchase_routes(&acquisitions, &remote, "a", &selected),
-            Some(BTreeMap::from([(
-                "/orders/910001".into(),
-                selected.clone()
-            )]))
+            BTreeMap::from([("/orders/910001".into(), selected.clone())])
         );
-        assert!(selected_purchase_routes(&acquisitions, &remote, "b", &selected).is_none());
-        assert!(selected_purchase_routes(&[], &[], "a", &selected).is_none());
+        // 900002 has no receipt for account b; 900001 still settles from its own.
+        assert_eq!(
+            selected_purchase_routes(&acquisitions, &remote, "b", &selected),
+            BTreeMap::from([("/orders/910999".into(), BTreeSet::from(["900001".into()]))])
+        );
+        assert!(selected_purchase_routes(&[], &[], "a", &selected).is_empty());
+    }
+    #[test]
+    fn a_free_update_rebuilds_only_its_accounts_usable_history_rows() {
+        let acquisitions = vec![
+            json!({"accountId":"a","source":"free","sourceRecordId":"free:1","productId":"900001","observedProductId":"900001","acquiredDateText":"2026/10/01","unavailable":false,"errorCode":null}),
+            json!({"accountId":"a","source":"free","sourceRecordId":"free:2","productId":"900001","observedProductId":"900001","unavailable":false,"errorCode":null}),
+            json!({"accountId":"a","source":"free","sourceRecordId":"free:3","productId":"900001","unavailable":true}),
+            json!({"accountId":"a","source":"free","sourceRecordId":"free:4","productId":"900001","errorCode":"PRODUCT_TITLE_UNRESOLVED"}),
+            json!({"accountId":"a","source":"free","sourceRecordId":"","productId":"900001"}),
+            json!({"accountId":"b","source":"free","sourceRecordId":"free:5","productId":"900001"}),
+            json!({"accountId":"a","source":"gift","sourceRecordId":"gift:6","productId":"900001"}),
+            json!({"accountId":"a","source":"free","sourceRecordId":"free:7","productId":"900002"}),
+        ];
+        let rows = saved_free_history(&acquisitions, "a", "900001");
+        assert_eq!(rows.iter().map(|row| row.source_record_id.as_str()).collect::<Vec<_>>(), ["free:1", "free:2"]);
+        assert!(rows.iter().all(|row| row.product_id.as_deref() == Some("900001")
+            && row.files.is_empty() && !row.manifest_complete && !row.unavailable && row.error_code.is_none()));
+        assert_eq!(rows[0].acquired_date_text.as_deref(), Some("2026/10/01"));
+        assert!(saved_free_history(&acquisitions, "a", "900003").is_empty());
     }
     #[test]
     fn targeted_paid_patch_preserves_all_other_fields_and_records() {
