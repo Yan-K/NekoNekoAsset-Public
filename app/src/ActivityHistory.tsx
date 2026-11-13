@@ -18,14 +18,15 @@ export interface ActivityHistoryProps {
  onClear:()=>Promise<void>;onCancel:(job:NativeJob)=>void;onRetry:(job:NativeJob)=>void;onSignIn:(job:NativeJob)=>void;onOpenStorage:()=>void;onUnityResults:(job:NativeJob)=>void;onUnityRetry:(job:NativeJob)=>void;
  onCancelDownloads?:()=>void;
 }
-type ActivityJob=NativeJob&{store?:string;fileIds?:string[];selectedFileIds?:string[];failures?:Record<string,unknown>};
+type ActivityJob=NativeJob&{store?:string;fileIds?:string[];selectedFileIds?:string[];failures?:Record<string,unknown>;args?:{productIds?:unknown}};
 type Detail={stamp:string;product?:Product};
 type CopyState={stamp:string;status:'copying'|'copied'|'copyFailed'};
 const active=(job:NativeJob)=>['queued','running'].includes(job.state);
 const failed=(job:NativeJob)=>['failed','needsAction'].includes(job.state);
 const diagnosable=(job:NativeJob)=>failed(job)||job.state==='completed'&&isStoreSyncJob(job.type);
 const terminal=(job:NativeJob)=>['completed','failed','needsAction','cancelled'].includes(job.state);
-const productIds=(job:NativeJob)=>[...new Set([job.productId,...(job.productIds??[])].filter((id):id is string=>typeof id==='string'&&!!id))];
+// BOOTH and Gumroad updates keep their assets in their arguments.
+const productIds=(job:ActivityJob)=>[...new Set([job.productId,...(job.productIds??[]),...(isStoreJob(job.type)&&Array.isArray(job.args?.productIds)?job.args.productIds:[])].filter((id):id is string=>typeof id==='string'&&!!id))];
 const jobTime=(job:NativeJob)=>Date.parse(job.createdAt??job.updatedAt??'')||0;
 const basename=(value:string)=>value.replaceAll('\\','/').split('/').at(-1)?.slice(0,512)||'';
 const jobStamp=(job:NativeJob)=>[job.id,job.state,job.updatedAt,job.completedAt,job.errorCode].join('\0');
@@ -80,7 +81,7 @@ export default function ActivityHistory({locale,jobs,accounts,products,aiEnabled
  },[requestKey]);
  const product=(id:string)=>details[id]?.product??knownProducts.get(id);
  const title=(id:string)=>knownProducts.get(id)?.title||product(id)?.title||t(locale,'unknown');
- const jobLabel=(job:NativeJob)=>job.type==='storage:delete_local_products'?shellText(locale,'deleteLocalProducts')!:job.type==='unity:import'?(uxText(locale,'importUnity')??nativeWorkflowText(locale,'unity')):label(job.type.startsWith('ai:')?'aiTags':isStoreJob(job.type)?(/login$/i.test(job.type)?'signIn':'sync'):job.type==='download'?'download':job.type==='storage:migrate_root'?'move':job.type==='storage:export_backup'?'export':job.type==='storage:restore_backup'||job.type==='storage:import_local'?'import':job.type==='storage:export_zip'?'exportZip':'storage');
+ const jobLabel=(job:NativeJob)=>job.type==='storage:delete_local_products'?shellText(locale,'deleteLocalProducts')!:job.type==='unity:import'?(uxText(locale,'importUnity')??nativeWorkflowText(locale,'unity')):label(job.type.startsWith('ai:')?'aiTags':isStoreJob(job.type)?(/login$/i.test(job.type)?'signIn':/update$/i.test(job.type)?'update':'sync'):job.type==='download'?'download':job.type==='storage:migrate_root'?'move':job.type==='storage:export_backup'?'export':job.type==='storage:restore_backup'||job.type==='storage:import_local'?'import':job.type==='storage:export_zip'?'exportZip':'storage');
  function failures(job:ActivityJob){
   const result:{key:string;name:string;reason:string}[]=[];
   const ids=productIds(job),files=ids.flatMap(id=>product(id)?.files??[]);

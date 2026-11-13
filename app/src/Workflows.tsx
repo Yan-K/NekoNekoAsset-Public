@@ -46,7 +46,8 @@ export function syncProgressLabel(locale:Locale,job:NativeJob):string {
  if(job.state==='queued')return L('queued');
  if(!progress||typeof progress==='number')return L(job.state);
  const stage=isActive(job)&&['authenticating','collecting','enriching','publishing','finalizing'].includes(progress.stage??'')?L('syncStage_'+progress.stage):L(job.state);
- const source=progress.source?L(({purchase:'orders',gift:'gifts'} as Record<string,string>)[progress.source]??progress.source):'';
+ // An update reads only its assets, so its closing "all" is no scope to show.
+ const source=progress.source&&!(progress.source==='all'&&/update$/i.test(job.type))?L(({purchase:'orders',gift:'gifts'} as Record<string,string>)[progress.source]??progress.source):'';
  const count=(value:number)=>value.toLocaleString(locale);
  const counts=[typeof progress.pages==='number'?`${L('syncListPages')} ${count(progress.pages)}`:'',typeof progress.detailsCompleted==='number'?`${L('syncDetails')} ${count(progress.detailsCompleted)}`:'',typeof progress.published==='number'?`${L('syncSaved')} ${count(progress.published)}`:progress.stage!=='collecting'&&typeof progress.metadataTotal==='number'&&progress.metadataTotal>0?`${L('syncDetails')} ${count(progress.metadataCompleted??0)}/${count(progress.metadataTotal)}`:''];
  const warning=typeof progress.availabilityWarnings==='number'&&progress.availabilityWarnings>0?`${L('syncUnavailableOffers')} ${count(progress.availabilityWarnings)}`:'';

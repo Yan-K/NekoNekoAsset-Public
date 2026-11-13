@@ -1185,7 +1185,8 @@ impl BoothService {
         let mut enriched = BTreeMap::new();
         let mut publications = Publications::default();
         for account in accounts {
-            // A selected refresh re-traverses account manifests; saved page numbers cannot locate moved cards reliably.
+            // A selected refresh reads its receipts, then the other lists; saved page numbers cannot
+            // locate moved cards reliably, so the Library stops where the last complete pass agrees.
             self.account(&account)?;
             let client = self.client(app, &account, false).await?;
             let mut sources: Vec<String> = owned_sources
@@ -1686,8 +1687,9 @@ impl BoothService {
         }
         // Only the Library is long enough to matter and has a second order to find changes by.
         // Every order and receipt is still read, so a purchase is found whatever this does.
-        let mut tracker = if mode == "incremental"
-            && selected.is_none()
+        // Updating chosen assets stops there too: a row they changed leads the updated order,
+        // and an unchanged one stays as that pass read it.
+        let mut tracker = if (mode == "incremental" || selected.is_some())
             && source == "library"
             && !checkpoint.read_every_page
         {
