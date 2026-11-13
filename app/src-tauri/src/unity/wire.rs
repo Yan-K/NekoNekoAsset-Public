@@ -10,6 +10,9 @@ use tokio::{
 
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longer than the Bridge's own 10 s wait for its main thread, after which it drops a
+/// command unrun: a hand-off Unity did run is never reported as unanswered.
+const NATIVE_IMPORT_TIMEOUT: Duration = Duration::from_secs(15);
 const STREAM_IDLE: Duration = Duration::from_secs(30);
 
 // Listener capabilities must never be serialized to the frontend or diagnostics.
@@ -401,7 +404,16 @@ async fn exchange(
     command: &Command<'_>,
     request: Option<&RequestIdentity>,
 ) -> Result<(TcpStream, BridgeResponse)> {
-    timeout(COMMAND_TIMEOUT, async {
+    exchange_within(COMMAND_TIMEOUT, registry, command, request).await
+}
+
+async fn exchange_within(
+    limit: Duration,
+    registry: &Registry,
+    command: &Command<'_>,
+    request: Option<&RequestIdentity>,
+) -> Result<(TcpStream, BridgeResponse)> {
+    timeout(limit, async {
         let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, registry.port))
             .await
             .map_err(|_| anyhow!("UNITY_UNAVAILABLE"))?;
@@ -445,7 +457,7 @@ pub async fn hello(registry: &Registry) -> Result<LiveEditor> {
 pub async fn native_import(registry: &Registry, path: &str) -> Result<BridgeResponse> {
     let mut command = command(registry, "nativeImport", None, None)?;
     command.path = Some(path);
-    Ok(exchange(registry, &command, None).await?.1)
+    Ok(exchange_within(NATIVE_IMPORT_TIMEOUT, registry, &command, None).await?.1)
 }
 
 pub async fn status(registry: &Registry, request: &RequestIdentity) -> Result<BridgeResponse> {

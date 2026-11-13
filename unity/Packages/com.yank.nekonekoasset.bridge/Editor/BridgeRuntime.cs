@@ -165,12 +165,17 @@ namespace NekoNekoAsset.Bridge
             }
         }
 
+        // Unity's own Import Unity Package window still waits for the user. Another package
+        // would replace its contents, so the Editor stays busy until that window closes.
+        private static bool Busy => active != null || Resources.FindObjectsOfTypeAll<EditorWindow>()
+            .Any(window => window != null && window.GetType().FullName == "UnityEditor.PackageImport");
+
         private static void Publish()
         {
             if (registry == null || string.IsNullOrEmpty(registryPath)) return;
             try
             {
-                registry.busy = active != null;
+                registry.busy = Busy;
                 registry.heartbeatUtc = BridgeFiles.Now();
                 if (registry.enabled && !stopped) BridgeFiles.AtomicWrite(registryPath, JsonUtility.ToJson(registry));
                 else if (File.Exists(registryPath)) { BridgeFiles.RejectLinks(registryPath); File.Delete(registryPath); }
@@ -270,7 +275,7 @@ namespace NekoNekoAsset.Bridge
         private static BridgeResponse Response(string code, bool ok, string requestId = null, BridgeReceipt receipt = null)
             => new BridgeResponse { ok = ok, code = code, instanceId = registry.instanceId,
                 sessionId = registry.sessionId, requestId = requestId, receipt = DurableReceipt(receipt),
-                enabled = registry.enabled, busy = active != null };
+                enabled = registry.enabled, busy = Busy };
 
         private static BridgeReceipt DurableReceipt(BridgeReceipt receipt)
         {
@@ -333,7 +338,7 @@ namespace NekoNekoAsset.Bridge
             if (command.command != "submit") return Reply(Response("notFound", false, command.requestId));
             if (Directory.Exists(RequestDirectory(command.requestId))) return Reply(Response("failed", false, command.requestId));
             if (!registry.enabled) return Reply(Response("disabled", false, command.requestId));
-            if (active != null) return Reply(Response("busy", false, command.requestId));
+            if (Busy) return Reply(Response("busy", false, command.requestId));
             if (command.sessionId != registry.sessionId) return Reply(Response("invalidRequest", false, command.requestId));
             try
             {
@@ -363,7 +368,7 @@ namespace NekoNekoAsset.Bridge
         {
             if (command.sessionId != registry.sessionId) return Reply(Response("invalidRequest", false));
             if (!registry.enabled) return Reply(Response("disabled", false));
-            if (active != null) return Reply(Response("busy", false));
+            if (Busy) return Reply(Response("busy", false));
             string package = command.path;
             try
             {
