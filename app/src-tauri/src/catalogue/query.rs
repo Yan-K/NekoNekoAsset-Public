@@ -113,7 +113,7 @@ fn snapshot<'a>(conn: &Connection, cache: &'a mut ListSnapshot) -> Result<&'a Li
         }
         next.counts = sets.map(|(categories, statuses, all, downloaded)| {
             let attention = statuses.get("attention").copied().unwrap_or(0);
-            // All lists every product unless Unclassified ones are hidden from it.
+            // All hides Unclassified products unless the user lists them there.
             let listed: i64 = statuses.values().sum();
             [listed, all].map(|all| json!({"all":all,"downloaded":downloaded,"attention":attention,"hidden":hidden,"categories":categories,"statuses":statuses}))
         });
@@ -142,7 +142,7 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     if hide_unavailable {
         conditions.push("p.unavailable=0".to_owned());
     }
-    let hide_unclassified = args["hideUnclassified"] == true;
+    let hide_unclassified = args["hideUnclassified"] != false;
     let mut binds: Vec<Sql> = vec![];
     let mut bind = |value: Sql| {
         binds.push(value);
@@ -478,13 +478,13 @@ pub(super) fn query(conn: &Connection, args: &Value, cache: &mut ListSnapshot) -
     Ok(result)
 }
 
-/// The saved list preferences: unavailable products are hidden unless turned off,
-/// Unclassified ones are hidden from All only when turned on.
+/// The saved list preferences: unavailable products, and Unclassified ones in All,
+/// are hidden unless turned off.
 fn list_preferences(conn: &Connection) -> Result<(bool, bool)> {
     let preferences = raw(conn, "preferences", "app")?.unwrap_or(json!({}));
     Ok((
         preferences["hideUnavailable"] != false,
-        preferences["hideUnclassified"] == true,
+        preferences["hideUnclassified"] != false,
     ))
 }
 

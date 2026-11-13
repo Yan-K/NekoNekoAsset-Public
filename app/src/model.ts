@@ -76,8 +76,8 @@ export function fileCountLabel(product:Pick<Product,'manifestComplete'|'download
  if(!count)return '—';
  return `${ratio?product.downloaded+'/':''}${count}+`;
 }
-/** All assets lists Unclassified unless the user hides it there; explicit shortcuts retain their scopes. */
-export function libraryCategoryMatches(product: Product, category: string, quick = 'all', collection = '', hideUnclassified = false): boolean {
+/** All assets hides Unclassified unless the user lists it there; explicit shortcuts retain their scopes. */
+export function libraryCategoryMatches(product: Product, category: string, quick = 'all', collection = '', hideUnclassified = true): boolean {
   if (category !== 'all') return product.category === category;
   return !hideUnclassified || !!collection || quick !== 'all' || product.category !== 'NonVRChat';
 }

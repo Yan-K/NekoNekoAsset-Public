@@ -202,13 +202,17 @@ impl UnityService {
                     .ok_or_else(|| anyhow::anyhow!("UNITY_UNAVAILABLE"))?;
                 ensure!(!editor.summary().busy, "UNITY_BUSY");
                 // One package opens in Unity's own importer, which reads the managed file in
-                // place. An older Bridge, or a package Unity's importer cannot open, uses the transfer.
+                // place, unless Features turns that off. An older Bridge, or a package Unity's
+                // importer cannot open, uses the transfer.
                 if let [leaf] = args.leaf_refs.as_slice() {
-                    let path = self
-                        .storage
-                        .unity_package_path(&args.product_ids, leaf)
-                        .await?
-                        .and_then(|path| path.to_str().map(plain_path));
+                    let path = if self.requests.native_single_package()? {
+                        self.storage
+                            .unity_package_path(&args.product_ids, leaf)
+                            .await?
+                            .and_then(|path| path.to_str().map(plain_path))
+                    } else {
+                        None
+                    };
                     if let Some(path) = path {
                         // The App holds the foreground after the click; let Unity show its window.
                         #[cfg(windows)]

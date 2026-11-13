@@ -41,7 +41,7 @@ const labels:Record<string,string[]>={
  confirmDownloadAll:['Download all {count} assets in these results?','この結果の {count} 件のアセットをすべてダウンロードしますか？','이 결과의 에셋 {count}개를 모두 다운로드할까요?','要下载这些结果中的全部 {count} 个资产吗？','要下載這些結果中的全部 {count} 個資產嗎？'],
  deleteDownloads:['Delete downloaded files','ダウンロード済みファイルを削除','다운로드한 파일 삭제','删除已下载的文件','刪除已下載的檔案'],
  confirmDeleteDownloads:['Delete the downloaded files of {count} asset(s)? The assets stay in your library.','{count} 件のアセットのダウンロード済みファイルを削除しますか？アセットはライブラリに残ります。','에셋 {count}개의 다운로드한 파일을 삭제할까요? 에셋은 라이브러리에 남습니다.','要删除 {count} 个资产的已下载文件吗？资产仍保留在资产库中。','要刪除 {count} 個資產的已下載檔案嗎？資產仍會保留在資產庫中。'],
- hideUnavailable:['Hide unavailable assets','ダウンロードできないアセットを非表示','다운로드할 수 없는 에셋 숨기기','隐藏无法下载的资产','隱藏無法下載的資產'],hideUnclassified:['Hide Unclassified in All assets','すべてのアセットで「未分類」を非表示','모든 에셋에서 “미분류” 숨기기','在全部资产中隐藏“未分类”资产','在全部資產隱藏「未分類」資產'],downloadUnavailable:['Unavailable','利用不可','사용 불가','不可用','不可用'],
+ hideUnavailable:['Hide unavailable assets','ダウンロードできないアセットを非表示','다운로드할 수 없는 에셋 숨기기','隐藏无法下载的资产','隱藏無法下載的資產'],hideUnclassified:['Hide Unclassified in All assets','すべてのアセットで「未分類」を非表示','모든 에셋에서 “미분류” 숨기기','在全部资产中隐藏“未分类”资产','在全部資產隱藏「未分類」資產'],nativeSinglePackage:['Use native import for a single package','単一パッケージはネイティブインポートを使用','단일 패키지는 네이티브 가져오기 사용','单个 Package 使用原生导入','單一 Package 使用原生匯入'],downloadUnavailable:['Unavailable','利用不可','사용 불가','不可用','不可用'],
  fileRemovedFromStore:['Removed from store','ストアから削除済み','스토어에서 삭제됨','商店已移除','商店已移除'],fileAddedByYou:['Added by you','自分で追加','직접 추가','自行添加','自行加入'],
  fileUnavailable:['No longer offered by the store','ストアで提供されていません','스토어에서 더 이상 제공하지 않음','商店已不再提供','商店已不再提供'],
  dismissAttention:['Clear Attention','要確認を解除','확인 필요 해제','消除需处理','消除需處理'],

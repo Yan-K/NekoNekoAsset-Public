@@ -308,6 +308,14 @@ impl RequestStore {
         self.catalogue.begin_catalogue_work()
     }
 
+    /// Features › Use native import for a single package, on unless turned off.
+    pub fn native_single_package(&self) -> Result<bool> {
+        Ok(self
+            .catalogue
+            .get("preferences", "app")?
+            .is_none_or(|preferences| preferences["nativeSinglePackage"] != false))
+    }
+
     pub fn create(&self, record: &RequestRecord) -> Result<()> {
         let stored = record.stored()?;
         ensure!(

@@ -87,10 +87,7 @@ fn fresh_delisted_purchase_publishes_files_and_respects_vrchat_scope() {
             .map(|f| f["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids.len(), 3);
-        for query in [
-            json!({"hideUnclassified":true}),
-            json!({"accountIds":[account],"hideUnclassified":true}),
-        ] {
+        for query in [json!({}), json!({"accountIds":[account]})] {
             let result = catalogue.command("query", query).unwrap();
             assert_eq!(result["matched"], 0);
         }
@@ -124,24 +121,14 @@ fn fresh_delisted_purchase_publishes_files_and_respects_vrchat_scope() {
         assert_eq!(merged["total"], 4);
         assert_eq!(merged["files"].as_array().unwrap().len(), 4);
         assert_eq!(merged["category"], "Hair");
-        assert_eq!(
-            catalogue
-                .command("query", json!({"hideUnclassified":true}))
-                .unwrap()["matched"],
-            1
-        );
+        assert_eq!(catalogue.command("query", json!({})).unwrap()["matched"], 1);
         catalogue
             .command(
                 "overlay",
                 json!({"ids":[product],"patch":{"category":"NonVRChat"}}),
             )
             .unwrap();
-        assert_eq!(
-            catalogue
-                .command("query", json!({"hideUnclassified":true}))
-                .unwrap()["matched"],
-            0
-        );
+        assert_eq!(catalogue.command("query", json!({})).unwrap()["matched"], 0);
         drop(prefetch);
         drop(service);
         drop(catalogue);

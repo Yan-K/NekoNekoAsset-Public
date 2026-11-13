@@ -433,7 +433,7 @@ fn unavailable_store_products_follow_the_list_preference_and_keep_their_records(
 }
 
 #[test]
-fn all_lists_unclassified_products_unless_the_user_hides_them_there() {
+fn all_hides_unclassified_products_unless_the_user_lists_them_there() {
     let fixture = Fixture::new();
     let c = fixture.open();
     product(&c, "a-hair", "local");
@@ -447,25 +447,25 @@ fn all_lists_unclassified_products_unless_the_user_hides_them_there() {
         let result = c.command("query", args).unwrap();
         (result["matchedIds"].clone(), result["counts"]["all"].clone())
     };
-    assert_eq!(all(None), (json!(["a-hair", "b-print"]), json!(2)));
-    assert_eq!(all(Some(false)), all(None));
-    assert_eq!(all(Some(true)), (json!(["a-hair"]), json!(1)));
+    assert_eq!(all(None), (json!(["a-hair"]), json!(1)));
+    assert_eq!(all(Some(true)), all(None));
+    assert_eq!(all(Some(false)), (json!(["a-hair", "b-print"]), json!(2)));
     // Unclassified itself keeps its products either way.
     let unclassified = c
-        .command("query", json!({"category":"NonVRChat","hideUnclassified":true}))
+        .command("query", json!({"category":"NonVRChat"}))
         .unwrap();
     assert_eq!(unclassified["matchedIds"], json!(["b-print"]));
     assert_eq!(unclassified["counts"]["categories"]["NonVRChat"], 1);
-    // Bootstrap counts follow the saved preference, off by default.
+    // Bootstrap counts follow the saved preference, on by default.
     let saved = || {
         c.command("bootstrap", json!({"includeProducts":false}))
             .unwrap()["counts"]["all"]
             .clone()
     };
-    assert_eq!(saved(), json!(2));
-    c.command("preferences", json!({"patch":{"hideUnclassified":true}}))
-        .unwrap();
     assert_eq!(saved(), json!(1));
+    c.command("preferences", json!({"patch":{"hideUnclassified":false}}))
+        .unwrap();
+    assert_eq!(saved(), json!(2));
     assert!(c
         .command("preferences", json!({"patch":{"hideUnclassified":"yes"}}))
         .is_err());
