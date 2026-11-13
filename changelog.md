@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Sending a single .unitypackage to Unity now opens Unity's own Import Unity Package window right away in the project chosen in the import popup, reading the file from your library in place. A package whose file name is not plain ASCII, an older Bridge, and a selection of several files still go through the Bridge review. To keep the Bridge review for single packages too, turn off Use native import for a single package in Settings › Features.
+- Sending a single .unitypackage to Unity now opens Unity's own Import Unity Package window right away in the project chosen in the import popup, reading the file from your library in place. While that window waits for you, the Editor shows as busy, so a second package can't replace one you haven't confirmed. A package whose file name is not plain ASCII, an older Bridge, and a selection of several files still go through the Bridge review. To keep the Bridge review for single packages too, turn off Use native import for a single package in Settings › Features.
 
 ### Fixed
 
