@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.11 Beta - 2026-11-13
+
+### Changed
+
+- Sending a single .unitypackage to Unity now opens Unity's own Import Unity Package window right away in the chosen project, reading the file from your library in place. A package whose file name is not plain ASCII, an older Bridge, and a selection of several files still go through the Bridge review.
+- All assets now lists Unclassified assets too. Turn on Hide Unclassified in All assets in Settings › Features to bring back the earlier All.
+
+### Fixed
+
+- Updating a BOOTH asset no longer reads whole lists. A purchase reads only its own receipt and a free item only its own page. The Library stops once it reaches items it already knows, then checks BOOTH's recently updated list for sellers' new files, as sync does. Updating one asset now takes a few requests instead of every Library page.
+- Activity now shows an update as Update and names the assets it was for, instead of a source sync of the entire library.
+
+### Release notes
+
+- The App and the Unity Bridge move to 0.3.11. Existing catalogue databases, device profiles, source checkpoints, identifiers and managed paths are retained. Older Bridges keep working with this App; they just keep using the Bridge review for single packages.
+- An update still reads every Library page when the last full read is more than 7 days old, as sync does. A purchase whose receipt cannot be read is left as it was until the next sync.
+- Bounded source verification does not establish full-library throughput or complete uncapped source coverage.
+
 ## 0.3.10 Beta - 2026-11-10
 
 ### Added
