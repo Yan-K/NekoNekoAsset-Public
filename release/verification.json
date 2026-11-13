@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
-  "version": "0.3.10",
-  "sourceSha256": "a4e2b7164e2cc6d223fd3b13901d2100caeeeff2598dcb4e76a55665d040d171",
-  "verifiedAt": "2026-11-09T16:01:04.120795Z",
+  "version": "0.3.11",
+  "sourceSha256": "a9d7c418f2dbf0bb51d00bec6809f055326d8467efc1bce75734e329ddbe7870",
+  "verifiedAt": "2026-11-13T06:57:53.301321Z",
   "checks": {
     "storeMetadata": {
       "passed": true,
@@ -28,10 +28,10 @@
     }
   },
   "aggregateEvidence": {
-    "products": 178,
-    "attachedFiles": 1234,
-    "decodedThumbnails": 170,
-    "verifierExecutableSha256": "1f92f45d1f8ab830298fe8951489abcc464eedbf53c53d28eb48f5627d3d079d",
+    "products": 177,
+    "attachedFiles": 1269,
+    "decodedThumbnails": 169,
+    "verifierExecutableSha256": "924facd409cb0e270d2e7fe9a423db799ee6de07e46e4a53b98340a477991ecd",
     "frozenPublicBuildInputs": 400,
     "actualNativeStoreAppVersionVerified": true,
     "metadataNormalSetupRestartVerified": true,
