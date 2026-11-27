@@ -35,8 +35,8 @@ SITE_PAGES = {"en": "", "zh-TW": "zh-tw/", "ja": "ja/"}
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_]+)\}\}")
 
 
-def git(*args: str) -> bytes:
-    return subprocess.check_output(["git", *args], cwd=ROOT)
+def git(*args: str, input: bytes | None = None) -> bytes:
+    return subprocess.check_output(["git", *args], cwd=ROOT, input=input)
 
 
 def tracked_paths() -> list[str]:
@@ -44,15 +44,15 @@ def tracked_paths() -> list[str]:
 
 
 def source_digest() -> str:
-    # hash-object applies Git's clean filters, so LF/CRLF checkouts attest equally.
+    # One hash-object applies each input's clean filters by its path, so LF/CRLF checkouts attest equally.
     digest = hashlib.sha256()
     paths = [path for path in tracked_paths() if path.startswith(BUILD_PREFIXES)]
     if not paths:
         raise ValueError("No tracked public build inputs found; stage source before attesting")
-    for path in paths:
-        if (ROOT / path).is_symlink():
-            raise ValueError("Build input symlinks are not supported")
-        blob = git("hash-object", "--path", path, path).strip()
+    if any((ROOT / path).is_symlink() for path in paths):
+        raise ValueError("Build input symlinks are not supported")
+    blobs = git("hash-object", "--stdin-paths", input=("\n".join(paths) + "\n").encode("utf-8")).split()
+    for path, blob in zip(paths, blobs, strict=True):
         digest.update(path.encode("utf-8") + b"\0" + blob + b"\n")
     return digest.hexdigest()
 
